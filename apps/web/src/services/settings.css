@@ -1,0 +1,23 @@
+.connection-box { position: relative; }
+.header { gap: 24px; }
+.connection-toggle { font-size: 11px; }
+.connection-popover { position: absolute; right: 0; top: 43px; width: 355px; max-width: calc(100vw - 28px); padding: 19px; background: #1d2835; border: 1px solid #496070; border-radius: 10px; box-shadow: 0 18px 40px #0008; z-index: 20; }
+.connection-popover p { font-size: 12px; color: #b0c1d2; overflow-wrap: anywhere; }
+.connection-target { font-family: Consolas, monospace; }
+.connection-popover small { display: block; margin-top: 15px; }
+.service-settings { border: 1px solid #3a4a5b; background: #14212c; border-radius: 8px; padding: 13px; margin: 0 0 22px; }
+.settings-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; }
+.settings-heading span { font-size: 10px; color: #94cbb5; }
+.service-settings p { font-size: 11px; color: #9daec0; margin: 10px 0; }
+.service-settings .settings-hint { color: #c5b88f; }
+.settings-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.settings-actions button { font-size: 11px; padding: 7px 9px; }
+.service-settings .settings-message { color: #c4d6df; border-left: 2px solid #639c8e; padding-left: 9px; overflow-wrap: anywhere; }
+.resource-choices { margin-top: 10px; max-height: 180px; overflow-y: auto; }
+.resource-choices button { display: block; text-align: left; width: 100%; margin-bottom: 5px; white-space: normal; overflow-wrap: anywhere; font-size: 11px; }
+.resource-choices small { display: block; margin-top: 4px; font-size: 9px; }
+.resource-facts { max-height: 190px; overflow-y: auto; margin: 12px 0; padding-left: 14px; font-size: 10px; color: #9eb4c4; overflow-wrap: anywhere; line-height: 1.8; }
+.settings-binding { border-top: 1px solid #344858; margin-top: 12px; padding-top: 10px; }
+.settings-binding code { display: block; font-size: 10px; overflow-wrap: anywhere; margin-top: 6px; color: #a4bec7; }
+.settings-binding button { margin-top: 9px; font-size: 10px; padding: 4px 7px; }
+@media (max-width: 1100px) { .header { gap: 10px; } .prototype { display: none; } .connection-box { margin-left: auto; } }

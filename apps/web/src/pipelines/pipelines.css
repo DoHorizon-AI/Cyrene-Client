@@ -1,0 +1,9 @@
+.pipeline-controls { padding: 9px 12px; background: #14232e; border-bottom: 1px solid #354854; color: #abc2d2; font-size: 10px; }
+.pipeline-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 3px 0; }
+.pipeline-control-row > span { margin-right: auto; }
+.pipeline-control-row button, .pipeline-conflict button { font-size: 10px; padding: 5px 8px; }
+.pipeline-control-row select { max-width: 200px; background: #1b2c39; color: #c4d7e5; border: 1px solid #3f5867; padding: 5px; }
+.pipeline-conflict { color: #edc58f; padding: 8px 0; line-height: 1.8; }
+.pipeline-conflict span { display: block; }
+.pipeline-changes { max-height: 100px; overflow: auto; margin-top: 5px; }
+.pipeline-changes p { margin: 5px; }

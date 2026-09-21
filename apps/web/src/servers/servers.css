@@ -1,0 +1,27 @@
+.server-dialog { color: #dae5ef; background: #111c28; border: 1px solid #405365; border-radius: 14px; width: min(960px, calc(100vw - 40px)); max-height: calc(100vh - 50px); padding: 26px; }
+.server-dialog::backdrop { background: #060e19c9; backdrop-filter: blur(4px); }
+.server-heading, .server-summary, .server-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.server-heading h2 { margin: 7px 0 0; font-size: 24px; }
+.server-intro, .server-guidance p { font-size: 13px; color: #aabfce; line-height: 1.8; }
+.server-summary { padding: 13px 0; border-block: 1px solid #2c3e50; font-size: 12px; color: #aabfce; }
+.server-summary b { color: #8bd4bb; font-size: 22px; margin-right: 8px; }
+.server-layout { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 28px; padding-top: 22px; }
+.server-list { display: flex; flex-direction: column; gap: 10px; }
+.server-list > input { width: 100%; padding: 10px; background: #1c2a38; color: #dbe8ef; border: 1px solid #405365; border-radius: 5px; }
+.server-list > p { color: #9db1c5; font-size: 12px; }
+.server-card { text-align: left; padding: 15px; }
+.server-card strong, .server-card span, .server-card small { display: block; overflow-wrap: anywhere; }
+.server-card span { margin: 8px 0; font-size: 12px; color: #aabfce; }
+.server-card small { color: #c5b88f; font-size: 11px; }
+.server-card.selected { border-color: #80bca8; background: #203b3d; }
+.server-detail h3 { margin-top: 0; }
+.server-detail fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.server-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.server-detail small { color: #98afc2; line-height: 1.7; }
+.server-id { font: 11px Consolas, monospace; color: #93adbf; overflow-wrap: anywhere; }
+.server-actions { justify-content: flex-start; margin-top: 13px; }
+.server-guidance, .server-observation { border: 1px solid #354859; padding: 15px; border-radius: 8px; margin-top: 18px; font-size: 12px; }
+.server-message { border-left: 3px solid #8bbca9; padding: 12px; background: #1c3035; font-size: 13px; }
+.server-events { margin-top: 22px; font-size: 11px; color: #adc0cf; overflow-wrap: anywhere; }
+.server-dialog button:focus-visible { outline: 2px solid #91ceb6; outline-offset: 3px; }
+@media (max-width: 720px) { .server-layout { grid-template-columns: 1fr; } .server-summary { flex-wrap: wrap; } .server-dialog { padding: 18px; } }
