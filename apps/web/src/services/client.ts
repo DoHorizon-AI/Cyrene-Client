@@ -40,6 +40,34 @@ export function formatDiagnosticSummary(error: ServiceError): string {
   if (error.traceId) parts.push(`Trace ID: ${error.traceId}`);
   return parts.join(" | ");
 }
+/**
+ * W3C trace context helpers.
+ *
+ * The trace id is 16 random bytes and the span id 8; neither may be all zeros,
+ * so the leading nibble is forced non-zero. The Web Host forwards `traceparent`
+ * unchanged, which is what makes one browser action followable end to end.
+ */
+function randomHex(bytes: number): string {
+  const buffer = crypto.getRandomValues(new Uint8Array(bytes));
+  return Array.from(buffer, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function withNonZeroPrefix(value: string): string {
+  return value.startsWith("0") && /^0+$/.test(value) ? `1${value.slice(1)}` : value;
+}
+
+export function newTraceId(): string {
+  return withNonZeroPrefix(randomHex(16));
+}
+
+export function newSpanId(): string {
+  return withNonZeroPrefix(randomHex(8));
+}
+
+export function formatTraceparent(traceId: string, spanId: string): string {
+  return `00-${traceId}-${spanId}-01`;
+}
+
 type Fetcher = typeof fetch;
 const connectionSchema = z.object({ configured: z.boolean(), target: z.string().nullable() });
 
@@ -97,21 +125,29 @@ export class SettingsClient {
     return this.read(`/api/v1/navigator/harness/workspaces/${pathId(workspace)}/sessions`, navigatorSessionsSchema, signal);
   }
   private async read<T extends z.ZodTypeAny>(path: string, schema: T, signal?: AbortSignal): Promise<z.infer<T>> {
-    try { return await this.request(path, schema, { signal }); }
+    // One trace id per operation: a refresh-and-retry keeps the same trace so the
+    // two attempts stay linkable, while each attempt carries its own span.
+    const traceId = newTraceId();
+    try { return await this.request(path, schema, { signal }, traceId); }
     catch (e) {
       if (!(e instanceof ServiceError) || e.status !== 401 || signal?.aborted) throw e;
       try { if (!(await this.refresh()).authenticated) throw e; }
       catch { this.csrf = null; this.onExpired?.(); throw e; }
-      return this.request(path, schema, { signal });
+      return this.request(path, schema, { signal }, traceId);
     }
   }
-  private async request<T extends z.ZodTypeAny>(path: string, schema: T, init: RequestInit): Promise<z.infer<T>> {
+  private async request<T extends z.ZodTypeAny>(path: string, schema: T, init: RequestInit, traceId?: string): Promise<z.infer<T>> {
     const headers = new Headers(init.headers); headers.set("Accept", "application/json");
     const method = init.method ?? "GET";
     if (init.body) headers.set("Content-Type", "application/json");
     if (method !== "GET" && this.csrf) headers.set("X-CSRF-Token", this.csrf);
     if (!headers.has("X-Request-ID")) {
       headers.set("X-Request-ID", `req-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`);
+    }
+    // W3C trace context: the Web Host forwards this unchanged, so one browser
+    // action is followable through every Product it touches.
+    if (!headers.has("traceparent")) {
+      headers.set("traceparent", formatTraceparent(traceId ?? newTraceId(), newSpanId()));
     }
     let response: Response;
     try {

@@ -98,3 +98,35 @@ describe("RFC 9457 Problem Details and W3C correlation handling in Studio", () =
     expect(reqId).toMatch(/^req-[a-f0-9]{12}$/);
   });
 });
+
+describe("W3C trace context propagation from the browser", () => {
+  it("sends a well-formed traceparent and a request id on every call", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse([]));
+    const client = new SettingsClient(fetcher);
+
+    await client.datasets();
+
+    const headers = new Headers((fetcher.mock.calls[0][1] as RequestInit).headers);
+    const traceparent = headers.get("traceparent") ?? "";
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(traceparent.slice(3, 35)).not.toMatch(/^0+$/);
+    expect(traceparent.slice(36, 52)).not.toMatch(/^0+$/);
+    expect(headers.get("X-Request-ID")).toMatch(/^req-[0-9a-f]{12}$/);
+  });
+
+  it("keeps the trace id across a refresh-and-retry but not the span", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ code: "SESSION_EXPIRED" }, 401))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true, refreshable: true, csrfToken: "csrf-1" }))
+      .mockResolvedValueOnce(jsonResponse([]));
+    const client = new SettingsClient(fetcher);
+
+    await client.datasets();
+
+    const first = new Headers((fetcher.mock.calls[0][1] as RequestInit).headers).get("traceparent") ?? "";
+    const retried = new Headers((fetcher.mock.calls[2][1] as RequestInit).headers).get("traceparent") ?? "";
+    expect(retried.slice(3, 35)).toBe(first.slice(3, 35));
+    expect(retried.slice(36, 52)).not.toBe(first.slice(36, 52));
+  });
+
+});

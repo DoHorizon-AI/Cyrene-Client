@@ -60,6 +60,11 @@ export const hostStatusSchema = z.object({
   service: z.literal("cyrene-navigator-web-host"), status: z.string(), authenticated: z.boolean(),
   proxyPrefixes: z.array(z.string()), observedAt: z.string(),
   gpu: z.object({ available: z.boolean(), gpus: z.array(z.object({ name: z.string(), totalMib: z.number(), usedMib: z.number(), utilizationPct: z.number() })).optional() }).optional(),
+  // Published by newer Web Hosts; optional so an older host still validates.
+  gatewayBaseUrl: z.string().optional(),
+  bootstrapState: z.object({ state: z.string(), source: z.string().optional(), completedAt: z.string().nullish() }).optional(),
+  runtime: z.object({ releaseLock: z.string().nullable().optional(), engines: z.record(z.string(), z.string()).optional(), cudaProfile: z.string().optional() }).optional(),
+  diagnosticsDegraded: z.boolean().optional(),
 });
 export type HostStatus = z.infer<typeof hostStatusSchema>;
 export const navigatorSessionsSchema = z.object({ items: z.array(z.object({
