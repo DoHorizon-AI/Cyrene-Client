@@ -76,3 +76,42 @@ test("late layout results cannot replace edits made while calculation is in flig
   await expect(page.locator(".footer [role=status]")).toContainText("旧结果未应用");
   await expect(page.getByLabel("流水线名称")).toHaveValue("计算期间的新名称");
 });
+
+test("late server loads preserve new edits and their undo history", async ({ page }) => {
+  const id = `load-race-${Date.now()}`;
+  await page.goto("/"); await upload(page, id);
+  await page.getByRole("button", { name: "保存到服务端", exact: true }).click();
+  await expect(page.locator(".footer [role=status]")).toContainText("服务端草稿已保存");
+  await page.getByRole("button", { name: "文件", exact: true }).click();
+  await page.getByRole("button", { name: "读取流程列表", exact: true }).click();
+  await page.getByLabel("服务端流程").selectOption(id);
+  let release!: () => void, arrived!: () => void;
+  const gate = new Promise<void>(r => { release = r; }), requested = new Promise<void>(r => { arrived = r; });
+  await page.route("**/studio-pipelines/v1/commands", async route => {
+    if (route.request().postDataJSON().name !== "pipelines.get") return route.continue();
+    const response = await route.fetch(); arrived(); await gate; await route.fulfill({ response });
+  });
+  await page.getByRole("button", { name: "载入服务端流程", exact: true }).click(); await requested;
+  await page.keyboard.press("Escape");
+  await page.getByLabel("流水线名称").fill("载入期间的新编辑"); release();
+  await expect(page.locator(".footer [role=status]")).toContainText("旧结果未应用");
+  await expect(page.getByLabel("流水线名称")).toHaveValue("载入期间的新编辑");
+  await menuAction(page, "编辑", "撤销本地修改");
+  await expect(page.getByLabel("流水线名称")).not.toHaveValue("载入期间的新编辑");
+});
+
+test("late file imports preserve edits made while reading the file", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    const state = window as unknown as { releaseImport(): void; importStarted: boolean };
+    const gate = new Promise<void>(resolve => { state.releaseImport = resolve; });
+    File.prototype.text = async function () { const text = await original.call(this); state.importStarted = true; await gate; return text; };
+  });
+  await upload(page, "late-import");
+  await page.waitForFunction(() => (window as unknown as { importStarted: boolean }).importStarted);
+  await page.getByLabel("流水线名称").fill("读取文件期间的新编辑");
+  await page.evaluate(() => (window as unknown as { releaseImport(): void }).releaseImport());
+  await expect(page.locator(".footer [role=status]")).toContainText("旧结果未应用");
+  await expect(page.getByLabel("流水线名称")).toHaveValue("读取文件期间的新编辑");
+});

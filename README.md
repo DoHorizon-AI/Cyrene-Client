@@ -92,7 +92,8 @@ npm run check
 | 路径 | 职责 |
 | --- | --- |
 | `apps/web/src/graph/` | LiteGraph 的渲染、交互及文档转换适配层 |
-| `apps/web/src/App.tsx` | 节点库、参数面板、草稿及预演界面 |
+| `apps/web/src/App.tsx` | 工作台界面组合、节点面板及本地预演 |
+| `apps/web/src/pipelines/usePipelineDocument.ts` | 文档状态、撤销、草稿持久化、导入导出及画布就绪检查 |
 | `apps/web/src/ide/` | 工具窗口、菜单、布局偏好、文件预览、页面入口与 MCP 上下文面板 |
 | `packages/pipeline-model/` | 原型文档模型、节点定义和独立于画布的校验 |
 | `packages/service-settings/` | 根据实际服务源码核对的设置响应与请求投影 |

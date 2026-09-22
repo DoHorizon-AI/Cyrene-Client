@@ -113,26 +113,30 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
     }
   }
   async function saveTraining(signal: AbortSignal) {
-    const id = latest.current.settingsBinding?.resourceId;
-    if (!id || latest.current.settingsBinding?.kind !== "training-draft") throw new Error("请先选择训练草稿。");
-    if (latest.current.config.method !== "LoRA") throw new Error("当前 Yield 设置契约仅支持 SFT / LoRA，Full 参数未发送。");
+    const sent = structuredClone(latest.current);
+    const id = sent.settingsBinding?.resourceId;
+    if (!id || sent.settingsBinding?.kind !== "training-draft") throw new Error("请先选择训练草稿。");
+    if (sent.config.method !== "LoRA") throw new Error("当前 Yield 设置契约仅支持 SFT / LoRA，Full 参数未发送。");
     const fresh = await client.draft(id, signal);
     if (!active(signal)) return;
+    if (JSON.stringify(latest.current) !== JSON.stringify(sent)) throw new Error("保存期间节点或资源绑定已变化，旧操作已取消；请确认当前设置后重试。");
+    if (fresh.id !== id) throw new Error("服务返回的训练草稿身份不匹配，未保存。");
     if (fresh.state === "STARTED" || fresh.trainingRun) throw new Error("草稿已启动，不能修改训练设置。");
     if (!fresh.configuration) throw new Error("草稿缺少已准备的基础模型配置。");
-    const edits = Object.fromEntries(Object.entries(latest.current.config).filter(([key]) => key !== "method"));
+    const edits = Object.fromEntries(Object.entries(sent.config).filter(([key]) => key !== "method"));
     const parameters = trainingParametersSchema.parse({ ...fresh.configuration.parameters, ...edits });
     const result = await client.prepareDraft(id, { ...fresh.configuration, parameters });
     if (!active(signal)) return;
     setDraft(result); setMessage(`Yield 已确认保存（${result.state}）；未启动训练。`);
   }
   async function createSuite(signal: AbortSignal) {
-    const config = latest.current.config;
+    const sent = structuredClone(latest.current), config = sent.config;
     const payload = { name: config.suite, evaluator: config.evaluator ?? "exact_match.v1", expectedField: config.expectedField ?? "expected", actualField: config.actualField ?? "actual", threshold: config.threshold ?? 0.8, ...(config.judgeProfileId ? { judgeProfileId: config.judgeProfileId } : {}) };
     const serialized = JSON.stringify(payload);
     if (suiteRequest.current?.payload !== serialized) suiteRequest.current = { payload: serialized, key: crypto.randomUUID() };
     const item = await client.createSuite(payload, suiteRequest.current!.key);
     if (!active(signal)) return;
+    if (JSON.stringify(latest.current) !== JSON.stringify(sent)) { setMessage(`Echo 已创建评估配置 ${item.id}；节点期间发生变化，未替换当前绑定。`); return; }
     apply({}, { kind: "evaluation-suite", resourceId: item.id }); setMessage(`Echo 已创建评估配置「${item.name}」；未发起评估。`);
   }
 

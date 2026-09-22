@@ -1,19 +1,18 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { catalog, definitions } from "../../../packages/pipeline-model/catalog";
-import { examplePipeline, inspect, parsePipeline, type Pipeline, type PipelineNode } from "../../../packages/pipeline-model";
-import { GraphCanvas, type GraphHandle } from "./graph/GraphCanvas";
+import { examplePipeline, inspect, type PipelineNode } from "../../../packages/pipeline-model";
+import { GraphCanvas } from "./graph/GraphCanvas";
 import { SettingsClient } from "./services/client";
 import { ConnectionPanel } from "./services/ConnectionPanel";
 import { NodeServiceSettings } from "./services/NodeServiceSettings";
 import type { HostStatus } from "../../../packages/service-settings/contracts";
 import { ServerManagerBody, ComputeTargetSettings } from "./servers/ServerManager";
 import { PipelineControls } from "./pipelines/PipelineControls";
+import { usePipelineDocument } from "./pipelines/usePipelineDocument";
 
 import { Icon, Menu, ResizeHandle, useIdeLayout } from "./ide/Chrome";
 import { FilePanel, AssistantPanel, PluginPanel } from "./ide/Panels";
 
-const STORAGE_KEY = "cyrene.studio.prototype.v1.draft";
-const MAX_FILE_BYTES = 1024 * 1024;
 type Tab = "checks" | "preview" | "log";
 
 export function App() {
@@ -24,10 +23,6 @@ export function App() {
   const [events, setEvents] = useState<{ time: string; message: string }[]>([]);
   const [settingsClient] = useState(() => new SettingsClient());
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
-  const [initial] = useState(examplePipeline);
-  const [pipeline, setPipeline] = useState(initial);
-  const currentDocument = useRef(initial), history = useRef<Pipeline[]>([]);
-  const [undoCount, setUndoCount] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>("training");
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState("示例已就绪。连接端口、调整参数，然后校验流程。");
@@ -35,9 +30,11 @@ export function App() {
   const [plan, setPlan] = useState<string[]>([]);
   const [cursor, setCursor] = useState(0);
   const [running, setRunning] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [savedDraft, setSavedDraft] = useState(false);
-  const editor = useRef<GraphHandle>(null), fileInput = useRef<HTMLInputElement>(null);
+  const { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, changed, recordChange, applyDocument, loadServerDocument, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor } = usePipelineDocument({
+    selectedId, onSelect: setSelectedId, onNotice: setNotice,
+    onResetPreview: () => { setRunning(false); setPlan([]); setCursor(0); },
+    onShowGraph: () => setEditorTab("graph"),
+  });
   const validation = useMemo(() => inspect(pipeline), [pipeline]);
   const selected = pipeline.nodes.find((n) => n.id === selectedId);
   const selectedDefinition = selected && definitions.get(selected.type);
@@ -59,89 +56,22 @@ export function App() {
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
   });
   useEffect(() => {
-    try { setSavedDraft(localStorage.getItem(STORAGE_KEY) !== null); }
-    catch { setNotice("浏览器存储不可用；仍可使用 JSON 导出保存。"); }
-  }, []);
-  useEffect(() => {
-    if (!dirty) return;
-    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
-  useEffect(() => {
     if (!running) return;
     if (cursor >= plan.length) { setRunning(false); setNotice("本地预演完成：已遍历依赖顺序，未执行训练、评估或部署。"); return; }
     const timer = window.setTimeout(() => setCursor((c) => c + 1), 450);
     return () => window.clearTimeout(timer);
   }, [running, cursor, plan.length]);
 
-  function changed(p: Pipeline) {
-    recordChange({ ...p, name: currentDocument.current.name });
-  }
-  function recordChange(p: Pipeline) {
-    if (JSON.stringify(currentDocument.current) === JSON.stringify(p)) return;
-    history.current = [...history.current.slice(-49), structuredClone(currentDocument.current)]; setUndoCount(history.current.length);
-    currentDocument.current = p; setPipeline(p); setDirty(true); setRunning(false); setPlan([]); setCursor(0);
-  }
-  function applyDocument(p: Pipeline) {
-    editor.current!.load(p, { silent: true }); recordChange(p);
-    if (selectedId && p.nodes.some(n => n.id === selectedId)) editor.current!.select(selectedId);
-  }
-  function loadServerDocument(p: Pipeline) {
-    editor.current!.load(p, { silent: true, fit: false }); currentDocument.current = p; setPipeline(p);
-    history.current = []; setUndoCount(0); setDirty(false); setRunning(false); setPlan([]); setCursor(0);
-    if (selectedId && p.nodes.some(n => n.id === selectedId)) editor.current!.select(selectedId);
-  }
-  function undoLocal() {
-    const p = history.current.pop(); if (!p) return;
-    editor.current!.load(p, { silent: true }); currentDocument.current = p; setPipeline(p); setDirty(true); setUndoCount(history.current.length);
-    setRunning(false); setPlan([]); setCursor(0); setNotice("已撤销本地修改；服务端版本尚未改变。");
-    if (selectedId && p.nodes.some(n => n.id === selectedId)) editor.current!.select(selectedId);
-  }
-  function snapshot() { return { ...editor.current!.snapshot(), name: pipeline.name }; }
-  function error(e: unknown) { setNotice(`操作未完成：${e instanceof Error ? e.message : String(e)}`); }
-  function replace(p: Pipeline, message: string) {
-    if (dirty && !window.confirm("当前流程有未保存修改，是否替换？")) return;
-    applyDocument(p); setSelectedId(null); setRunning(false); setPlan([]); setCursor(0); setEditorTab("graph");
-    setNotice(message);
-  }
-  function save() {
-    try {
-      const p = parsePipeline(snapshot()); localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
-      setSavedDraft(true); setDirty(false); setNotice("草稿已保存到此浏览器。可导出 JSON 另存备份。");
-    } catch (e) { error(e); }
-  }
-  function restore() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) throw new Error("没有本地草稿。");
-      replace(parsePipeline(JSON.parse(raw)), "已载入本地草稿。");
-    } catch (e) { error(e); }
-  }
-  function exportJson() {
-    try {
-      const p = parsePipeline(snapshot());
-      const url = URL.createObjectURL(new Blob([JSON.stringify(p, null, 2)], { type: "application/json" }));
-      const a = document.createElement("a"); a.href = url; a.download = `${p.id}.json`; a.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000); setNotice("已导出流程定义与布局。运行预演记录不会写入文件。");
-    } catch (e) { error(e); }
-  }
-  async function importJson(file?: File) {
-    if (!file) return;
-    try {
-      if (file.size > MAX_FILE_BYTES) throw new Error("文件不能超过 1 MB。");
-      const p = parsePipeline(JSON.parse(await file.text())); replace(p, "已导入流程。请校验连接与参数后预演。");
-    } catch (e) { error(e); }
-    finally { if (fileInput.current) fileInput.current.value = ""; }
-  }
   function preview() {
-    setLayout(s => ({ ...s, bottom: true })); setEditorTab("graph");
-    const p = snapshot(), check = inspect(p);
-    if (check.issues.length) { setTab("checks"); setNotice(`校验发现 ${check.issues.length} 个问题，修正后可预演。`); return; }
-    setPlan(check.order); setCursor(0); setRunning(true); setTab("preview");
-    setNotice("正在本地预演依赖顺序。不会访问训练服务或创建云资源。");
+    withEditor(() => {
+      setLayout(s => ({ ...s, bottom: true })); setEditorTab("graph");
+      const p = snapshot(), check = inspect(p);
+      if (check.issues.length) { setTab("checks"); setNotice(`校验发现 ${check.issues.length} 个问题，修正后可预演。`); return; }
+      setPlan(check.order); setCursor(0); setRunning(true); setTab("preview");
+      setNotice("正在本地预演依赖顺序。不会访问训练服务或创建云资源。");
+    });
   }
-  function updateNode(n: PipelineNode) { editor.current!.update(n); }
+  function updateNode(n: PipelineNode) { withEditor(handle => handle.update(n)); }
 
   function showChecks() { setTab("checks"); setLayout(s => ({ ...s, bottom: true })); }
   function focusNode(id: string | null) { setSelectedId(id); if (id && !layout.right) setLayout(s => ({ ...s, right: "info", ...(innerWidth < 1000 ? { left: null } : {}) })); }
@@ -182,7 +112,7 @@ export function App() {
         <input className="search" aria-label="搜索节点" placeholder="搜索节点或服务…" value={query} onChange={(e) => setQuery(e.target.value)} />
         <div className="catalog">{groups.map((group) => {
           const items = catalog.filter((d) => d.category === group && `${d.title} ${d.owner}`.toLowerCase().includes(query.toLowerCase()));
-          return items.length ? <section key={group}><h3>{group}</h3>{items.map((d) => <button className="node-option" key={d.type} disabled={running || pipeline.nodes.length >= 200} onClick={() => editor.current!.add(d.type)} title={d.description} aria-label={`添加${d.title}`}><span className="node-symbol" style={{ color: d.color }}>{({ dataset: "▤", model: "◇", compute: "▥", training: "⌘", evaluation: "◈", deployment: "↗", agent: "✧" })[d.type]}</span><span><strong>{d.title}</strong><small>{d.owner}</small></span><span className="add-symbol">+</span></button>)}</section> : null;
+          return items.length ? <section key={group}><h3>{group}</h3>{items.map((d) => <button className="node-option" key={d.type} disabled={running || pipeline.nodes.length >= 200} onClick={() => withEditor(handle => handle.add(d.type))} title={d.description} aria-label={`添加${d.title}`}><span className="node-symbol" style={{ color: d.color }}>{({ dataset: "▤", model: "◇", compute: "▥", training: "⌘", evaluation: "◈", deployment: "↗", agent: "✧" })[d.type]}</span><span><strong>{d.title}</strong><small>{d.owner}</small></span><span className="add-symbol">+</span></button>)}</section> : null;
         })}</div>
         <div className="palette-note"><span>01 — EXPERIMENT</span><p>点击添加节点<br />拖动端口连接步骤</p></div>
 
@@ -194,7 +124,7 @@ export function App() {
 
       <main className="ide-center editor-column" aria-label="流水线编辑器">
         <div className="ide-editor-tabs" role="tablist" aria-label="编辑器页面"><button role="tab" aria-selected={editorTab === "graph"} className={editorTab === "graph" ? "active" : ""} onClick={() => setEditorTab("graph")}><Icon name="nodes" />{pipeline.id}.pipeline <span>{dirty ? "●" : ""}</span></button><button role="tab" aria-selected={editorTab === "source"} className={editorTab === "source" ? "active" : ""} onClick={() => setEditorTab("source")}><Icon name="files" />JSON</button>{filePreview && <button role="tab" aria-selected={editorTab === "file"} className={editorTab === "file" ? "active" : ""} onClick={() => setEditorTab("file")}><Icon name="files" />{filePreview.name.split("/").at(-1)}</button>}</div>
-        <div className="canvas-toolbar"><span>工作空间 <span className="ide-breadcrumb-sep">›</span> 流水线 <small>{pipeline.nodes.length} 节点 · {pipeline.edges.length} 连接</small></span><button onClick={() => editor.current!.fit()}>适应画布</button></div>
+        <div className="canvas-toolbar"><span>工作空间 <span className="ide-breadcrumb-sep">›</span> 流水线 <small>{pipeline.nodes.length} 节点 · {pipeline.edges.length} 连接</small></span><button onClick={() => withEditor(handle => handle.fit())}>适应画布</button></div>
         <div className={`canvas-area ${running ? "locked" : ""}`}>
           <GraphCanvas ref={editor} initial={initial} interactive={editorTab === "graph" && !running} onChange={changed} onSelect={focusNode} />
           {editorTab === "graph" && <><div className="canvas-hint">拖动平移 <span>·</span> 滚轮缩放 <span>·</span> Delete 删除节点</div>{running && <div className="canvas-lock">正在预演 · 画布暂时锁定</div>}</>}
@@ -204,7 +134,7 @@ export function App() {
           <ResizeHandle orientation="horizontal" value={layout.bottomHeight} min={100} max={400} sign={-1} label="调整底部窗口高度" onChange={v => setLayout(s => ({ ...s, bottomHeight: v }))} />
           <div className="bottom-tabs"><button className={tab === "checks" ? "active" : ""} onClick={() => setTab("checks")}><Icon name="check" />流程检查 <span>{validation.issues.length}</span></button><button className={tab === "preview" ? "active" : ""} onClick={() => setTab("preview")}><Icon name="play" />运行预演</button><button className={tab === "log" ? "active" : ""} onClick={() => setTab("log")}><Icon name="log" />事件日志</button><button className="ide-bottom-close" aria-label="收起底部窗口" onClick={() => setLayout(s => ({ ...s, bottom: false }))}><Icon name="close" /></button></div>
           <div hidden={tab === "log"}>
-          {tab === "checks" ? <div className="check-content">{validation.issues.length ? <ul className="issues">{validation.issues.map((i, index) => <li key={`${i.code}-${index}`}><button onClick={() => i.nodeId && editor.current!.select(i.nodeId)}>! {i.message}</button></li>)}</ul> : <div className="check-pass"><span>✓</span><div><strong>结构检查通过</strong><p>端口类型、必填参数与依赖顺序有效。服务连接、资源可用性及评估门禁尚未验证。</p></div></div>}</div> : <div className="preview-content"><div className="preview-heading"><span>{running ? "依赖顺序预演中" : plan.length ? `已预演 ${cursor} / ${plan.length} 步` : "尚未开始预演"}</span>{running && <button onClick={() => { setRunning(false); setNotice("预演已停止，未执行外部操作。"); }}>停止预演</button>}</div><div className="run-steps">{plan.map((id, index) => <span className={`run-step ${index < cursor ? "done" : index === cursor && running ? "current" : ""}`} key={id}>{index < cursor ? "✓" : String(index + 1).padStart(2, "0")} {pipeline.nodes.find((n) => n.id === id)?.label}</span>)}</div><p>这里只模拟步骤顺序，不生成模型、评估指标或真实端点。</p></div>}
+          {tab === "checks" ? <div className="check-content">{validation.issues.length ? <ul className="issues">{validation.issues.map((i, index) => <li key={`${i.code}-${index}`}><button onClick={() => { if (i.nodeId) withEditor(handle => handle.select(i.nodeId!)); }}>! {i.message}</button></li>)}</ul> : <div className="check-pass"><span>✓</span><div><strong>结构检查通过</strong><p>端口类型、必填参数与依赖顺序有效。服务连接、资源可用性及评估门禁尚未验证。</p></div></div>}</div> : <div className="preview-content"><div className="preview-heading"><span>{running ? "依赖顺序预演中" : plan.length ? `已预演 ${cursor} / ${plan.length} 步` : "尚未开始预演"}</span>{running && <button onClick={() => { setRunning(false); setNotice("预演已停止，未执行外部操作。"); }}>停止预演</button>}</div><div className="run-steps">{plan.map((id, index) => <span className={`run-step ${index < cursor ? "done" : index === cursor && running ? "current" : ""}`} key={id}>{index < cursor ? "✓" : String(index + 1).padStart(2, "0")} {pipeline.nodes.find((n) => n.id === id)?.label}</span>)}</div><p>这里只模拟步骤顺序，不生成模型、评估指标或真实端点。</p></div>}
           </div>
           <div className="ide-event-log" hidden={tab !== "log"}>{events.map((e, i) => <div key={i}><time>{e.time}</time><span>INFO</span><p>{e.message}</p></div>)}</div>
         </section>
@@ -217,14 +147,14 @@ export function App() {
           <div className="inspector" hidden={layout.right !== "info"}>
         <div className="panel-heading"><strong>节点配置</strong><span>{selectedDefinition?.owner ?? "请选择节点"}</span></div>
         {selected && selectedDefinition ? <div className="inspector-content"><div className="inspector-icon" style={{ color: selectedDefinition.color }}>◇</div><h2>{selected.label}</h2><p className="description">{selectedDefinition.description}</p><div className="divider" />
-          {selected.type === "compute" && <ComputeTargetSettings key={`server-${selected.id}`} node={selected} disabled={running} onUpdate={updateNode} />}
-          <NodeServiceSettings key={selected.id} node={selected} client={settingsClient} status={hostStatus} disabled={running} onUpdate={updateNode} />
+          {selected.type === "compute" && <ComputeTargetSettings key={`server-${pipeline.id}-${selected.id}`} node={selected} disabled={running} onUpdate={updateNode} />}
+          <NodeServiceSettings key={`${pipeline.id}:${selected.id}`} node={selected} client={settingsClient} status={hostStatus} disabled={running} onUpdate={updateNode} />
           <label className="field"><span>节点名称</span><input maxLength={80} value={selected.label} disabled={running} onChange={(e) => updateNode({ ...selected, label: e.target.value })} /></label>
           {selectedDefinition.fields.map((field) => <label className="field" key={field.name}><span>{field.label}</span>{field.kind === "select" ? <select value={selected.config[field.name] ?? ""} disabled={running} onChange={(e) => updateNode({ ...selected, config: { ...selected.config, [field.name]: e.target.value } })}>{!selected.config[field.name] && <option value="">请选择</option>}{field.choices!.map((c) => <option key={c}>{c}</option>)}</select> : <input type={field.kind === "number" ? "number" : "text"} step="any" maxLength={300} value={selected.config[field.name] ?? ""} disabled={running} onChange={(e) => updateNode({ ...selected, config: { ...selected.config, [field.name]: field.kind === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value } })} />}</label>)}
           <div className="divider" /><span className="eyebrow">PORTS / 端口</span><div className="port-list">{selectedDefinition.inputs.map((p) => <div key={p.name}><span>↳ {p.label}</span><small>{p.kind}</small></div>)}{selectedDefinition.outputs.map((p) => <div key={p.name}><span>↗ {p.label}</span><small>{p.kind}</small></div>)}</div>
-          <button className="danger subtle" disabled={running} onClick={() => editor.current!.remove(selected.id)}>删除此节点</button>
+          <button className="danger subtle" disabled={running} onClick={() => withEditor(handle => handle.remove(selected.id))}>删除此节点</button>
         </div> : <div className="inspector-empty">选择画布节点，编辑它的参数。<p>也可通过下方列表定位。</p></div>}
-        <details className="node-list"><summary>流程中的节点 · {pipeline.nodes.length}</summary>{pipeline.nodes.map((n) => <button key={n.id} onClick={() => editor.current!.select(n.id)}>{n.label}<small>{definitions.get(n.type)?.owner}</small></button>)}</details>
+        <details className="node-list"><summary>流程中的节点 · {pipeline.nodes.length}</summary>{pipeline.nodes.map((n) => <button key={n.id} onClick={() => withEditor(handle => handle.select(n.id))}>{n.label}<small>{definitions.get(n.type)?.owner}</small></button>)}</details>
 
           </div>
           <div hidden={layout.right !== "plugins"}><PluginPanel onSource={() => setEditorTab("source")} onChecks={showChecks} /></div>
