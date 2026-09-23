@@ -13,7 +13,7 @@ async function command(page: Page, name: string, input: object) {
 }
 const positions = (page: Page) => page.locator("canvas").evaluate(el => Object.fromEntries((el as any).data.graph._nodes.map((n: any) => [n.properties.document.id, Array.from(n.pos)])));
 
-test("automatic layout, pinned nodes and local undo preserve graph semantics", async ({ page }) => {
+test("automatic layout, pinned nodes and local undo/redo preserve graph semantics", async ({ page }) => {
   await page.goto("/");
   const before = await positions(page);
   await menuAction(page, "编辑", "锁定节点位置");
@@ -28,7 +28,13 @@ test("automatic layout, pinned nodes and local undo preserve graph semantics", a
   await expect(page.getByText("7 节点 · 9 连接")).toBeVisible();
   await menuAction(page, "编辑", "撤销本地修改");
   expect(await positions(page)).toEqual(before);
+  await menuAction(page, "编辑", "重做本地修改");
+  expect(await positions(page)).toEqual(after);
+  await menuAction(page, "编辑", "撤销本地修改");
+  expect(await positions(page)).toEqual(before);
+  await page.getByLabel("流水线名称").fill("新的分支修改");
   await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(page.getByRole("button", { name: "重做本地修改", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "解锁节点位置", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "编辑", exact: true }).press("Escape");
 });
@@ -48,6 +54,10 @@ test("persisted pipeline follows external edits while protecting unsaved work", 
   await expect(page.locator(".footer [role=status]")).toContainText("版本差异");
   page.once("dialog", d => d.accept());
   await page.getByRole("button", { name: "载入新版本", exact: true }).click();
+  await expect(page.getByLabel("流水线名称")).toHaveValue("新的外部修改");
+  await menuAction(page, "编辑", "撤销服务端修改");
+  await expect(page.getByLabel("流水线名称")).toHaveValue("外部客户端设计的流程");
+  await menuAction(page, "编辑", "重做服务端修改");
   await expect(page.getByLabel("流水线名称")).toHaveValue("新的外部修改");
   await menuAction(page, "编辑", "撤销服务端修改");
   await expect(page.getByLabel("流水线名称")).toHaveValue("外部客户端设计的流程");

@@ -26,8 +26,8 @@ export function App() {
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
   const [initial] = useState(examplePipeline);
   const [pipeline, setPipeline] = useState(initial);
-  const currentDocument = useRef(initial), history = useRef<Pipeline[]>([]);
-  const [undoCount, setUndoCount] = useState(0);
+  const currentDocument = useRef(initial), history = useRef<Pipeline[]>([]), future = useRef<Pipeline[]>([]);
+  const [undoCount, setUndoCount] = useState(0), [redoCount, setRedoCount] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>("training");
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState("示例已就绪。连接端口、调整参数，然后校验流程。");
@@ -81,6 +81,7 @@ export function App() {
   function recordChange(p: Pipeline) {
     if (JSON.stringify(currentDocument.current) === JSON.stringify(p)) return;
     history.current = [...history.current.slice(-49), structuredClone(currentDocument.current)]; setUndoCount(history.current.length);
+    future.current = []; setRedoCount(0);
     currentDocument.current = p; setPipeline(p); setDirty(true); setRunning(false); setPlan([]); setCursor(0);
   }
   function applyDocument(p: Pipeline) {
@@ -89,13 +90,21 @@ export function App() {
   }
   function loadServerDocument(p: Pipeline) {
     editor.current!.load(p, { silent: true, fit: false }); currentDocument.current = p; setPipeline(p);
-    history.current = []; setUndoCount(0); setDirty(false); setRunning(false); setPlan([]); setCursor(0);
+    history.current = []; future.current = []; setUndoCount(0); setRedoCount(0); setDirty(false); setRunning(false); setPlan([]); setCursor(0);
     if (selectedId && p.nodes.some(n => n.id === selectedId)) editor.current!.select(selectedId);
   }
   function undoLocal() {
     const p = history.current.pop(); if (!p) return;
+    future.current = [...future.current.slice(-49), structuredClone(currentDocument.current)]; setRedoCount(future.current.length);
     editor.current!.load(p, { silent: true }); currentDocument.current = p; setPipeline(p); setDirty(true); setUndoCount(history.current.length);
     setRunning(false); setPlan([]); setCursor(0); setNotice("已撤销本地修改；服务端版本尚未改变。");
+    if (selectedId && p.nodes.some(n => n.id === selectedId)) editor.current!.select(selectedId);
+  }
+  function redoLocal() {
+    const p = future.current.pop(); if (!p) return;
+    history.current = [...history.current.slice(-49), structuredClone(currentDocument.current)]; setUndoCount(history.current.length);
+    editor.current!.load(p, { silent: true }); currentDocument.current = p; setPipeline(p); setDirty(true); setRedoCount(future.current.length);
+    setRunning(false); setPlan([]); setCursor(0); setNotice("已重做本地修改；服务端版本尚未改变。");
     if (selectedId && p.nodes.some(n => n.id === selectedId)) editor.current!.select(selectedId);
   }
   function snapshot() { return { ...editor.current!.snapshot(), name: pipeline.name }; }
@@ -149,7 +158,7 @@ export function App() {
   const rightTitle = layout.right === "assistant" ? "平台 MCP" : layout.right === "plugins" ? "页面插件" : "节点信息";
   const css = { "--left-width": `${layout.leftWidth}px`, "--right-width": `${layout.rightWidth}px`, "--bottom-height": `${layout.bottomHeight}px` } as CSSProperties;
   return <div className={`studio ide-studio ${layout.left ? "has-left" : ""} ${layout.right ? "has-right" : ""}`} style={css}>
-    <PipelineControls document={pipeline} selectedId={selectedId} disabled={running} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} render={controls => <>
+    <PipelineControls document={pipeline} selectedId={selectedId} disabled={running} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} canRedo={redoCount > 0} onRedo={redoLocal} render={controls => <>
       <header className="ide-titlebar">
         <div className="ide-brand" aria-label="Cyrene Studio">C<span>↗</span></div>
         <nav className="ide-menubar" aria-label="主菜单">

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -45,6 +45,16 @@ describe("pipeline application service", () => {
     const catalog = await call("nodes.list_types", { workspaceId: "local" });
     expect(catalog.items).toHaveLength(7);
     expect(catalog.items.find((n: any) => n.type === "training").configSchema.properties.epochs.maximum).toBe(10000);
+  });
+  it("migrates persisted databases created before redo state existed", async () => {
+    const { directory } = await fixture();
+    const path = join(directory, "pipelines.json"), persisted = JSON.parse(await readFile(path, "utf8"));
+    delete persisted.redo; await writeFile(path, JSON.stringify(persisted), "utf8");
+    const control = createPipelineControl(directory);
+    const record = await control.execute({ name: "pipelines.get", input: target, requestId: "read-old" }, actor) as PipelineRecord;
+    expect(record.document).toEqual(examplePipeline());
+    await control.execute({ name: "pipelines.patch", input: { ...expected, edits: [{ op: "rename", name: "Migrated" }] }, requestId: "migrate", idempotencyKey: "migrate" }, actor);
+    expect(JSON.parse(await readFile(path, "utf8")).redo).toEqual([]);
   });
   it("checks permission and workspace, including idempotency replay", async () => {
     const { call } = await fixture();
@@ -100,6 +110,29 @@ describe("pipeline application service", () => {
     expect(second.record.document).toEqual(examplePipeline());
     expect(second.record).toMatchObject({ graphRevision: 5, layoutRevision: 3 });
     await expect(call("pipelines.undo", { ...expected, expectedGraphRevision: 5, expectedLayoutRevision: 3 })).rejects.toMatchObject({ code: "NOTHING_TO_UNDO" });
+  });
+  it("redoes persisted undo batches in order and keeps revisions monotonic", async () => {
+    const { call, directory } = await fixture();
+    await call("pipelines.patch", { ...expected, edits: [{ op: "remove_node", nodeId: "agent" }] });
+    await call("pipelines.patch", { ...expected, expectedGraphRevision: 2, expectedLayoutRevision: 2, edits: [{ op: "rename", name: "Second" }] });
+    await call("pipelines.undo", { ...expected, expectedGraphRevision: 3, expectedLayoutRevision: 2 });
+    await call("pipelines.undo", { ...expected, expectedGraphRevision: 4, expectedLayoutRevision: 2 });
+    const restarted = createPipelineControl(directory);
+    const redo = (input: unknown) => restarted.execute({ name: "pipelines.redo", input, requestId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID() }, actor) as Promise<any>;
+    const first = await redo({ ...expected, expectedGraphRevision: 5, expectedLayoutRevision: 3 });
+    expect(first.record.document.nodes.some((node: any) => node.id === "agent")).toBe(false);
+    expect(first.record).toMatchObject({ graphRevision: 6, layoutRevision: 4 });
+    const second = await redo({ ...expected, expectedGraphRevision: 6, expectedLayoutRevision: 4 });
+    expect(second.record.document.name).toBe("Second");
+    expect(second.record).toMatchObject({ graphRevision: 7, layoutRevision: 4 });
+    await expect(redo({ ...expected, expectedGraphRevision: 7, expectedLayoutRevision: 4 })).rejects.toMatchObject({ code: "NOTHING_TO_REDO" });
+  });
+  it("clears persisted redo state after a new edit", async () => {
+    const { call } = await fixture();
+    await call("pipelines.patch", { ...expected, edits: [{ op: "rename", name: "First" }] });
+    await call("pipelines.undo", { ...expected, expectedGraphRevision: 2, expectedLayoutRevision: 1 });
+    await call("pipelines.patch", { ...expected, expectedGraphRevision: 3, expectedLayoutRevision: 1, edits: [{ op: "rename", name: "Replacement" }] });
+    await expect(call("pipelines.redo", { ...expected, expectedGraphRevision: 4, expectedLayoutRevision: 1 })).rejects.toMatchObject({ code: "NOTHING_TO_REDO" });
   });
   it("validates structure without pretending external execution is available", async () => {
     const { call } = await fixture();

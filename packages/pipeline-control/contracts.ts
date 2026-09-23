@@ -34,6 +34,7 @@ export const pipelineCommands = {
   "pipelines.validate": { input: target, output: z.object({ issues: z.array(z.object({ code: z.string(), message: z.string(), nodeId: z.string().optional() })), order: z.array(z.string()), executable: z.literal(false) }), readOnly: true, description: "校验 DAG、端口与参数；不代表真实资源就绪，当前不可远端执行。" },
   "pipelines.history": { input: target, output: z.object({ items: z.array(z.object({ id: identifier, command: z.string(), actorId: identifier, at: z.string(), graphRevision: revision, layoutRevision: revision, summary: z.array(z.string()) })) }), readOnly: true, description: "读取最近 50 次草稿变更记录。" },
   "pipelines.undo": { input: expected, output: resultSchema, readOnly: false, description: "撤销最新一批草稿修改；修订号保持递增，不撤销外部任务。" },
+  "pipelines.redo": { input: expected, output: resultSchema, readOnly: false, description: "重做最近撤销的一批草稿修改；新的普通写入会清空重做栈。" },
 } as const;
 export type PipelineCommand = keyof typeof pipelineCommands;
 export type PipelineOutput<N extends PipelineCommand> = z.infer<(typeof pipelineCommands)[N]["output"]>;

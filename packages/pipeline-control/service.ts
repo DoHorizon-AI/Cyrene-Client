@@ -7,9 +7,10 @@ import { pipelineCommands, pipelineRequest, recordSchema, type PipelineCommand, 
 import { arrange } from "./layout";
 
 const historyEntry = z.object({ id: z.string(), workspaceId: z.string(), pipelineId: z.string(), command: z.string(), actorId: z.string(), at: z.string(), graphRevision: z.number(), layoutRevision: z.number(), summary: z.array(z.string()), before: recordSchema.nullable(), undone: z.boolean() });
-export const pipelineDatabase = z.object({ version: z.literal(1), records: z.array(recordSchema), history: z.array(historyEntry), receipts: z.array(z.object({ key: z.string(), fingerprint: z.string(), result: z.object({ record: recordSchema, summary: z.array(z.string()) }) })) }).strict();
+const redoEntry = z.object({ workspaceId: z.string(), pipelineId: z.string(), document: recordSchema.shape.document, targetHistoryId: z.string() });
+export const pipelineDatabase = z.object({ version: z.literal(1), records: z.array(recordSchema), history: z.array(historyEntry), redo: z.array(redoEntry).default([]), receipts: z.array(z.object({ key: z.string(), fingerprint: z.string(), result: z.object({ record: recordSchema, summary: z.array(z.string()) }) })) }).strict();
 export type PipelineDatabase = z.infer<typeof pipelineDatabase>;
-export const emptyPipelineDatabase = (): PipelineDatabase => ({ version: 1, records: [], history: [], receipts: [] });
+export const emptyPipelineDatabase = (): PipelineDatabase => ({ version: 1, records: [], history: [], redo: [], receipts: [] });
 export interface PipelineStore { read(): Promise<PipelineDatabase>; transact<T>(operation: (db: PipelineDatabase) => T): Promise<T> }
 const graphOf = ({ presentation: _, ...graph }: Pipeline) => graph;
 export function equal(a: unknown, b: unknown): boolean {
@@ -118,9 +119,26 @@ export class PipelineControl {
         } else if (name === "pipelines.layout") { this.revisions(before, args, true, true); document = layout!; }
         else if (name === "pipelines.undo") {
           this.revisions(before, args, true, true);
-          const last = [...data.history].reverse().find(h => h.workspaceId === args.workspaceId && h.pipelineId === args.pipelineId && !h.undone && h.command !== "pipelines.undo");
+          const last = [...data.history].reverse().find(h => h.workspaceId === args.workspaceId && h.pipelineId === args.pipelineId && !h.undone && h.command !== "pipelines.undo" && h.command !== "pipelines.redo");
           if (!last?.before) throw new ControlError("NOTHING_TO_UNDO", "没有可撤销的修改。", 409);
           document = last.before.document; last.undone = true;
+          const matching = data.redo.flatMap((entry, index) => entry.workspaceId === args.workspaceId && entry.pipelineId === args.pipelineId ? [index] : []);
+          if (matching.length >= 50) data.redo.splice(matching[0], 1);
+          data.redo.push({ workspaceId: args.workspaceId, pipelineId: args.pipelineId, document: structuredClone(before.document), targetHistoryId: last.id });
+        }
+        else if (name === "pipelines.redo") {
+          this.revisions(before, args, true, true);
+          let index = -1;
+          for (let candidate = data.redo.length - 1; candidate >= 0; candidate--) {
+            const entry = data.redo[candidate];
+            if (entry.workspaceId === args.workspaceId && entry.pipelineId === args.pipelineId) { index = candidate; break; }
+          }
+          if (index < 0) throw new ControlError("NOTHING_TO_REDO", "没有可重做的修改。", 409);
+          const redo = data.redo[index];
+          const target = [...data.history].reverse().find(entry => entry.workspaceId === args.workspaceId && entry.pipelineId === args.pipelineId && entry.id === redo.targetHistoryId);
+          if (!target?.undone) throw new ControlError("NOTHING_TO_REDO", "没有可重做的修改。", 409);
+          document = validDocument(structuredClone(redo.document)); target.undone = false;
+          data.redo.splice(index, 1);
         }
       }
       const record: PipelineRecord = {
@@ -131,6 +149,7 @@ export class PipelineControl {
       };
       const summary = changes(before?.document, document), result = { record, summary };
       if (before) data.records[data.records.indexOf(before)] = record; else data.records.push(record);
+      if (before && name !== "pipelines.undo" && name !== "pipelines.redo" && (record.graphRevision !== before.graphRevision || record.layoutRevision !== before.layoutRevision)) data.redo = data.redo.filter(entry => entry.workspaceId !== input.workspaceId || entry.pipelineId !== document.id);
       if (!before || record.graphRevision !== before.graphRevision || record.layoutRevision !== before.layoutRevision) data.history.push({ id: request.requestId, workspaceId: input.workspaceId, pipelineId: document.id, command: name, actorId: actor.id, at: record.updatedAt, graphRevision: record.graphRevision, layoutRevision: record.layoutRevision, summary, before: before ?? null, undone: false });
       data.receipts.push({ key, fingerprint, result });
       return result;
