@@ -36,7 +36,7 @@ export function PipelineControls(props: Props) {
             setBase(result); setRemote(null); live.current.onLoad(result.document); live.current.onNotice(`已同步 ${result.updatedBy} 的修改：流程 v${result.graphRevision} / 布局 v${result.layoutRevision}`);
           } else setRemote(result);
         }
-      } catch { /* Explicit actions report errors; background polling preserves local work. */ }
+      } catch { /* Explicit actions report errors; background polling preserves local work. 显式操作会报告错误；后台轮询保留本地工作。 */ }
       finally { pending = false; }
     };
     const timer = window.setInterval(() => void poll(), 2500);

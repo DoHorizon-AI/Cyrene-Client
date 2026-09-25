@@ -68,6 +68,7 @@ export function snapshotGraph(graph: LGraph, base: Pipeline): Pipeline {
     return { id: old?.id ?? crypto.randomUUID(), from: { node: source.id, port: output }, to: { node: target.id, port: input } };
   });
   // Preserve authored order across loading, independent of LiteGraph registration order.
+  // 加载时保留文档中定义的顺序，不受 LiteGraph 注册顺序影响。
   const rank = new Map(base.nodes.map((n, i) => [n.id, i]));
   nodes.sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity));
   const edgeRank = new Map(base.edges.map((e, i) => [e.id, i]));

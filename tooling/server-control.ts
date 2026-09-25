@@ -17,6 +17,7 @@ export function controlMiddleware(control: { execute(raw: unknown, actor: import
     try {
       // Development boundary only: loopback Host, same Origin, and per-process
       // CSRF token. The future HTTP/MCP adapter must supply authenticated actors.
+      // 仅用于开发边界：loopback Host、同源校验和进程级 CSRF token。未来的 HTTP/MCP adapter 必须提供经过身份验证的 actor。
       const host = req.headers.host ?? "";
       if (!/^(127\.0\.0\.1|localhost|\[::1\]):\d+$/.test(host) ||
         (req.headers.origin && req.headers.origin !== `http://${host}`) || req.headers["sec-fetch-site"] === "cross-site") throw new ControlError("FORBIDDEN", "仅允许本机同源访问。", 403);

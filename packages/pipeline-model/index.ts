@@ -79,6 +79,7 @@ export function inspect(p: Pipeline): { issues: Issue[]; order: string[] } {
 }
 
 // Incomplete drafts can be restored; malformed or lossy imports are rejected.
+// 允许恢复未完成的草稿；拒绝格式错误或存在信息损失的导入内容。
 export function parsePipeline(value: unknown): Pipeline {
   const p = pipelineSchema.parse(value);
   const errors = inspect(p).issues.filter((i) => i.code !== "MISSING_INPUT" && i.code !== "EMPTY" && i.code !== "CYCLE");

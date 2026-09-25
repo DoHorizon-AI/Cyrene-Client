@@ -45,6 +45,7 @@ describe("RFC 9457 Problem Details and W3C correlation handling in Studio", () =
     expect(serviceError.retryable).toBe(false);
 
     // Formatted diagnostic summary includes message, recoveryAction, requestId, traceId
+    // 格式化的诊断摘要包含 message、recoveryAction、requestId 和 traceId。
     const summary = formatDiagnosticSummary(serviceError);
     expect(summary).toContain("资源或设置接口不存在。");
     expect(summary).toContain("PRODUCT.CATALYST.DATASET_NOT_FOUND");

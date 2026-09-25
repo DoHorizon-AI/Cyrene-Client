@@ -2,6 +2,7 @@ import { z } from "zod";
 
 // Projections of the inspected Product contracts. Unknown response fields are
 // discarded; only explicitly supported settings can enter a pipeline document.
+// 这是根据已检查的 Product 合约构建的投影。丢弃响应中的未知字段；只有明确支持的设置才能进入流程文档。
 export const artifactSchema = z.object({
   uri: z.string().regex(/^artifact:\/\/sha256\/[0-9a-f]{64}$/),
   digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
@@ -61,6 +62,7 @@ export const hostStatusSchema = z.object({
   proxyPrefixes: z.array(z.string()), observedAt: z.string(),
   gpu: z.object({ available: z.boolean(), gpus: z.array(z.object({ name: z.string(), totalMib: z.number(), usedMib: z.number(), utilizationPct: z.number() })).optional() }).optional(),
   // Published by newer Web Hosts; optional so an older host still validates.
+  // 由较新的 Web Host 发布；设为可选，以便旧版 Host 仍能通过校验。
   gatewayBaseUrl: z.string().optional(),
   bootstrapState: z.object({ state: z.string(), source: z.string().optional(), completedAt: z.string().nullish() }).optional(),
   runtime: z.object({ releaseLock: z.string().nullable().optional(), engines: z.record(z.string(), z.string()).optional(), cudaProfile: z.string().optional() }).optional(),
