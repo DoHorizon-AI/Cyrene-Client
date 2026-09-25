@@ -36,6 +36,19 @@ export function controlMiddleware(control: { execute(raw: unknown, actor: import
       send(res, 200, { result });
     } catch (e) {
       const err = e instanceof ControlError ? e : e instanceof z.ZodError ? new ControlError("INVALID_INPUT", "请求或登记数据不符合契约。") : new ControlError("STORE_ERROR", "无法读取或保存登记库；已有文件未被重置。", 500);
+      console.error(JSON.stringify({
+        schema_version: 1,
+        timestamp: new Date().toISOString(),
+        level: "ERROR",
+        "event.name": "studio.control.error",
+        "service.name": "cyrene-studio",
+        message: err.message,
+        attributes: {
+          "error.code": `STUDIO.CONTROL.${err.code}`,
+          url: req.url,
+          status: err.status,
+        },
+      }));
       send(res, err.status, { error: { code: err.code, message: err.message } });
     }
   };

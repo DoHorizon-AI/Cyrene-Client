@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { logError } from "../logger";
 import {
   bindingSchema, datasetSchema, datasetVersionSchema, hostStatusSchema, modelImportSchema,
   navigatorSessionsSchema, pathId, sessionSchema, suiteInputSchema, suiteSchema, trainingConfigurationSchema, trainingDraftSchema,
@@ -30,7 +31,33 @@ export class ServiceError extends Error {
     this.requestId = diagnostics?.requestId;
     this.recoveryAction = diagnostics?.recoveryAction;
     this.retryable = diagnostics?.retryable;
+
+    try {
+      logError("studio.service.request_failed", code, message, {
+        status,
+        trace_id: diagnostics?.traceId,
+        request_id: diagnostics?.requestId,
+        recovery_action: diagnostics?.recoveryAction,
+        retryable: diagnostics?.retryable,
+      });
+    } catch {
+      // logging failure should never break error propagation
+      // 日志记录失败不得中断错误传播。
+    }
   }
+}
+
+/**
+ * Route shape for diagnostics.
+ *
+ * Resource ids are legitimate log attributes, but these clients only need the
+ * route shape, so id-looking segments are replaced before a record is written.
+ *
+ * 用于诊断记录的路由形态。resource ID 可以作为合法日志属性，但这些客户端只需要路由形态，
+ * 因此写入记录前会将类似 ID 的路径段替换为占位符。
+ */
+function pathShape(path: string): string {
+  return path.split("/").map((segment) => (/^[0-9a-f-]{8,}$/i.test(segment) ? ":id" : segment)).join("/");
 }
 
 export function formatDiagnosticSummary(error: ServiceError): string {
@@ -136,7 +163,16 @@ export class SettingsClient {
     catch (e) {
       if (!(e instanceof ServiceError) || e.status !== 401 || signal?.aborted) throw e;
       try { if (!(await this.refresh()).authenticated) throw e; }
-      catch { this.csrf = null; this.onExpired?.(); throw e; }
+      catch {
+        this.csrf = null;
+        logError("studio.services.session_refresh_failed", "STUDIO.SESSION.REFRESH_FAILED", "设置会话刷新失败，请求未重试。", {
+          path_shape: pathShape(path),
+          http_status: 401,
+          outcome: "rejected",
+        });
+        this.onExpired?.();
+        throw e;
+      }
       return this.request(path, schema, { signal }, traceId);
     }
   }

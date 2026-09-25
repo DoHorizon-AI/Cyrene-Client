@@ -3,6 +3,7 @@ import type { Pipeline } from "../../../../packages/pipeline-model";
 import type { PipelineRecord } from "../../../../packages/pipeline-control/contracts";
 import { mergeSaveAcknowledgement } from "../../../../packages/pipeline-control/merge";
 import { pipelineClient as client } from "./client";
+import { logError } from "../logger";
 import "./pipelines.css";
 
 const graph = ({ presentation: _, ...p }: Pipeline) => p;
@@ -46,7 +47,12 @@ export function PipelineControls(props: Props) {
     if (locked || inflight.current) return;
     inflight.current = true; setBusy(true);
     try { await fn(); }
-    catch (e) { live.current.onNotice(`操作未完成：${e instanceof Error ? e.message : String(e)}`); }
+    catch (e) {
+      logError("studio.pipelines.action_failed", "STUDIO.PIPELINES.ACTION_FAILED", e instanceof Error ? e.message : String(e), {
+        cause_kind: e instanceof Error ? e.name : typeof e,
+      });
+      live.current.onNotice(`操作未完成：${e instanceof Error ? e.message : String(e)}`);
+    }
     finally { inflight.current = false; setBusy(false); }
   }
   async function save() {

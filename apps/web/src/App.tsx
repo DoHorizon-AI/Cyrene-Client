@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Component, useEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type ReactNode } from "react";
 import { catalog, definitions } from "../../../packages/pipeline-model/catalog";
 import { examplePipeline, inspect, parsePipeline, type Pipeline, type PipelineNode } from "../../../packages/pipeline-model";
 import { GraphCanvas, type GraphHandle } from "./graph/GraphCanvas";
@@ -11,12 +11,57 @@ import { PipelineControls } from "./pipelines/PipelineControls";
 
 import { Icon, Menu, ResizeHandle, useIdeLayout } from "./ide/Chrome";
 import { FilePanel, AssistantPanel, PluginPanel } from "./ide/Panels";
+import { logError } from "./logger";
 
 const STORAGE_KEY = "cyrene.studio.prototype.v1.draft";
 const MAX_FILE_BYTES = 1024 * 1024;
 type Tab = "checks" | "preview" | "log";
 
-export function App() {
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error?: Error;
+}
+
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    logError(
+      "studio.unhandled_error",
+      "STUDIO.REACT_RENDER_ERROR",
+      error.message || "React render error",
+      {
+        componentStack: errorInfo.componentStack,
+        stack: error.stack,
+      }
+    );
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 24, color: "#e06c75", fontFamily: "sans-serif" }}>
+          <h2>应用发生未捕获错误</h2>
+          <pre>{this.state.error?.message}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AppView() {
   const { layout, setLayout, left, right, reset } = useIdeLayout();
   const [serverVisited, setServerVisited] = useState(false);
   const [editorTab, setEditorTab] = useState<"graph" | "source" | "file">("graph");
@@ -69,6 +114,47 @@ export function App() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
   useEffect(() => {
+    const handleGlobalError = (event: ErrorEvent) => {
+      logError(
+        "studio.unhandled_error",
+        "STUDIO.UNHANDLED_ERROR",
+        event.message || "Unhandled window error",
+        {
+          filename: event.filename,
+          lineno: event.lineno,
+          colno: event.colno,
+          stack: event.error?.stack,
+        }
+      );
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      const message =
+        reason instanceof Error
+          ? reason.message
+          : typeof reason === "string"
+          ? reason
+          : "Unhandled promise rejection";
+      logError(
+        "studio.unhandled_rejection",
+        "STUDIO.UNHANDLED_REJECTION",
+        message,
+        {
+          stack: reason instanceof Error ? reason.stack : undefined,
+        }
+      );
+    };
+
+    window.addEventListener("error", handleGlobalError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+
+    return () => {
+      window.removeEventListener("error", handleGlobalError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, []);
+  useEffect(() => {
     if (!running) return;
     if (cursor >= plan.length) { setRunning(false); setNotice("本地预演完成：已遍历依赖顺序，未执行训练、评估或部署。"); return; }
     const timer = window.setTimeout(() => setCursor((c) => c + 1), 450);
@@ -108,7 +194,14 @@ export function App() {
     if (selectedId && p.nodes.some(n => n.id === selectedId)) editor.current!.select(selectedId);
   }
   function snapshot() { return { ...editor.current!.snapshot(), name: pipeline.name }; }
-  function error(e: unknown) { setNotice(`操作未完成：${e instanceof Error ? e.message : String(e)}`); }
+  function error(e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logError("studio.action.failed", "STUDIO.ACTION.FAILED", msg, {
+      cause_kind: e instanceof Error ? e.name : typeof e,
+      stack: e instanceof Error ? e.stack : undefined,
+    });
+    setNotice(`操作未完成：${msg}`);
+  }
   function replace(p: Pipeline, message: string) {
     if (dirty && !window.confirm("当前流程有未保存修改，是否替换？")) return;
     applyDocument(p); setSelectedId(null); setRunning(false); setPlan([]); setCursor(0); setEditorTab("graph");
@@ -250,4 +343,12 @@ export function App() {
     <footer className="footer ide-statusbar"><p role="status" title={notice}>{notice}</p><div><span>{hostStatus ? "Web Host 已连接" : "Web Host 未连接"}</span><span>UTF-8</span><span>JSON</span><span>Cyrene Studio</span></div></footer>
     <input hidden ref={fileInput} type="file" accept=".json,application/json" aria-label="导入流程文件" onChange={e => void importJson(e.target.files?.[0])} />
   </div>;
+}
+
+export function App() {
+  return (
+    <ErrorBoundary>
+      <AppView />
+    </ErrorBoundary>
+  );
 }
