@@ -2,6 +2,7 @@ import { menuAction } from "./ide-helpers";
 import { expect, test, type Page } from "@playwright/test";
 
 // Inspect the canvas instance attached by LiteGraph itself; no test-only app API.
+// 检查 LiteGraph 自身挂载的画布实例；不依赖仅供测试使用的应用 API。
 async function canvasNode(page: Page, id: string, part: "title" | "input" | "output" = "title", slot = 0) {
   return page.locator("canvas").evaluate((el, args) => {
     const canvas = el as HTMLCanvasElement & { data: any };
@@ -41,6 +42,7 @@ test("editing, persistence, typed connections and a local-only preview", async (
   await page.getByRole("button", { name: "适应画布", exact: true }).click();
 
   // An incompatible model -> dataset connection cannot replace a typed input.
+  // 不兼容的 model → dataset 连线不能替换带类型约束的输入端口。
   const source = await canvasNode(page, "model", "output", 0), incompatible = await canvasNode(page, "training", "input", 0);
   await page.mouse.move(source.x, source.y); await page.mouse.down(); await page.mouse.move(incompatible.x, incompatible.y, { steps: 8 }); await page.mouse.up();
   await expect(page.getByText("结构检查通过")).toBeVisible();

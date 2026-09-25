@@ -13,6 +13,7 @@ export interface RegistryStore {
 }
 // Implementations resolve preconfigured connectionRef values on the server.
 // Credentials, endpoints and Platform wire protocols do not enter graph documents.
+// 实现应在服务端解析预先配置的 connectionRef。凭据、端点和 Platform 线协议不会进入流程图文档。
 export interface ServerObserver { read(server: ServerRecord, actor: Actor): Promise<Observation> }
 export class ServerControl {
   constructor(private store: RegistryStore, private observers: ReadonlyMap<string, ServerObserver> = new Map()) {}
@@ -44,6 +45,7 @@ export class ServerControl {
     }
     if (!request.idempotencyKey) throw new ControlError("IDEMPOTENCY_REQUIRED", "写操作需要幂等键。");
     // Parsed object ordering is stable, including nested spec fields.
+    // 解析后的对象顺序保持稳定，包括嵌套的 spec 字段。
     const key = JSON.stringify([actor.id, input.workspaceId, request.idempotencyKey]);
     const fingerprint = JSON.stringify([request.name, input]);
     return this.store.transact(db => {

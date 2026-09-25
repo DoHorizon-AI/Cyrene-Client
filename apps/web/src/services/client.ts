@@ -46,6 +46,9 @@ export function formatDiagnosticSummary(error: ServiceError): string {
  * The trace id is 16 random bytes and the span id 8; neither may be all zeros,
  * so the leading nibble is forced non-zero. The Web Host forwards `traceparent`
  * unchanged, which is what makes one browser action followable end to end.
+ *
+ * W3C trace 上下文辅助函数。trace ID 由 16 个随机字节组成，span ID 由 8 个组成；二者都不能全为零，
+ * 因此会将首个 nibble 强制设为非零。Web Host 原样转发 `traceparent`，让一次浏览器操作能够端到端追踪。
  */
 function randomHex(bytes: number): string {
   const buffer = crypto.getRandomValues(new Uint8Array(bytes));
@@ -127,6 +130,7 @@ export class SettingsClient {
   private async read<T extends z.ZodTypeAny>(path: string, schema: T, signal?: AbortSignal): Promise<z.infer<T>> {
     // One trace id per operation: a refresh-and-retry keeps the same trace so the
     // two attempts stay linkable, while each attempt carries its own span.
+    // 每个操作使用一个 trace ID：刷新并重试时保留同一 trace，以关联两次尝试；每次尝试仍使用各自的 span。
     const traceId = newTraceId();
     try { return await this.request(path, schema, { signal }, traceId); }
     catch (e) {
@@ -146,6 +150,7 @@ export class SettingsClient {
     }
     // W3C trace context: the Web Host forwards this unchanged, so one browser
     // action is followable through every Product it touches.
+    // W3C trace 上下文会由 Web Host 原样转发，因此一次浏览器操作可以贯穿其访问的所有 Product。
     if (!headers.has("traceparent")) {
       headers.set("traceparent", formatTraceparent(traceId ?? newTraceId(), newSpanId()));
     }
@@ -177,6 +182,7 @@ export class SettingsClient {
         retryable: problem.data.retryable,
       } : {};
       // No arbitrary upstream payloads (possibly containing credentials) enter UI errors.
+      // UI 错误不会包含任意上游载荷（其中可能含有凭据）。
       const text: Record<number, string> = { 401: "会话已过期，请重新连接或配对。", 403: "没有此接口权限，或 Web Host 未开放该服务。", 404: "资源或设置接口不存在。", 409: "资源状态已变化，请重新读取。", 422: "服务端拒绝了设置参数。", 502: "Web Host 无法访问目标服务。", 503: "服务尚未配置或暂不可用。" };
       if (response.status === 401 && method !== "GET" && !path.startsWith("/api/v1/auth/")) this.onExpired?.();
       throw new ServiceError(code, `${text[response.status] ?? "服务请求失败。"}（${code}）`, response.status, diagnostics);

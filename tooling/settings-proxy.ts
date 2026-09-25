@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 // Allow only settings operations in this development bridge. In particular,
 // /actions/start, /actions/deploy and arbitrary cloud/provider URLs are absent.
+// 此开发桥接层仅允许设置相关操作。尤其不开放 /actions/start、/actions/deploy 或任意云服务商 URL。
 export function allowedSettingsRequest(method: string, pathname: string) {
   const rules: [string, RegExp][] = [
     ["GET", /^\/api\/v1\/(auth\/session|system\/status)$/],
