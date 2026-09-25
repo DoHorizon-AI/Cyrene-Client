@@ -32,6 +32,8 @@ jobs:
 
       - name: Build Native Host & Installer
         working-directory: apps/win
+        env:
+          CYRENE_DEFAULT_EXCHANGE_URL: ${{ secrets.CYRENE_EXCHANGE_URL || vars.CYRENE_EXCHANGE_URL || '' }}
         run: |
           cargo build --release --workspace
 
