@@ -87,6 +87,15 @@ npm run check
 
 自动测试覆盖本地 HTTP、流水线事务、布局和真实 stdio MCP 握手；浏览器覆盖原有交互与服务端版本同步。服务器登记及流水线测试使用真实本地文件/API；Product 设置测试使用显式 fixtures，不能作为真实 Product 已连通的证据。测试不访问真实 Product 或云厂商。当前结果见 [流水线编辑与 MCP](docs/pipeline-editing-mcp.md)。
 
+## Apps
+
+| Path | Role |
+| --- | --- |
+| `apps/web/` | Pipeline IDE and Studio prototype |
+| `apps/navigator/` | Navigator operations console (Overview, Models, Datasets, Training, Runs, Deployments, Gateway, Chat, Settings) |
+| `apps/mcp/` | MCP stdio entry point |
+| `apps/native-win/` | WinUI 3 native desktop client |
+
 ## 文件与边界
 
 | 路径 | 职责 |
