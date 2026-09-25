@@ -32,12 +32,12 @@ export function AssistantPanel({ document, selectedId, onNotice }: { document: P
     catch (e) { setError(e instanceof Error ? e.message : "无法读取工具目录。"); } finally { setBusy(false); }
   }
   async function copy() {
-    try { await navigator.clipboard.writeText(`请通过 Cyrene Studio MCP 操作工作空间 local 中的流程 ${document.id}。${selectedId ? `当前选中节点：${selectedId}。` : ""}\n先读取服务端最新版本并校验。\n\n${prompt}`); onNotice("任务与流程上下文已复制，可粘贴到已连接 Studio MCP 的 AI 客户端。"); }
+    try { await navigator.clipboard.writeText(`请通过 Cyrene Client MCP 操作工作空间 local 中的流程 ${document.id}。${selectedId ? `当前选中节点：${selectedId}。` : ""}\n先读取服务端最新版本并校验。\n\n${prompt}`); onNotice("任务与流程上下文已复制，可粘贴到已连接 Client MCP 的 AI 客户端。"); }
     catch { onNotice("剪贴板不可用，可手动选择任务文字复制。"); }
   }
   return <section className="ide-assistant"><div className="ide-assistant-head"><Icon name="assistant" /><h3>一起构建下一步</h3><p>把想法变成可编辑的流水线。</p></div>
     <div className="ide-context-chip"><Icon name="nodes" /><span>{document.id}</span></div>{selectedId && <div className="ide-context-node">节点上下文 · {selectedId}</div>}
-    <div className="ide-assistant-note"><span className="ide-status-dot" /> MCP 编辑工具已提供<p>内置对话模型尚未配置。先将当前流程保存到服务端，再将任务复制到已连接 Studio MCP 的 AI 客户端。没有本地冲突时，画布会同步服务端修改。</p></div>
+    <div className="ide-assistant-note"><span className="ide-status-dot" /> MCP 编辑工具已提供<p>内置对话模型尚未配置。先将当前流程保存到服务端，再将任务复制到已连接 Client MCP 的 AI 客户端。没有本地冲突时，画布会同步服务端修改。</p></div>
     <button className="ide-text-action" disabled={busy} onClick={() => void loadTools()}>{busy ? "读取中…" : "查看可用工具"}</button>
     {!!tools.length && <div className="ide-tool-list">{tools.map(t => <div key={t.name}><code>{t.name}</code><small>{t.readOnly ? "读取" : "编辑"}</small></div>)}</div>}{error && <p className="ide-error">{error}</p>}
     <div className="ide-prompt-box"><label htmlFor="assistant-task">任务草稿</label><textarea id="assistant-task" value={prompt} maxLength={4000} onChange={e => setPrompt(e.target.value)} placeholder="例如：添加第二组训练参数对比，保留现有节点位置…" /><div><span>附带流程与节点引用</span><button disabled={!prompt.trim()} onClick={() => void copy()}>复制任务与上下文 ↗</button></div></div>

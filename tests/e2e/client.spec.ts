@@ -58,7 +58,7 @@ test("editing, persistence, typed connections and a local-only preview", async (
   await page.getByRole("button", { name: /流程检查/ }).click();
   await page.locator(".node-list").getByRole("button", { name: /模型微调/ }).click();
   await page.getByRole("button", { name: "适应画布", exact: true }).click();
-  await page.screenshot({ path: "test-results/studio-desktop.png", fullPage: true });
+  await page.screenshot({ path: "test-results/client-desktop.png", fullPage: true });
 });
 
 test("invalid import preserves current work; a valid export can be imported", async ({ page }) => {
@@ -95,7 +95,7 @@ test("narrow viewport keeps document controls accessible", async ({ page }) => {
   await page.getByRole("button", { name: "文件", exact: true }).click();
   await expect(page.getByRole("button", { name: "导出 JSON", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: "test-results/studio-narrow.png", fullPage: true });
+  await page.screenshot({ path: "test-results/client-narrow.png", fullPage: true });
 });
 
 test("a newly added dataset can reconnect required ports through pointer interaction", async ({ page }) => {

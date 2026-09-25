@@ -18,7 +18,7 @@ test("real server registry: create, edit, query, bind, persist, archive", async 
   await dialog.getByLabel("服务器名称").fill(`${name}-更新`);
   await dialog.getByRole("button", { name: "保存服务器登记" }).click();
   await expect(dialog.getByText(/修订 2/).first()).toBeVisible();
-  await page.screenshot({ path: "test-results/studio-servers.png", fullPage: true });
+  await page.screenshot({ path: "test-results/client-servers.png", fullPage: true });
   await page.getByRole("button", { name: "关闭服务器管理" }).click();
   await page.locator(".node-list summary").click();
   await page.locator(".node-list").getByRole("button", { name: /算力配置/ }).click();

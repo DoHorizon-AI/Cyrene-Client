@@ -12,6 +12,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../../.."))
+
+function Resolve-RepoPath([string]$Path) {
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
+}
+
+$LayoutDir = Resolve-RepoPath $LayoutDir
+$OutputMsix = Resolve-RepoPath $OutputMsix
+
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "  Cyrene Installer Packaging Automation                   " -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
@@ -48,12 +61,12 @@ New-Item -ItemType Directory -Force -Path (Join-Path $LayoutDir "Assets") | Out-
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputMsix) | Out-Null
 
 # Copy Manifest and Assets
-Copy-Item "installer/AppxManifest.xml" -Destination (Join-Path $LayoutDir "AppxManifest.xml")
-Copy-Item "installer/Assets/*" -Destination (Join-Path $LayoutDir "Assets") -Recurse
+Copy-Item (Join-Path $PSScriptRoot "AppxManifest.xml") -Destination (Join-Path $LayoutDir "AppxManifest.xml")
+Copy-Item (Join-Path $PSScriptRoot "Assets/*") -Destination (Join-Path $LayoutDir "Assets") -Recurse
 
 # Copy compiled binaries
-$installerBin = "apps/native-win/target/release/installer.exe"
-$nativeHostBin = "apps/native-win/target/release/cyrene-native-host.exe"
+$installerBin = Join-Path $repoRoot "apps/win/target/release/installer.exe"
+$nativeHostBin = Join-Path $repoRoot "apps/win/target/release/cyrene-native-host.exe"
 
 if (Test-Path $installerBin) {
     Copy-Item $installerBin -Destination (Join-Path $LayoutDir "installer.exe")

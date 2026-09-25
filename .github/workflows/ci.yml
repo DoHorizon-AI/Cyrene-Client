@@ -1,4 +1,4 @@
-name: Studio CI
+name: Client CI
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: studio-ci-${{ github.workflow }}-${{ github.ref }}
+  group: client-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

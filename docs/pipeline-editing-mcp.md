@@ -4,7 +4,7 @@
 
 ## 页面使用
 
-1. 启动 Studio，在画布编辑流程。“文件 → 保存草稿”或 Ctrl/Cmd+S 保存浏览器副本；顶部“保存到服务端”写入 `.studio/pipelines.json`。
+1. 启动 Client，在画布编辑流程。“文件 → 保存草稿”或 Ctrl/Cmd+S 保存浏览器副本；顶部“保存到服务端”写入 `.studio/pipelines.json`。
 2. 在“文件”菜单中用“读取流程列表 → 选择流程 → 载入服务端流程”打开已有版本。创建时不覆盖同 ID 的已有流程。
 3. 点击顶部“自动排版”整理未锁定节点；“编辑 → 整理选中节点”只移动当前选中的一个节点。MCP 的 `nodeIds` 支持一次指定多个节点。
 4. “编辑 → 锁定节点位置”保留位置，解除锁定后可重新整理。排版只改变布局，不修改参数与连线语义。
@@ -22,18 +22,18 @@
 ```json
 {
   "mcpServers": {
-    "cyrene-studio": {
+    "cyrene-client": {
       "command": "node",
       "args": [
-        "C:/work/Cyrene-Services/Cyrene-Studio/node_modules/tsx/dist/cli.mjs",
-        "C:/work/Cyrene-Services/Cyrene-Studio/apps/mcp/main.ts"
+        "C:/work/Cyrene-Client/node_modules/tsx/dist/cli.mjs",
+        "C:/work/Cyrene-Client/apps/mcp/main.ts"
       ]
     }
   }
 }
 ```
 
-将示例中的 `C:/work/Cyrene-Services/Cyrene-Studio` 替换为实际克隆目录。MCP 默认使用 Studio 根目录的 `.studio`，与默认 Vite 入口共享文件。若给 Vite 配置了 `STUDIO_CONTROL_DATA_DIR`，MCP 也必须指向同一个绝对目录。
+将示例中的 `C:/work/Cyrene-Client` 替换为实际克隆目录。MCP 默认使用 Client 根目录的 `.studio`，与默认 Vite 入口共享文件。若给 Vite 配置了 `STUDIO_CONTROL_DATA_DIR`，MCP 也必须指向同一个绝对目录。
 
 本机 stdio 进程代表启动它的本地用户，工作空间固定为 `local`，写入来源记录为 `local-mcp`；它不接受调用方自报 actor。设置 `STUDIO_MCP_READ_ONLY=1` 可只暴露读取与布局预览工具。默认允许草稿编辑，连接客户端即授予这组本地编辑能力。
 

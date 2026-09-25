@@ -1,8 +1,8 @@
-# Cyrene Studio
+# Cyrene Client
 
 模块化流水线工作台的第一阶段原型。React + TypeScript + Vite 提供应用界面，LiteGraph 0.7.14 提供节点画布。
 
-公司仓库：[DoHorizon-AI/Cyrene-Studio](https://github.com/DoHorizon-AI/Cyrene-Studio)。默认开发分支为 `develop`；GitHub Actions 负责测试和构建，目前不部署服务或发布 npm 包。
+公司仓库：[DoHorizon-AI/Cyrene-Client](https://github.com/DoHorizon-AI/Cyrene-Client)。默认开发分支为 `develop`；GitHub Actions 负责测试和构建，目前不部署服务或发布 npm 包。
 
 **当前已接入节点设置客户端，流水线执行仍是本地预演。** 默认不配置服务地址；连接 Navigator Web Host 后，可读取节点资源设置，显式保存 Yield 草稿参数或另存 Echo 评估配置。不会申请 GPU、启动训练、部署模型或发送 Agent 消息。当前验证使用隔离接口测试，尚未完成真实运行环境联调。
 
@@ -11,8 +11,8 @@
 Node.js 22.12+，已在 Node.js 24 下验证。
 
 ```powershell
-git clone https://github.com/DoHorizon-AI/Cyrene-Studio.git
-cd Cyrene-Studio
+git clone https://github.com/DoHorizon-AI/Cyrene-Client.git
+cd Cyrene-Client
 npm ci
 npm run dev
 ```
@@ -35,7 +35,7 @@ npm run dev
 
 ## 服务器管理与 MCP 预留
 
-左侧工具栏的 **服务器管理** 可新增、编辑、筛选和归档自管服务器、容器算力、云平台托管资源的登记；算力节点可读取登记并选择目标。登记保存在 Studio 服务端的 `.studio/server-registry.json`，包含修订号、幂等回执和操作记录，刷新浏览器后仍在。
+左侧工具栏的 **服务器管理** 可新增、编辑、筛选和归档自管服务器、容器算力、云平台托管资源的登记；算力节点可读取登记并选择目标。登记保存在 Client 服务端的 `.studio/server-registry.json`，包含修订号、幂等回执和操作记录，刷新浏览器后仍在。
 
 当前完成的是资源登记，真实心跳、GPU 监控和云平台操作尚未接入；查询未配置的连接会明确显示“未连接”。连接标识是未来控制服务中的配置引用，不是服务器 URL，不填写密码或令牌。归档只影响登记，已有服务器不会被停止。
 
@@ -49,9 +49,9 @@ npm run dev
 STUDIO_NAVIGATOR_URL=http://127.0.0.1:8100
 ```
 
-重启 `npm run dev`，点击右上角“服务连接 → 检查连接”。如未登录，输入 **Web Host 启动时提供的一次性配对码**。配对码只进入当前请求，不写入本地草稿；会话采用 HttpOnly cookie 和内存中的 CSRF token。不要填写云厂商令牌。地址只由 Studio 服务端配置，节点 JSON 无法选择任意远端地址。
+重启 `npm run dev`，点击右上角“服务连接 → 检查连接”。如未登录，输入 **Web Host 启动时提供的一次性配对码**。配对码只进入当前请求，不写入本地草稿；会话采用 HttpOnly cookie 和内存中的 CSRF token。不要填写云厂商令牌。地址只由 Client 服务端配置，节点 JSON 无法选择任意远端地址。
 
-Web Host 需要按已有部署方式开放以下前缀，并配置对应 Product 的凭据；一般将前缀映射到各服务的 `/api/v1` 基址。Studio 不修改 Web Host 配置、不自动启动其他仓库服务。
+Web Host 需要按已有部署方式开放以下前缀，并配置对应 Product 的凭据；一般将前缀映射到各服务的 `/api/v1` 基址。Client 不修改 Web Host 配置、不自动启动其他仓库服务。
 
 | 节点 | Web Host 前缀 | 本轮能力 |
 | --- | --- | --- |
@@ -91,10 +91,17 @@ npm run check
 
 | Path | Role |
 | --- | --- |
-| `apps/web/` | Pipeline IDE and Studio prototype |
-| `apps/navigator/` | Navigator operations console (Overview, Models, Datasets, Training, Runs, Deployments, Gateway, Chat, Settings) |
-| `apps/mcp/` | MCP stdio entry point |
-| `apps/native-win/` | WinUI 3 native desktop client |
+| `apps/web/` | Primary browser client and shared web workbench |
+| `apps/web/services/<service>/` | Independently buildable web UI modules for Catalyst, Yield, Echo, Reactor, Exchange, and Navigator. Navigator is currently standalone; the other service screens remain in the shared workbench. |
+| `apps/win/` | Secondary Windows native client and installer. MSIX packaging exists; the WinUI client and module downloader are not implemented. |
+| `apps/mac/` | Deferred native macOS client; no implementation is planned in the current phase. |
+| `apps/cli/` | Secondary command-line client; module commands are future work. |
+| `apps/mcp/` | Local MCP stdio entry point for pipeline editing. |
+| `packages/` | Client packages shared across platforms; platform UI stays under its platform root. |
+
+The browser workbench is the current primary client. Shared web components live at the `apps/web/` layer, service-specific web applications live under `apps/web/services/`, and cross-platform client logic belongs in `packages/`. See [UI module and installer layout](docs/ui-module-layout.md) for the module boundaries, build commands, and planned download contract.
+
+Navigator can be checked independently with `npm run check:web:navigator`; the Windows installer crate has separate `npm run check:win:installer` and `npm run build:win:installer` commands. These are local package gates and are not part of the browser-only `npm run check` command.
 
 ## 文件与边界
 
@@ -117,7 +124,7 @@ npm run check
 | `tests/e2e/` | 真实浏览器中的画布交互、保存、导入导出和预演 |
 | `docs/adr/0001-isolated-prototype.md` | 本轮施工边界与后续服务接入顺序 |
 
-Studio 是独立仓库，可单独打开此目录开发；多仓库工作区将它挂载到 `Cyrene-Services/Cyrene-Studio`。Workspace 只保存拓扑和 IDE 挂载信息，不复制 Studio 源码。现有 Product 的业务代码和统一发布锁不因 Studio 原型上传而改变。
+Client 是独立仓库，可单独打开 `../Cyrene-Client` 开发；Workspace 只保存拓扑和 IDE 挂载信息，不复制 Client 源码。现有 Product 的业务代码和统一发布锁不因 Client 原型上传而改变。
 
 ## 下一阶段
 

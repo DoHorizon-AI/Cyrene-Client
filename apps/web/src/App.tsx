@@ -253,7 +253,7 @@ function AppView() {
   return <div className={`studio ide-studio ${layout.left ? "has-left" : ""} ${layout.right ? "has-right" : ""}`} style={css}>
     <PipelineControls document={pipeline} selectedId={selectedId} disabled={running} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} canRedo={redoCount > 0} onRedo={redoLocal} render={controls => <>
       <header className="ide-titlebar">
-        <div className="ide-brand" aria-label="Cyrene Studio">C<span>↗</span></div>
+        <div className="ide-brand" aria-label="Cyrene Client">C<span>↗</span></div>
         <nav className="ide-menubar" aria-label="主菜单">
           <Menu label="文件"><button aria-label="保存草稿" disabled={running} onClick={save}>保存草稿 <kbd>Ctrl S</kbd></button><button disabled={!savedDraft || running} onClick={restore}>载入草稿</button><button disabled={running} onClick={() => fileInput.current?.click()}>导入 JSON</button><button disabled={running} onClick={exportJson}>导出 JSON</button><hr />{controls.file}</Menu>
           <Menu label="编辑">{controls.edit}</Menu>
@@ -261,7 +261,7 @@ function AppView() {
           <Menu label="流程"><button disabled={running} onClick={() => { showChecks(); setNotice(validation.issues.length ? `发现 ${validation.issues.length} 个问题。` : "结构校验通过；真实资源可用性与业务门禁尚未验证。"); }}>校验流程</button><button disabled={running} onClick={() => replace(examplePipeline(), "已载入训练示例。")}>训练示例</button>{controls.history}</Menu>
           <Menu label="工具"><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}>事件日志</button><button onClick={() => { setEditorTab("source"); }}>查看流程 JSON</button><button onClick={() => right("assistant")}>MCP 工具与上下文</button></Menu>
         </nav>
-        <div className="ide-project-title">Cyrene Studio <span> / </span> <b>Local Workspace</b></div>
+        <div className="ide-project-title">Cyrene Client <span> / </span> <b>Local Workspace</b></div>
         <div className="ide-window-meta"><span className="ide-status-dot" /> 本地工作空间</div>
       </header>
       <div className="ide-main-toolbar"><div className="ide-document-name"><Icon name="nodes" /><input aria-label="流水线名称" maxLength={100} value={pipeline.name} disabled={running} onChange={e => recordChange({ ...pipeline, name: e.target.value })} /><span className="ide-dirty" title={dirty ? "本地有未保存修改" : "草稿"}>{dirty ? "●" : ""}</span></div><span className="ide-version">{controls.status}</span><div className="ide-toolbar-actions">{controls.toolbar}<button className="ide-run" onClick={preview} disabled={running}><Icon name="play" />本地预演</button><ConnectionPanel client={settingsClient} status={hostStatus} onConnected={setHostStatus} /></div></div>
@@ -340,7 +340,7 @@ function AppView() {
       </nav>
     </div>
     <div className="ide-bottom-bar"><button onClick={showChecks}><Icon name="check" />问题 {validation.issues.length ? `(${validation.issues.length})` : ""}</button><button onClick={() => { setTab("preview"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="play" />运行</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="log" />日志</button><span>{running ? "正在本地预演" : "远端任务监控尚未接入"}</span></div>
-    <footer className="footer ide-statusbar"><p role="status" title={notice}>{notice}</p><div><span>{hostStatus ? "Web Host 已连接" : "Web Host 未连接"}</span><span>UTF-8</span><span>JSON</span><span>Cyrene Studio</span></div></footer>
+    <footer className="footer ide-statusbar"><p role="status" title={notice}>{notice}</p><div><span>{hostStatus ? "Web Host 已连接" : "Web Host 未连接"}</span><span>UTF-8</span><span>JSON</span><span>Cyrene Client</span></div></footer>
     <input hidden ref={fileInput} type="file" accept=".json,application/json" aria-label="导入流程文件" onChange={e => void importJson(e.target.files?.[0])} />
   </div>;
 }

@@ -1,11 +1,11 @@
 # cyrene.ui.navigator / Navigator Web Console
 
-This package is the Plugins-owned home of the Cyrene Navigator web console.
+This package is the Cyrene Client home of the Navigator web console.
 The first RC rebuilds it as a React + TypeScript + Vite application served by
 the Navigator same-origin Web Host; it does not extend the retired
 API-probing preview shell that Navigator once carried.
 
-本软件包是 Cyrene Navigator Web 控制台的 Plugins 归属地。首个 RC 将以
+本软件包是 Cyrene Client 中 Cyrene Navigator Web 控制台的归属地。首个 RC 将以
 React + TypeScript + Vite 重建，并由 Navigator 同源 Web Host 托管；不会沿用
 Navigator 历史中仅探测 API 的预览页。
 
@@ -17,7 +17,7 @@ Navigator 历史中仅探测 API 的预览页。
 | Wave 0 | Directory restored with provenance |
 | Wave 1 | React + TypeScript + Vite console with same-origin Web Host session handling |
 | Wave 2 | Product adapters remain on Navigator proxy prefixes; owner contracts are read live |
-| Owner | Plugins (UI surfaces), Navigator (Conversation/AgentRun authority) |
+| Owner | Client (UI surface), Navigator (Conversation/AgentRun authority) |
 
 ## Planned surface / 计划界面
 
@@ -75,7 +75,7 @@ vanilla-TypeScript 预览 shell，完整旧客户端是 WinUI/C#，并非 Web �
 
 # cyrene.ui.navigator / Navigator Web Console
 
-本 package 是 Cyrene Navigator Web 控制台由 Plugins 持有的归属地。首个 RC 将使用 React、TypeScript 和 Vite 重建应用，并由 Navigator 同源 Web Host 提供服务；不会在已退役的 API 探测预览 shell 上继续扩展。
+本 package 是 Cyrene Client 中 Cyrene Navigator Web 控制台的归属地。首个 RC 使用 React、TypeScript 和 Vite 构建应用，并由 Navigator 同源 Web Host 提供服务；不会在已退役的 API 探测预览 shell 上继续扩展。
 
 ## 状态
 
@@ -85,7 +85,7 @@ vanilla-TypeScript 预览 shell，完整旧客户端是 WinUI/C#，并非 Web �
 | Wave 0 | 已根据来源记录恢复目录。 |
 | Wave 1 | React + TypeScript + Vite 控制台，使用同源 Web Host session 处理。 |
 | Wave 2 | Product adapter 仍通过 Navigator proxy 前缀访问；实时读取 owner contract。 |
-| Owner | Plugins 负责 UI surface，Navigator 负责 Conversation/AgentRun authority。 |
+| Owner | Client 负责 UI surface，Navigator 负责 Conversation/AgentRun authority。 |
 
 ## 计划界面
 

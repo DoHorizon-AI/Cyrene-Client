@@ -26,7 +26,7 @@ export const catalog: NodeDefinition[] = [
     defaults: { modelRef: "demo://models/base-1.5b" }, configSchema: z.object({ modelRef: text }).strict(),
   },
   {
-    type: "compute", version: "1", title: "算力配置", owner: "Studio / 待接入", category: "资源", color: "#daac66",
+    type: "compute", version: "1", title: "算力配置", owner: "Client / 待接入", category: "资源", color: "#daac66",
     description: "声明目标算力并查看 Web Host 本机 GPU；云算力分配尚未接入。",
     inputs: [], outputs: [{ name: "compute", label: "算力配置", kind: "compute" }],
     fields: [{ name: "provider", label: "目标环境", kind: "select", choices: ["本地资源池", "云算力平台", "自管服务器"] }, { name: "accelerator", label: "加速卡规格", kind: "text" }, { name: "count", label: "加速卡数量", kind: "number" }],

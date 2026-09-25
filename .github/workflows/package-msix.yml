@@ -22,7 +22,7 @@ jobs:
         shell: pwsh
 
     steps:
-      - name: Checkout Cyrene-Studio
+      - name: Checkout Cyrene-Client
         uses: actions/checkout@v4
 
       - name: Setup Rust toolchain
@@ -31,20 +31,20 @@ jobs:
           toolchain: 1.97.1-x86_64-pc-windows-msvc
 
       - name: Build Native Host & Installer
-        working-directory: apps/native-win
+        working-directory: apps/win
         run: |
           cargo build --release --workspace
 
       - name: Verify compiled binaries
         run: |
-          $installer = "apps/native-win/target/release/installer.exe"
+          $installer = "apps/win/target/release/installer.exe"
           if (-not (Test-Path $installer)) { throw "installer.exe was not built" }
           # cyrene-native-host.exe is built by the Cyrene-Navigator repository.
           Write-Host "Found compiled binary: $installer"
 
       - name: Package & Sign MSIX Installer
         run: |
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/windows/package-msix.ps1 `
+          pwsh -NoProfile -ExecutionPolicy Bypass -File apps/win/installer/package-msix.ps1 `
             -LayoutDir "dist/msix-layout" `
             -OutputMsix "dist/installer.msix"
 

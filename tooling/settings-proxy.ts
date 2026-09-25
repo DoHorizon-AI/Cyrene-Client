@@ -50,5 +50,5 @@ export function settingsBridge(target?: string): Plugin {
     if (!target) { respond(503, { code: "STUDIO_HOST_NOT_CONFIGURED" }); return; }
     next();
   };
-  return { name: "studio-settings-bridge", configureServer(server) { server.middlewares.use(middleware); }, configurePreviewServer(server) { server.middlewares.use(middleware); } };
+  return { name: "client-settings-bridge", configureServer(server) { server.middlewares.use(middleware); }, configurePreviewServer(server) { server.middlewares.use(middleware); } };
 }

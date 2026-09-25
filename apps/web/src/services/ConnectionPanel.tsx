@@ -20,7 +20,7 @@ export function ConnectionPanel({ client, status, onConnected }: Props) {
       const connection = await client.connection();
       if (!alive.current) return;
       setTarget(connection.target);
-      if (!connection.configured) throw new Error("尚未配置 Web Host。请按 README 在 Studio 的 .env.local 设置 STUDIO_NAVIGATOR_URL 并重启开发服务。");
+      if (!connection.configured) throw new Error("尚未配置 Web Host。请按 README 在 Client 的 .env.local 设置 STUDIO_NAVIGATOR_URL 并重启开发服务。");
       const session = pair ? await client.pair(code) : await client.session();
       if (!alive.current) return;
       setPairing(!session.authenticated);

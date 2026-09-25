@@ -79,7 +79,7 @@ test("MCP panel reads actual tools and copies task references without a model re
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied).toContain("instruction-tuning"); expect(copied).toContain("training"); expect(copied).toContain("增加评估节点");
   expect(requests).toEqual([]);
-  await page.screenshot({ path: "test-results/studio-ide-mcp.png", fullPage: true });
+  await page.screenshot({ path: "test-results/client-ide-mcp.png", fullPage: true });
 });
 
 test("narrow windows avoid overlapping docks and horizontal overflow", async ({ page }) => {
@@ -96,5 +96,5 @@ test("narrow windows avoid overlapping docks and horizontal overflow", async ({ 
     await page.setViewportSize({ width, height: 900 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
-  await page.screenshot({ path: "test-results/studio-ide-narrow.png", fullPage: true });
+  await page.screenshot({ path: "test-results/client-ide-narrow.png", fullPage: true });
 });

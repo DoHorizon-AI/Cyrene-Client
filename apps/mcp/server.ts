@@ -8,7 +8,7 @@ import { pipelineCommands } from "../../packages/pipeline-control/contracts";
 import { ControlError, identifier, type Actor } from "../../packages/server-control/contracts";
 
 export function createMcpServer(control: PipelineControl, actor: Actor) {
-  const server = new McpServer({ name: "cyrene-studio", version: "0.1.0" });
+  const server = new McpServer({ name: "cyrene-client", version: "0.1.0" });
   for (const [name, command] of Object.entries(pipelineCommands)) {
     if (command.readOnly && !actor.scopes.includes("pipelines.read")) continue;
     const writable = actor.scopes.includes("pipelines.write");

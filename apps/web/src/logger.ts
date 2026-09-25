@@ -1,12 +1,12 @@
 /**
  * ┌─────────────────────────────────────────────────────────────────────┐
  * │  📄 logger.ts                                                       │
- * │  Module: @cyrene/studio/logger                                      │
+ * │  Module: @cyrene/client/logger                                      │
  * │  Role: Structured NDJSON DevTools & console error emitter.          │
- * │  模块：@cyrene/studio/logger                                         │
+ * │  模块：@cyrene/client/logger                                         │
  * │  职责：向 DevTools 与控制台输出结构化 NDJSON 错误事件。                  │
  * │                                                                     │
- * │  模块职责：Studio 前端向控制台输出符合 Cyrene 规范的结构化错误日志。         │
+ * │  模块职责：Client 前端向控制台输出符合 Cyrene 规范的结构化错误日志。         │
  * └─────────────────────────────────────────────────────────────────────┘
  */
 
@@ -76,7 +76,7 @@ export function formatCyreneErrorLog(
     timestamp: new Date().toISOString(),
     level: "ERROR",
     "event.name": eventName,
-    "service.name": "cyrene-studio",
+    "service.name": "cyrene-client",
     "service.instance.id": INSTANCE_ID,
     message,
     attributes: rawAttrs,

@@ -65,7 +65,7 @@ test("persisted pipeline follows external edits while protecting unsaved work", 
   await expect(page.locator(".footer [role=status]")).toContainText("排版已应用");
   await page.getByRole("button", { name: "保存到服务端", exact: true }).click();
   await expect(page.locator(".footer [role=status]")).toContainText("布局 v2");
-  await page.screenshot({ path: "test-results/studio-pipeline-control.png", fullPage: true });
+  await page.screenshot({ path: "test-results/client-pipeline-control.png", fullPage: true });
   await page.reload();
   await page.getByRole("button", { name: "文件", exact: true }).click();
   await page.getByRole("button", { name: "读取流程列表", exact: true }).click();

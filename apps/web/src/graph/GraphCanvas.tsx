@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { LGraph, LGraphCanvas } from "litegraph.js/build/litegraph.core.js";
 import { createNode, type Pipeline, type PipelineNode } from "../../../../packages/pipeline-model";
-import { appendNode, editorNodes, loadGraph, snapshotGraph, type EditorGraph, type StudioNode } from "./adapter";
+import { appendNode, editorNodes, loadGraph, snapshotGraph, type EditorGraph, type ClientNode } from "./adapter";
 
 // Keep mutation entrypoints inside the adapter. Raw LiteGraph imports, clipboard,
 // property panels and menus would bypass the versioned document and node catalog.
@@ -137,8 +137,8 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
     graph.onConnectionChange = emit.current;
     graph.onNodeRemoved = emit.current;
     canvas.onNodeMoved = emit.current;
-    canvas.onSelectionChange = (selected) => callbacks.current.onSelect((Object.values(selected)[0] as StudioNode | undefined)?.properties.document.id ?? null);
-    canvas.onShowNodePanel = (node) => callbacks.current.onSelect((node as StudioNode).properties.document.id);
+    canvas.onSelectionChange = (selected) => callbacks.current.onSelect((Object.values(selected)[0] as ClientNode | undefined)?.properties.document.id ?? null);
+    canvas.onShowNodePanel = (node) => callbacks.current.onSelect((node as ClientNode).properties.document.id);
     const resize = () => { const box = container.current!.getBoundingClientRect(); canvas.resize(Math.floor(box.width), Math.floor(box.height)); };
     const observer = new ResizeObserver(resize); observer.observe(container.current!);
     resize(); fit();

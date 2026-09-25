@@ -41,7 +41,7 @@ export function controlMiddleware(control: { execute(raw: unknown, actor: import
         timestamp: new Date().toISOString(),
         level: "ERROR",
         "event.name": "studio.control.error",
-        "service.name": "cyrene-studio",
+        "service.name": "cyrene-client",
         message: err.message,
         attributes: {
           "error.code": `STUDIO.CONTROL.${err.code}`,

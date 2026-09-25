@@ -106,7 +106,7 @@ test("all seven nodes use settings APIs; only explicit saves write, and never st
   expect(errors).toEqual([]);
   await select(page, "模型微调");
   await page.locator(".inspector").evaluate((el) => { el.scrollTop = 0; });
-  await page.screenshot({ path: "test-results/studio-settings.png", fullPage: true });
+  await page.screenshot({ path: "test-results/client-settings.png", fullPage: true });
 });
 
 test("an unavailable or malformed service cannot silently overwrite local parameters", async ({ page }) => {

@@ -11,7 +11,7 @@ const jsonResponse = (value: unknown, status = 200, headers?: Record<string, str
     headers: { "Content-Type": "application/problem+json", ...headers },
   });
 
-describe("RFC 9457 Problem Details and W3C correlation handling in Studio", () => {
+describe("RFC 9457 Problem Details and W3C correlation handling in Client", () => {
   it("extracts canonical error code, traceId, requestId, and recoveryAction from Problem Details", async () => {
     const problemPayload = {
       type: "https://errors.cyrene.dev/catalyst/product.catalyst.dataset_not_found",

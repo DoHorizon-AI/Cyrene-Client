@@ -4,7 +4,7 @@ import type { Pipeline, PipelineNode } from "../../../../packages/pipeline-model
 import { nodeSize } from "../../../../packages/pipeline-model/geometry";
 
 export type EditorGraph = LGraph & { onAfterChange?: () => void; onConnectionChange?: () => void; onNodeRemoved?: () => void };
-export class StudioNode extends LGraphNode {
+export class ClientNode extends LGraphNode {
   properties: { document: PipelineNode } = { document: { id: "", type: "", typeVersion: "1", label: "", config: {} } };
 }
 
@@ -12,7 +12,7 @@ export function registerNodes() {
   for (const d of catalog) {
     const name = `cyrene/${d.type}`;
     if (LiteGraph.registered_node_types[name]) continue;
-    class VisualNode extends StudioNode {
+    class VisualNode extends ClientNode {
       constructor() {
         super(d.title);
         for (const p of d.inputs) this.addInput(p.label, p.kind);
@@ -32,12 +32,12 @@ export function registerNodes() {
   }
 }
 
-export function editorNodes(graph: LGraph): StudioNode[] {
-  return catalog.flatMap((d) => graph.findNodesByType<StudioNode>(`cyrene/${d.type}`));
+export function editorNodes(graph: LGraph): ClientNode[] {
+  return catalog.flatMap((d) => graph.findNodesByType<ClientNode>(`cyrene/${d.type}`));
 }
 
 export function appendNode(graph: LGraph, n: PipelineNode, position: { x: number; y: number }) {
-  const node = LiteGraph.createNode(`cyrene/${n.type}`) as StudioNode | null;
+  const node = LiteGraph.createNode(`cyrene/${n.type}`) as ClientNode | null;
   if (!node) throw new Error(`节点类型尚未注册：${n.type}`);
   node.properties = { document: structuredClone(n) };
   node.title = n.label; node.pos = [position.x, position.y]; graph.add(node);
