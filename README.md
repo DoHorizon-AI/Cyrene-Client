@@ -1,5 +1,9 @@
 # Cyrene Client
 
+[![Client CI](https://github.com/DoHorizon-AI/Cyrene-Client/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/DoHorizon-AI/Cyrene-Client/actions/workflows/ci.yml)
+[![Package MSIX](https://github.com/DoHorizon-AI/Cyrene-Client/actions/workflows/package-msix.yml/badge.svg?branch=develop)](https://github.com/DoHorizon-AI/Cyrene-Client/actions/workflows/package-msix.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 模块化流水线工作台的第一阶段原型。React + TypeScript + Vite 提供应用界面，LiteGraph 0.7.14 提供节点画布。
 
 公司仓库：[DoHorizon-AI/Cyrene-Client](https://github.com/DoHorizon-AI/Cyrene-Client)。默认开发分支为 `develop`；GitHub Actions 负责测试和构建，目前不部署服务或发布 npm 包。
