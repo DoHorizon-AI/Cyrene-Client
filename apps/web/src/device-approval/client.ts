@@ -143,13 +143,46 @@ function decodeBase64Url(value: string): Uint8Array {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-function encodeBase64Url(value: ArrayBuffer): string {
-  const bytes = new Uint8Array(value);
+function encodeBase64Url(value: ArrayBuffer | ArrayBufferView): string {
+  const bytes = value instanceof ArrayBuffer
+    ? new Uint8Array(value)
+    : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   let binary = "";
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
   }
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+/**
+ * Converts requested extension outputs to JSON-safe values, base64url-encoding binary values.
+ * 中文：只转换本次请求的扩展输出，并将二进制值编码为可安全传输的 base64url。
+ */
+function serializeExtensionValue(value: unknown, ancestors = new WeakSet<object>()): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return encodeBase64Url(value);
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) throw new Error("The browser returned cyclic WebAuthn extension data.");
+    ancestors.add(value);
+    const result = value.map((item) => serializeExtensionValue(item, ancestors));
+    ancestors.delete(value);
+    return result;
+  }
+  if (typeof value === "object") {
+    if (ancestors.has(value)) throw new Error("The browser returned cyclic WebAuthn extension data.");
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error("The browser returned unsupported WebAuthn extension data.");
+    }
+    ancestors.add(value);
+    const result = Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, serializeExtensionValue(item, ancestors)]),
+    );
+    ancestors.delete(value);
+    return result;
+  }
+  throw new Error("The browser returned unsupported WebAuthn extension data.");
 }
 
 /**
@@ -180,6 +213,7 @@ export async function requestWebAuthnAssertion(
   if (!credential || credential.type !== "public-key") throw new Error("A WebAuthn assertion was not returned.");
   const publicKeyCredential = credential as PublicKeyCredential;
   const response = publicKeyCredential.response as AuthenticatorAssertionResponse;
+  const requestedExtensions = options.extensions;
   if (!(response.clientDataJSON instanceof ArrayBuffer) || !(response.authenticatorData instanceof ArrayBuffer) || !(response.signature instanceof ArrayBuffer)) {
     throw new Error("The browser returned an invalid WebAuthn assertion.");
   }
@@ -195,6 +229,15 @@ export async function requestWebAuthnAssertion(
       signature: encodeBase64Url(response.signature),
       userHandle: response.userHandle === null ? null : encodeBase64Url(response.userHandle),
     },
+    ...(typeof publicKeyCredential.getClientExtensionResults === "function" && requestedExtensions
+      ? {
+        clientExtensionResults: Object.fromEntries(
+          Object.entries(publicKeyCredential.getClientExtensionResults())
+            .filter(([name]) => Object.hasOwn(requestedExtensions, name))
+            .map(([name, value]) => [name, serializeExtensionValue(value)]),
+        ),
+      }
+      : {}),
   };
   return webAuthnAssertionSchema.parse(assertion);
 }
