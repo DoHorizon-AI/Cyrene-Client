@@ -5,6 +5,7 @@
 // 中文：// 中文：模块职责：为 Navigator 运维控制台提供共享展示组件。
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { useI18n } from "./i18n";
 
 export interface PageHeaderProps {
   eyebrow: string;
@@ -18,12 +19,13 @@ export interface PageHeaderProps {
  * 提供页面级标题区，并预留一个明确的操作按钮位置。
  */
 export function PageHeader({ eyebrow, title, description, action }: PageHeaderProps) {
+  const { t } = useI18n();
   return (
     <header className="page-header">
       <div>
-        <p className="eyebrow">{eyebrow}</p>
-        <h1>{title}</h1>
-        <p className="page-description">{description}</p>
+        <p className="eyebrow">{t(eyebrow)}</p>
+        <h1>{t(title)}</h1>
+        <p className="page-description">{t(description)}</p>
       </div>
       {action ? <div className="page-header__action">{action}</div> : null}
     </header>
@@ -42,10 +44,11 @@ export interface PanelProps {
  * 使用带边框的工作区将相关 API 数据归在一起。
  */
 export function Panel({ title, meta, children, className = "" }: PanelProps) {
+  const { t } = useI18n();
   return (
     <section className={`panel ${className}`.trim()}>
       <div className="panel__heading">
-        <h2>{title}</h2>
+        <h2>{t(title)}</h2>
         {meta ? <div className="panel__meta">{meta}</div> : null}
       </div>
       {children}
@@ -62,9 +65,10 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
  * 提供统一且可通过键盘聚焦的按钮外观。
  */
 export function Button({ tone = "quiet", className = "", children, ...props }: ButtonProps) {
+  const { t } = useI18n();
   return (
     <button className={`button button--${tone} ${className}`.trim()} {...props}>
-      {children}
+      {typeof children === "string" ? t(children) : children}
     </button>
   );
 }
@@ -111,11 +115,12 @@ export interface MetricCardProps {
  * 采用清晰的标题与详情层级展示紧凑指标。
  */
 export function MetricCard({ label, value, detail, accent = "lime" }: MetricCardProps) {
+  const { t } = useI18n();
   return (
     <article className={`metric-card metric-card--${accent}`}>
-      <p className="metric-card__label">{label}</p>
+      <p className="metric-card__label">{t(label)}</p>
       <strong>{value}</strong>
-      <p className="metric-card__detail">{detail}</p>
+      <p className="metric-card__detail">{t(detail)}</p>
     </article>
   );
 }
@@ -132,14 +137,15 @@ export interface StateBlockProps {
  * 为所有资源页面提供一致的加载、失败和空状态。
  */
 export function StateBlock({ kind, title, detail, action }: StateBlockProps) {
+  const { t } = useI18n();
   return (
     <div className={`state-block state-block--${kind}`} role={kind === "error" ? "alert" : undefined}>
       <span className="state-block__mark" aria-hidden="true">
         {kind === "loading" ? "..." : kind === "error" ? "!" : "0"}
       </span>
       <div>
-        <h3>{title}</h3>
-        <p>{detail}</p>
+        <h3>{t(title)}</h3>
+        <p>{t(detail)}</p>
         {action ? <div className="state-block__action">{action}</div> : null}
       </div>
     </div>
@@ -164,15 +170,16 @@ export interface ResourceTableProps<T> {
  * 提供可访问的水平表格，并在移动端设置滚动边界。
  */
 export function ResourceTable<T>({ rows, columns, rowKey, caption }: ResourceTableProps<T>) {
+  const { t } = useI18n();
   return (
     <div className="table-scroll">
       <table className="resource-table">
-        <caption>{caption}</caption>
+        <caption>{t(caption)}</caption>
         <thead>
           <tr>
             {columns.map((column) => (
               <th className={column.className} key={column.label} scope="col">
-                {column.label}
+                {t(column.label)}
               </th>
             ))}
           </tr>
@@ -206,11 +213,12 @@ export function Field({
   hint?: string;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <label className="field">
-      <span className="field__label">{label}</span>
+      <span className="field__label">{t(label)}</span>
       {children}
-      {hint ? <span className="field__hint">{hint}</span> : null}
+      {hint ? <span className="field__hint">{t(hint)}</span> : null}
     </label>
   );
 }
@@ -220,13 +228,14 @@ export function Field({
  * 按操作人员本地时区格式化可选的 API 时间戳。
  */
 export function formatDate(value: unknown): string {
+  const locale = typeof document === "undefined" ? undefined : document.documentElement.lang || undefined;
   if (typeof value !== "string" || !value) {
-    return "No timestamp";
+    return locale === "zh-CN" ? "无时间戳" : "No timestamp";
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
-    : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+    : new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
 /**

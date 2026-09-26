@@ -37,6 +37,7 @@ import {
   type TrainingParametersInput,
 } from "./api";
 import { pushRoute } from "./router";
+import { useI18n } from "./i18n";
 
 export interface PageProps {
   api: NavigatorApi;
@@ -51,6 +52,7 @@ interface SettingsPageProps extends PageProps {
  * 展示 Workspace 级状态卡片和分别刷新的服务观测信息。
  */
 export function OverviewPage({ api }: PageProps) {
+  const { t } = useI18n();
   const [reloadKey, setReloadKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [system, setSystem] = useState<SystemStatus | null>(null);
@@ -102,7 +104,7 @@ export function OverviewPage({ api }: PageProps) {
         description="Current service availability and host resources reported by the configured Product endpoints."
         action={
           <Button onClick={refresh} disabled={loading} aria-label="Refresh overview">
-            {loading ? "Refreshing..." : "Refresh"}
+            {loading ? t("Refreshing...") : t("Refresh")}
           </Button>
         }
       />
@@ -151,8 +153,8 @@ export function OverviewPage({ api }: PageProps) {
               ].map(([label, available]) => (
                 <div className="service-row" key={String(label)}>
                   <span className={`service-dot ${available ? "service-dot--good" : "service-dot--bad"}`} aria-hidden="true" />
-                  <span>{label}</span>
-                  <strong>{available ? "Available" : "Unavailable"}</strong>
+                  <span>{t(String(label))}</span>
+                  <strong>{t(available ? "Available" : "Unavailable")}</strong>
                 </div>
               ))}
             </div>
@@ -177,7 +179,7 @@ export function OverviewPage({ api }: PageProps) {
                     <span className="attention-item__icon" aria-hidden="true">!</span>
                     <div>
                       <strong>{failure}</strong>
-                      <p>Check the service endpoint and its current binding, then refresh.</p>
+                      <p>{t("Check the service endpoint and its current binding, then refresh.")}</p>
                     </div>
                   </div>
                 ))}
@@ -3211,10 +3213,11 @@ export function ChatPage({ api }: PageProps) {
 }
 
 function Detail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  const { t } = useI18n();
   return (
     <div className="detail-item">
-      <dt>{label}</dt>
-      <dd className={mono ? "input-mono" : undefined}>{value}</dd>
+      <dt>{t(label)}</dt>
+      <dd className={mono ? "input-mono" : undefined}>{t(value)}</dd>
     </div>
   );
 }

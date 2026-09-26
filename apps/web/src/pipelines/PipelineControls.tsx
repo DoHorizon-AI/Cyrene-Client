@@ -5,6 +5,7 @@ import { mergeSaveAcknowledgement } from "../../../../packages/pipeline-control/
 import { pipelineClient as client } from "./client";
 import { useTeamIdentity } from "../team/TeamGate";
 import { logError } from "../logger";
+import { useI18n } from "../i18n";
 import "./pipelines.css";
 
 const graph = ({ presentation: _, ...p }: Pipeline) => p;
@@ -18,6 +19,7 @@ interface Props {
 }
 export function PipelineControls(props: Props) {
   const { workspaceId } = useTeamIdentity();
+  const { locale, t } = useI18n();
   const base = props.serverBase?.document.id === props.document.id && props.serverBase.workspaceId === workspaceId ? props.serverBase : null;
   const setBase = props.onServerBase;
   const [remote, setRemote] = useState<PipelineRecord | null>(null);
@@ -129,13 +131,13 @@ export function PipelineControls(props: Props) {
     else { setRemote(result.record); live.current.onNotice("服务端已重做；操作期间的新本地修改已保留，可先导出备份后载入服务端版本。"); return; }
     live.current.onNotice("已重做服务端最近撤销的一批修改，修订号保持递增。");
   }
-  const status = <span>{base ? `服务端 v${base.graphRevision} / 布局 v${base.layoutRevision}${dirty ? " · 本地有修改" : " · 已同步"}` : "尚未保存到服务端"}</span>;
-  const toolbar = <><button disabled={locked} onClick={() => void run(save)}>保存到服务端</button><button disabled={locked} onClick={() => void run(() => layout(false))}>自动排版</button></>;
-  const file = <div className="keep-menu-open"><button disabled={locked} onClick={() => void run(list)}>读取流程列表</button>
-      {items.length > 0 && <><select aria-label="服务端流程" value={chosen} disabled={locked} onChange={e => setChosen(e.target.value)}><option value="">选择流程</option>{items.map(i => <option key={i.id} value={i.id}>{i.name} · {i.id}</option>)}</select><button disabled={locked || !chosen} onClick={() => void run(load)}>载入服务端流程</button></>}
+  const status = <span>{base ? (locale === "zh-CN" ? `服务端 v${base.graphRevision} / 布局 v${base.layoutRevision}${dirty ? " · 本地有修改" : " · 已同步"}` : `Server v${base.graphRevision} / layout v${base.layoutRevision}${dirty ? " · local changes" : " · synchronized"}`) : locale === "zh-CN" ? "尚未保存到服务端" : "Not saved to server"}</span>;
+  const toolbar = <><button disabled={locked} onClick={() => void run(save)}>{t("保存到服务端")}</button><button disabled={locked} onClick={() => void run(() => layout(false))}>{t("自动排版")}</button></>;
+  const file = <div className="keep-menu-open"><button disabled={locked} onClick={() => void run(list)}>{t("读取流程列表")}</button>
+      {items.length > 0 && <><select aria-label={t("服务端流程")} value={chosen} disabled={locked} onChange={e => setChosen(e.target.value)}><option value="">{t("选择流程")}</option>{items.map(i => <option key={i.id} value={i.id}>{i.name} · {i.id}</option>)}</select><button disabled={locked || !chosen} onClick={() => void run(load)}>{t("载入服务端流程")}</button></>}
     </div>;
-  const edit = <><button disabled={locked || !props.selectedId} onClick={() => void run(() => layout(true))}>整理选中节点</button><button disabled={locked || !props.selectedId} onClick={pin}>{props.selectedId && props.document.presentation.nodes[props.selectedId]?.pinned ? "解锁节点位置" : "锁定节点位置"}</button><button disabled={locked || !props.canUndo} onClick={props.onUndo}>撤销本地修改</button><button disabled={locked || !props.canRedo} onClick={props.onRedo}>重做本地修改</button><button disabled={locked || !base || dirty} onClick={() => void run(undoRemote)}>撤销服务端修改</button><button disabled={locked || !base || dirty} onClick={() => void run(redoRemote)}>重做服务端修改</button></>;
-  const conflict = remote && <div className="pipeline-conflict" role="status">服务端已有新版本 v{remote.graphRevision}/{remote.layoutRevision}，本地修改已保留。<button disabled={locked} onClick={() => { if (window.confirm("用服务端版本替换当前未保存修改？")) { setBase(remote); live.current.onLoad(remote.document); setRemote(null); } }}>载入新版本</button><span>可先导出 JSON 备份；提交同一文档域的旧版本会被拒绝。</span></div>;
-  const historyPanel = <div className="keep-menu-open"><button disabled={locked || !base} onClick={() => void run(history)}>变更记录</button>{!!summary.length && <details className="pipeline-changes"><summary>最近变更 · {summary.length} 条</summary>{summary.map((s, i) => <p key={i}>{s}</p>)}</details>}</div>;
-  return props.render ? props.render({ file, edit, toolbar, status, conflict, history: historyPanel }) : <section className="pipeline-controls" aria-label="流程版本与排版"><div className="pipeline-control-row">{status}{toolbar}{file}</div><div className="pipeline-control-row">{edit}{historyPanel}</div>{conflict}</section>;
+  const edit = <><button disabled={locked || !props.selectedId} onClick={() => void run(() => layout(true))}>{t("整理选中节点")}</button><button disabled={locked || !props.selectedId} onClick={pin}>{t(props.selectedId && props.document.presentation.nodes[props.selectedId]?.pinned ? "解锁节点位置" : "锁定节点位置")}</button><button disabled={locked || !props.canUndo} onClick={props.onUndo}>{t("撤销本地修改")}</button><button disabled={locked || !props.canRedo} onClick={props.onRedo}>{t("重做本地修改")}</button><button disabled={locked || !base || dirty} onClick={() => void run(undoRemote)}>{t("撤销服务端修改")}</button><button disabled={locked || !base || dirty} onClick={() => void run(redoRemote)}>{t("重做服务端修改")}</button></>;
+  const conflict = remote && <div className="pipeline-conflict" role="status">{locale === "zh-CN" ? `服务端已有新版本 v${remote.graphRevision}/${remote.layoutRevision}，本地修改已保留。` : `Server version v${remote.graphRevision}/${remote.layoutRevision} is available. Local changes were preserved.`}<button disabled={locked} onClick={() => { if (window.confirm(locale === "zh-CN" ? "用服务端版本替换当前未保存修改？" : "Replace current unsaved changes with the server version?")) { setBase(remote); live.current.onLoad(remote.document); setRemote(null); } }}>{t("载入新版本")}</button><span>{locale === "zh-CN" ? "可先导出 JSON 备份；提交同一文档域的旧版本会被拒绝。" : "You can export a JSON backup first. Submitting an old revision of the same document domain will be rejected."}</span></div>;
+  const historyPanel = <div className="keep-menu-open"><button disabled={locked || !base} onClick={() => void run(history)}>{t("变更记录")}</button>{!!summary.length && <details className="pipeline-changes"><summary>{locale === "zh-CN" ? `最近变更 · ${summary.length} 条` : `Recent changes · ${summary.length}`}</summary>{summary.map((s, i) => <p key={i}>{s}</p>)}</details>}</div>;
+  return props.render ? props.render({ file, edit, toolbar, status, conflict, history: historyPanel }) : <section className="pipeline-controls" aria-label={t("流程版本与排版")}><div className="pipeline-control-row">{status}{toolbar}{file}</div><div className="pipeline-control-row">{edit}{historyPanel}</div>{conflict}</section>;
 }

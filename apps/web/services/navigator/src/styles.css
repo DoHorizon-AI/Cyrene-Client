@@ -284,6 +284,41 @@ select:focus-visible {
   text-transform: none;
 }
 
+.language-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.language-select select {
+  min-width: 70px;
+  padding: 5px 24px 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font: 10px var(--sans);
+}
+
+.language-select--compact > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.app-frame-language {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  z-index: 10;
+}
+
 .page-container {
   width: min(1400px, 100%);
   margin: 0 auto;

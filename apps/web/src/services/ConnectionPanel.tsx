@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { HostStatus } from "../../../../packages/service-settings/contracts";
 import { SettingsClient } from "./client";
+import { useI18n } from "../i18n";
 
 interface Props { client: SettingsClient; status: HostStatus | null; onConnected(status: HostStatus | null): void }
 export function ConnectionPanel({ client, status, onConnected }: Props) {
+  const { locale, t } = useI18n();
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false);
   const [target, setTarget] = useState<string | null>(null), [pairing, setPairing] = useState(false);
   const [code, setCode] = useState(""), [message, setMessage] = useState("先连接 Web Host，再从节点面板读取服务设置。");
@@ -39,14 +41,14 @@ export function ConnectionPanel({ client, status, onConnected }: Props) {
     finally { setBusy(false); }
   }
   return <div className="connection-box">
-    <button className="connection-toggle" onClick={() => setOpen(!open)} aria-expanded={open}><i className="dot" />{status ? "设置服务已连接" : "服务连接"}</button>
-    {open && <section className="connection-popover" aria-label="服务连接设置">
+    <button className="connection-toggle" onClick={() => setOpen(!open)} aria-expanded={open}><i className="dot" />{t(status ? "设置服务已连接" : "服务连接")}</button>
+    {open && <section className="connection-popover" aria-label={t("服务连接设置")}>
       <strong>Navigator Web Host</strong>
       {target && <p className="connection-target">{target}</p>}
       <p role="status">{message}</p>
-      {pairing && <label className="field"><span>一次性配对码</span><input type="password" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} /></label>}
-      <div className="settings-actions"><button disabled={busy} onClick={() => void connect(false)}>{busy ? "连接中…" : "检查连接"}</button>{pairing && <button className="primary" disabled={busy || !code.trim()} onClick={() => void connect(true)}>配对</button>}{status && <button disabled={busy} onClick={() => void disconnect()}>退出会话</button>}</div>
-      {status && <small>已开放 {status.proxyPrefixes.length} 个服务入口 · {status.observedAt}</small>}
+      {pairing && <label className="field"><span>{t("一次性配对码")}</span><input type="password" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} /></label>}
+      <div className="settings-actions"><button disabled={busy} onClick={() => void connect(false)}>{t(busy ? "连接中…" : "检查连接")}</button>{pairing && <button className="primary" disabled={busy || !code.trim()} onClick={() => void connect(true)}>{t("配对")}</button>}{status && <button disabled={busy} onClick={() => void disconnect()}>{t("退出会话")}</button>}</div>
+      {status && <small>{locale === "zh-CN" ? `已开放 ${status.proxyPrefixes.length} 个服务入口` : `${status.proxyPrefixes.length} service endpoints exposed`} · {status.observedAt}</small>}
     </section>}
   </div>;
 }

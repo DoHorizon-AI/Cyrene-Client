@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { PipelineNode } from "../../../../packages/pipeline-model";
 import { trainingParametersSchema, type HostStatus, type TrainingDraft } from "../../../../packages/service-settings/contracts";
 import { SettingsClient } from "./client";
+import { useI18n } from "../i18n";
 
 interface Choice { id: string; label: string; apply(): void }
 interface Props { node: PipelineNode; client: SettingsClient; status: HostStatus | null; disabled: boolean; onUpdate(node: PipelineNode): void }
@@ -18,6 +19,7 @@ const description: Record<string, string> = {
 };
 
 export function NodeServiceSettings({ node, client, status, disabled, onUpdate }: Props) {
+  const { locale, t } = useI18n();
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [choices, setChoices] = useState<Choice[]>([]);
   const [resourceId, setResourceId] = useState(node.settingsBinding?.resourceId ?? "");
@@ -140,17 +142,17 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
     apply({}, { kind: "evaluation-suite", resourceId: item.id }); setMessage(`Echo 已创建评估配置「${item.name}」；未发起评估。`);
   }
 
-  return <section className="service-settings" aria-label="节点服务设置">
-    <div className="settings-heading"><strong>服务端设置</strong><span>{!status ? "未连接" : available ? "可请求" : "入口未开放"}</span></div>
-    <p>{description[node.type]}</p>
-    {!status && <p className="settings-hint">请先从页面右上角连接 Web Host。</p>}
-    {status && !available && <p className="settings-hint">Web Host 未开放 {service} 入口，此节点保留本地设置。</p>}
-    {(node.type === "dataset" || node.type === "evaluation") && <label className="field"><span>{node.type === "dataset" ? "数据版本 ID（留空读取数据集）" : "评估配置 ID"}</span><input value={resourceId} onChange={(e) => setResourceId(e.target.value)} disabled={disabled || busy} /></label>}
-    {node.type === "agent" && <label className="field"><span>Navigator 工作空间 ID</span><input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} disabled={disabled || busy} /></label>}
-    <div className="settings-actions"><button disabled={locked} onClick={() => void perform(load)}>{busy ? "请求中…" : "读取服务设置"}</button>{node.type === "training" && <button disabled={locked || !draft || draft.state === "STARTED" || !draft.configuration} onClick={() => void perform(saveTraining)}>保存参数到 Yield</button>}{node.type === "evaluation" && <button disabled={locked} onClick={() => void perform(createSuite)}>另存到 Echo</button>}</div>
+  return <section className="service-settings" aria-label={t("节点服务设置")}>
+    <div className="settings-heading"><strong>{t("服务端设置")}</strong><span>{t(!status ? "未连接" : available ? "可请求" : "入口未开放")}</span></div>
+    <p>{t(description[node.type])}</p>
+    {!status && <p className="settings-hint">{t("请先从页面右上角连接 Web Host。")}</p>}
+    {status && !available && <p className="settings-hint">{locale === "zh-CN" ? `Web Host 未开放 ${service} 入口，此节点保留本地设置。` : `Web Host does not expose the ${service} endpoint. This node keeps its local settings.`}</p>}
+    {(node.type === "dataset" || node.type === "evaluation") && <label className="field"><span>{t(node.type === "dataset" ? "数据版本 ID（留空读取数据集）" : "评估配置 ID")}</span><input value={resourceId} onChange={(e) => setResourceId(e.target.value)} disabled={disabled || busy} /></label>}
+    {node.type === "agent" && <label className="field"><span>{t("Navigator 工作空间 ID")}</span><input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} disabled={disabled || busy} /></label>}
+    <div className="settings-actions"><button disabled={locked} onClick={() => void perform(load)}>{t(busy ? "请求中…" : "读取服务设置")}</button>{node.type === "training" && <button disabled={locked || !draft || draft.state === "STARTED" || !draft.configuration} onClick={() => void perform(saveTraining)}>{t("保存参数到 Yield")}</button>}{node.type === "evaluation" && <button disabled={locked} onClick={() => void perform(createSuite)}>{t("另存到 Echo")}</button>}</div>
     {choices.length > 0 && <div className="resource-choices">{choices.map((c) => <button key={c.id} disabled={locked} onClick={c.apply}>{c.label}<small>{c.id}</small></button>)}</div>}
     {!!facts.length && <ul className="resource-facts">{facts.map((f, i) => <li key={i}>{f}</li>)}</ul>}
     {message && <p role="status" className="settings-message">{message}</p>}
-    {node.settingsBinding && <div className="settings-binding"><small>已绑定 · {node.settingsBinding.kind}</small><code>{node.settingsBinding.resourceId}</code><button disabled={disabled || busy} onClick={() => { const { settingsBinding: _, ...rest } = latest.current; onUpdate(rest); setResourceId(""); setDraft(null); setMessage("已解除服务资源绑定，节点本地参数保留。"); }}>解除绑定</button></div>}
+    {node.settingsBinding && <div className="settings-binding"><small>{t("已绑定")} · {node.settingsBinding.kind}</small><code>{node.settingsBinding.resourceId}</code><button disabled={disabled || busy} onClick={() => { const { settingsBinding: _, ...rest } = latest.current; onUpdate(rest); setResourceId(""); setDraft(null); setMessage(locale === "zh-CN" ? "已解除服务资源绑定，节点本地参数保留。" : "The service resource binding was removed; local node parameters were preserved."); }}>{t("解除绑定")}</button></div>}
   </section>;
 }
