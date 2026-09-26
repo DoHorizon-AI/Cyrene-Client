@@ -294,7 +294,7 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
         width: "100%",
         height: "100%",
         overflow: "hidden",
-        backgroundColor: "#0d181d",
+        backgroundColor: "#15171e",
       }}
     >
       <canvas

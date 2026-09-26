@@ -27,8 +27,8 @@ export function registerNodes(): void {
           for (const p of d.outputs) this.addOutput(p.label, p.kind);
           this.size = nodeSize(d.type);
           Reflect.set(this, "resizable", false);
-          this.color = "#393c43";
-          this.bgcolor = "#2b2d32";
+          this.color = "#232631";
+          this.bgcolor = "#1d2029";
           this.boxcolor = d.color;
           this.shape = LiteGraph.ROUND_SHAPE;
         }
@@ -49,7 +49,7 @@ export function registerNodes(): void {
             ctx.strokeRect(-2, -2, this.size[0] + 4, this.size[1] + 4);
           } else if (this.executionStatus === "done") {
             ctx.font = "bold 11px monospace";
-            ctx.fillStyle = "#50bfaa";
+            ctx.fillStyle = "#6cc9a0";
             ctx.fillText("✓ DONE", this.size[0] - 62, this.size[1] - 12);
           }
           ctx.restore();

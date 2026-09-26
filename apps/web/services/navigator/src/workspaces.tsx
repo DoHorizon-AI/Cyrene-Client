@@ -169,7 +169,7 @@ export function CatalystWorkspace({ api }: PageProps) {
     <div className="workspace-container">
       <div className="workspace-header-bar" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
         <div>
-          <span className="eyebrow" style={{ color: "#50bfaa" }}>CATALYST / DATASET WORKSPACE</span>
+          <span className="eyebrow" style={{ color: "var(--coral)" }}>CATALYST / DATASET WORKSPACE</span>
           <h1 style={{ margin: "4px 0", fontSize: "22px" }}>Catalyst 数据工程工作台</h1>
           <p className="page-description" style={{ margin: 0, fontSize: "13px" }}>
             管理数据集容器、标注映射与版本发布，数据样本行级预览及流式流水线节点固化。
@@ -395,7 +395,7 @@ export function EchoWorkspace({ api: _api }: PageProps) {
                 value={threshold}
                 onChange={(e) => setThreshold(e.target.value)}
               />
-              <span className="mono-label" style={{ fontSize: "14px", color: "var(--lime)", minWidth: "45px" }}>
+              <span className="mono-label" style={{ fontSize: "14px", color: "var(--coral)", minWidth: "45px" }}>
                 {(Number(threshold) * 100).toFixed(0)}%
               </span>
             </div>
@@ -433,9 +433,9 @@ export function EchoWorkspace({ api: _api }: PageProps) {
                   style={{
                     padding: "6px 12px",
                     borderRadius: "4px",
-                    border: active ? "1px solid var(--lime)" : "1px solid var(--line)",
-                    background: active ? "rgba(201, 242, 123, 0.15)" : "transparent",
-                    color: active ? "var(--lime)" : "var(--muted)",
+                    border: active ? "1px solid var(--coral)" : "1px solid var(--line)",
+                    background: active ? "rgba(242, 145, 140, 0.15)" : "transparent",
+                    color: active ? "var(--coral)" : "var(--muted)",
                     fontSize: "12px",
                     cursor: "pointer",
                   }}
@@ -500,7 +500,7 @@ export function EchoWorkspace({ api: _api }: PageProps) {
             },
             {
               label: "实际得分",
-              render: (row) => <strong style={{ color: "var(--lime)" }}>{row.score}</strong>,
+              render: (row) => <strong style={{ color: "var(--success)" }}>{row.score}</strong>,
             },
             {
               label: "门禁阈值",

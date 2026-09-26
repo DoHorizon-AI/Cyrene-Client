@@ -345,7 +345,7 @@ export function FlowPage() {
 
               {/* 核心醒目操作按钮：打开对应专业工作台 */}
               <div className="flow-action-card">
-                <span className="flow-drawer__label" style={{ color: "#c9f27b" }}>
+                <span className="flow-drawer__label" style={{ color: "var(--coral, #f2918c)" }}>
                   专业工作台联动
                 </span>
                 <span className="flow-action-card__hint">
