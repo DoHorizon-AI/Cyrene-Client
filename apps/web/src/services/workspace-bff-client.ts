@@ -33,7 +33,10 @@ const sessionSchema = z.object({
   subject: z.string().min(1).max(512),
   organizationId: z.string().min(1).max(200),
   expiresAt: z.string().datetime({ offset: true }),
+  csrfToken: z.string().min(32).max(256).regex(/^v1\.[0-9]+\.[A-Za-z0-9_-]+$/),
 }).strict();
+
+type WorkspaceSession = z.infer<typeof sessionSchema>;
 
 const workspaceListSchema = z.object({
   workspaces: z.array(z.object({
@@ -73,6 +76,7 @@ export type WorkspaceBffErrorCode =
   | "workspace_not_discovered"
   | "workspace_selection_required"
   | "workspace_discovery_invalid"
+  | "session_changed"
   | "unsupported_operation"
   | "invalid_request"
   | "invalid_response"
@@ -117,12 +121,6 @@ function traceparent(): string {
   const traceId = Array.from(bytes.subarray(0, 16), (value) => value.toString(16).padStart(2, "0")).join("");
   const spanId = Array.from(bytes.subarray(16), (value) => value.toString(16).padStart(2, "0")).join("");
   return `00-${traceId.startsWith("0") && /^0+$/.test(traceId) ? `1${traceId.slice(1)}` : traceId}-${spanId.startsWith("0") && /^0+$/.test(spanId) ? `1${spanId.slice(1)}` : spanId}-01`;
-}
-
-function cookieValue(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const prefix = `${name}=`;
-  return document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix))?.slice(prefix.length) ?? null;
 }
 
 function contentType(response: Response): string {
@@ -178,6 +176,10 @@ export class WorkspaceBffClient {
   private readonly fetcher: typeof fetch;
   private readonly timeoutMs: number;
   private readonly discoveredWorkspaceIds = new Set<string>();
+  // The matching cookie is HttpOnly and browser-managed; keep only its JSON token in memory.
+  // 配套 cookie 为 HttpOnly 并由浏览器管理；JSON token 仅保存在内存中。
+  private csrfToken: string | null = null;
+  private sessionScope: Pick<WorkspaceSession, "issuer" | "subject" | "organizationId"> | null = null;
   readonly enabled: boolean;
 
   constructor(options: ClientOptions = {}) {
@@ -192,25 +194,31 @@ export class WorkspaceBffClient {
    */
   async discoverWorkspaces(signal?: AbortSignal): Promise<readonly WorkspaceSummary[]> {
     this.requireEnabled();
-    this.discoveredWorkspaceIds.clear();
-    const sessionResult = sessionSchema.safeParse(await this.getJson(SESSION_PATH, signal));
-    if (!sessionResult.success) throw new WorkspaceBffError("invalid_response", "Workspace BFF session 响应不符合契约。", 502);
-    const discoveryResult = workspaceListSchema.safeParse(await this.getJson(WORKSPACES_PATH, signal));
-    if (!discoveryResult.success) throw new WorkspaceBffError("invalid_response", "Workspace BFF 发现响应不符合契约。", 502);
-    const session = sessionResult.data;
-    const discovery = discoveryResult.data;
-    if (discovery.workspaces.some((workspace) => workspace.organizationId !== session.organizationId)) {
-      this.discoveredWorkspaceIds.clear();
-      throw new WorkspaceBffError("workspace_discovery_invalid", "Workspace 发现结果与已验证 session 的组织范围不符。", 502);
+    this.clearSessionState();
+    try {
+      const session = await this.readSession(signal);
+      const discoveryResult = workspaceListSchema.safeParse(await this.getJson(WORKSPACES_PATH, signal));
+      if (!discoveryResult.success) throw new WorkspaceBffError("invalid_response", "Workspace BFF 发现响应不符合契约。", 502);
+      const discovery = discoveryResult.data;
+      if (discovery.workspaces.some((workspace) => workspace.organizationId !== session.organizationId)) {
+        throw new WorkspaceBffError("workspace_discovery_invalid", "Workspace 发现结果与已验证 session 的组织范围不符。", 502);
+      }
+      const uniqueIds = new Set(discovery.workspaces.map((workspace) => workspace.workspaceId));
+      if (uniqueIds.size !== discovery.workspaces.length) {
+        throw new WorkspaceBffError("workspace_discovery_invalid", "Workspace 发现结果包含重复标识。", 502);
+      }
+      for (const workspace of discovery.workspaces) this.discoveredWorkspaceIds.add(workspace.workspaceId);
+      this.sessionScope = {
+        issuer: session.issuer,
+        subject: session.subject,
+        organizationId: session.organizationId,
+      };
+      this.csrfToken = session.csrfToken;
+      return discovery.workspaces;
+    } catch (error) {
+      this.clearSessionState();
+      throw error;
     }
-    const uniqueIds = new Set(discovery.workspaces.map((workspace) => workspace.workspaceId));
-    if (uniqueIds.size !== discovery.workspaces.length) {
-      this.discoveredWorkspaceIds.clear();
-      throw new WorkspaceBffError("workspace_discovery_invalid", "Workspace 发现结果包含重复标识。", 502);
-    }
-    this.discoveredWorkspaceIds.clear();
-    for (const workspace of discovery.workspaces) this.discoveredWorkspaceIds.add(workspace.workspaceId);
-    return discovery.workspaces;
   }
 
   /**
@@ -257,11 +265,9 @@ export class WorkspaceBffClient {
     if (body !== undefined) headers.set("Content-Type", "application/json");
     if (options.idempotencyKey !== undefined) headers.set("Idempotency-Key", options.idempotencyKey);
     if (commandOperations.has(operation)) {
-      const csrf = cookieValue("__Host-cyrene-csrf");
-      if (!csrf || csrf.length < 32 || csrf.length > 256) {
-        throw new WorkspaceBffError("csrf_failed", "缺少可读的 Workspace BFF CSRF cookie；命令未发送。", 403);
-      }
-      headers.set("X-CSRF-Token", csrf);
+      await this.refreshCsrfToken(options.signal);
+      if (!this.csrfToken) throw new WorkspaceBffError("csrf_failed", "Workspace BFF 未提供有效 CSRF token；命令未发送。", 403);
+      headers.set("X-CSRF-Token", this.csrfToken);
     }
 
     const query = new URLSearchParams();
@@ -326,6 +332,39 @@ export class WorkspaceBffClient {
       throw new WorkspaceBffError("invalid_response", "Workspace session 返回了错误 JSON 媒体类型。", 502);
     }
     return payload;
+  }
+
+  private async readSession(signal?: AbortSignal): Promise<WorkspaceSession> {
+    const result = sessionSchema.safeParse(await this.getJson(SESSION_PATH, signal));
+    if (!result.success) throw new WorkspaceBffError("invalid_response", "Workspace BFF session 响应不符合契约。", 502);
+    return result.data;
+  }
+
+  private async refreshCsrfToken(signal?: AbortSignal): Promise<void> {
+    const discoveredScope = this.sessionScope;
+    if (!discoveredScope) {
+      this.clearSessionState();
+      throw new WorkspaceBffError("workspace_not_discovered", "当前登录 session 尚未发现 Workspace；请重新发现后再执行命令。", 0);
+    }
+
+    try {
+      const session = await this.readSession(signal);
+      if (session.issuer !== discoveredScope.issuer
+        || session.subject !== discoveredScope.subject
+        || session.organizationId !== discoveredScope.organizationId) {
+        throw new WorkspaceBffError("session_changed", "登录身份或组织范围已变化；请重新发现并选择 Workspace。", 0);
+      }
+      this.csrfToken = session.csrfToken;
+    } catch (error) {
+      this.clearSessionState();
+      throw error;
+    }
+  }
+
+  private clearSessionState(): void {
+    this.discoveredWorkspaceIds.clear();
+    this.csrfToken = null;
+    this.sessionScope = null;
   }
 
   private async send(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
