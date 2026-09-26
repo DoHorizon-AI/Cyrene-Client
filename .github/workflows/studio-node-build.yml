@@ -27,9 +27,11 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
       PROFILE_ID: ${{ inputs.profile_id }}
       SOURCE_DIRECTORY: ${{ github.workspace }}/source
-      IMAGE_METADATA: ${{ runner.temp }}/image-metadata.json
-      BUILD_RESULT_FILE: ${{ runner.temp }}/build-result.json
     steps:
+      - name: Initialize runner-local output paths
+        run: |
+          printf 'IMAGE_METADATA=%s/image-metadata.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'BUILD_RESULT_FILE=%s/build-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           path: trusted
