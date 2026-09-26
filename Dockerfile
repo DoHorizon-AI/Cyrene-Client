@@ -9,6 +9,8 @@ RUN npm run build:web:navigator
 
 FROM nginx:1.27-alpine AS runtime
 
+LABEL org.opencontainers.image.source="https://github.com/DoHorizon-AI/Cyrene-Client"
+
 COPY --from=builder /app/apps/web/services/navigator/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
