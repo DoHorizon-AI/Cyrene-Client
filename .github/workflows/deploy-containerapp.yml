@@ -42,7 +42,7 @@ jobs:
         id: meta
         run: |
           REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE="ghcr.io/${REPO_OWNER}/cyrene-web"
+          IMAGE="ghcr.io/${REPO_OWNER}/cyrene-client-web"
           TAG="${{ github.event.inputs.image_tag }}"
           if [ -z "$TAG" ]; then
             TAG="sha-${GITHUB_SHA::7}"
