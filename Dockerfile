@@ -13,6 +13,7 @@ LABEL org.opencontainers.image.source="https://github.com/DoHorizon-AI/Cyrene-Cl
 
 COPY --from=builder /app/apps/web/services/navigator/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY cyrene-proxy.conf /etc/nginx/cyrene-proxy.conf
 
 EXPOSE 80
 
