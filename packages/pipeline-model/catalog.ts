@@ -4,10 +4,12 @@ export type ArtifactKind = "dataset" | "model" | "compute" | "evaluation" | "end
 export interface Port { name: string; label: string; kind: ArtifactKind }
 export interface Field { name: string; label: string; kind: "text" | "number" | "select"; choices?: string[] }
 export interface NodeDefinition {
-  type: string; version: "1"; title: string; owner: string; category: string; description: string; color: string;
+  type: string; version: string; title: string; owner: string; category: string; description: string; color: string;
   inputs: Port[]; outputs: Port[]; fields: Field[];
   defaults: Record<string, string | number>;
   configSchema: z.ZodTypeAny;
+  packageRef?: { id: string; version: string };
+  execution?: { kind: "reference" | "task" | "service" | "external"; adapter: string; image?: string; mutableFields: string[]; checkpoint: boolean };
 }
 const text = z.string().trim().min(1).max(300);
 export const catalog: NodeDefinition[] = [
@@ -68,3 +70,17 @@ export const catalog: NodeDefinition[] = [
   },
 ];
 export const definitions = new Map(catalog.map((d) => [d.type, d]));
+const versions = new Map(catalog.map(d => [`${d.type}@${d.version}`, d]));
+const builtins = [...catalog];
+export function getDefinition(type: string, version?: string) { return version === undefined ? definitions.get(type) : versions.get(`${type}@${version}`); }
+export function allDefinitions() { return [...versions.values()]; }
+/** A fully validated snapshot is installed atomically. Old descriptors are retained. */
+export function installDefinitions(items: NodeDefinition[], activeItems = items) {
+  const next = new Map(versions);
+  for (const item of items) next.set(`${item.type}@${item.version}`, item);
+  versions.clear(); for (const [key, item] of next) versions.set(key, item);
+  const latest = new Map(builtins.map(item => [item.type, item]));
+  for (const item of activeItems) latest.set(item.type, item);
+  definitions.clear(); for (const [key, item] of latest) definitions.set(key, item);
+  catalog.splice(0, catalog.length, ...latest.values());
+}

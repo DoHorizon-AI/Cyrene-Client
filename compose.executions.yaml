@@ -1,0 +1,18 @@
+# Optional Product execution integration. The base stack remains usable without
+# these credentials. Secret files must contain the matching dedicated bearer
+# credentials configured on Yield and Echo.
+services:
+  studio-control:
+    environment:
+      STUDIO_YIELD_EXECUTION_URL: ${STUDIO_YIELD_EXECUTION_URL:?Set the Yield Studio execution origin}
+      STUDIO_YIELD_EXECUTION_TOKEN_FILE: /run/secrets/studio_yield_execution_token
+      STUDIO_ECHO_EXECUTION_URL: ${STUDIO_ECHO_EXECUTION_URL:?Set the Echo Studio execution origin}
+      STUDIO_ECHO_EXECUTION_TOKEN_FILE: /run/secrets/studio_echo_execution_token
+    secrets:
+      - studio_yield_execution_token
+      - studio_echo_execution_token
+secrets:
+  studio_yield_execution_token:
+    file: ${STUDIO_YIELD_EXECUTION_TOKEN_FILE:?Set a private Yield bearer-token file path}
+  studio_echo_execution_token:
+    file: ${STUDIO_ECHO_EXECUTION_TOKEN_FILE:?Set a private Echo bearer-token file path}

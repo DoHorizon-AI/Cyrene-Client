@@ -3,6 +3,7 @@ import type { Pipeline } from "../../../../packages/pipeline-model";
 import type { PipelineRecord } from "../../../../packages/pipeline-control/contracts";
 import { mergeSaveAcknowledgement } from "../../../../packages/pipeline-control/merge";
 import { pipelineClient as client } from "./client";
+import { useTeamIdentity } from "../team/TeamGate";
 import "./pipelines.css";
 
 const graph = ({ presentation: _, ...p }: Pipeline) => p;
@@ -11,15 +12,20 @@ interface Props {
   document: Pipeline; selectedId: string | null; disabled: boolean;
   onApply(p: Pipeline): void; onLoad(p: Pipeline): void; onNotice(message: string): void;
   canUndo: boolean; onUndo(): void;
+  serverBase: PipelineRecord | null; onServerBase(record: PipelineRecord | null): void;
   render?(parts: { file: ReactNode; edit: ReactNode; toolbar: ReactNode; status: ReactNode; conflict: ReactNode; history: ReactNode }): ReactNode;
 }
 export function PipelineControls(props: Props) {
-  const [base, setBase] = useState<PipelineRecord | null>(null), [remote, setRemote] = useState<PipelineRecord | null>(null);
+  const { workspaceId } = useTeamIdentity();
+  const base = props.serverBase?.document.id === props.document.id && props.serverBase.workspaceId === workspaceId ? props.serverBase : null;
+  const setBase = props.onServerBase;
+  const [remote, setRemote] = useState<PipelineRecord | null>(null);
   const [items, setItems] = useState<{ id: string; name: string }[]>([]), [chosen, setChosen] = useState("");
   const [busy, setBusy] = useState(false), [summary, setSummary] = useState<string[]>([]);
   const live = useRef(props); live.current = props;
   const mounted = useRef(false), lifetime = useRef(0);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; lifetime.current++; }; }, []);
+  useEffect(() => { setRemote(null); setSummary([]); }, [props.document.id, workspaceId]);
   async function currentResult<T>(operation: Promise<T>): Promise<T> {
     const generation = lifetime.current;
     const result = await operation;
@@ -37,7 +43,7 @@ export function PipelineControls(props: Props) {
       if (pending || inflight.current) return;
       pending = true;
       try {
-        const result = await client.execute("pipelines.get", { workspaceId: "local", pipelineId: base.document.id });
+        const result = await client.execute("pipelines.get", { workspaceId, pipelineId: base.document.id });
         if (stopped || inflight.current) return;
         if (result.graphRevision !== base.graphRevision || result.layoutRevision !== base.layoutRevision) {
           if (same(live.current.document, base.document) && !live.current.disabled) {
@@ -48,8 +54,10 @@ export function PipelineControls(props: Props) {
       finally { pending = false; }
     };
     const timer = window.setInterval(() => void poll(), 2500);
-    return () => { stopped = true; window.clearInterval(timer); };
-  }, [base]);
+    const events = new EventSource("/studio-events/v1/stream");
+    events.addEventListener("snapshot", () => void poll());
+    return () => { stopped = true; window.clearInterval(timer); events.close(); };
+  }, [base, workspaceId]);
   async function run(fn: () => Promise<void>) {
     if (!mounted.current || locked || inflight.current) return;
     const generation = lifetime.current;
@@ -62,10 +70,11 @@ export function PipelineControls(props: Props) {
     const p = structuredClone(live.current.document);
     let result;
     if (!base || base.document.id !== p.id) {
-      const input = { workspaceId: "local", document: p };
+      const input = { workspaceId, document: p };
       result = await currentResult(client.execute("pipelines.create", input, keyFor(["create", input])));
     } else {
-      const input = { workspaceId: "local", pipelineId: p.id, expectedGraphRevision: base.graphRevision, expectedLayoutRevision: base.layoutRevision,
+      const input = { workspaceId, pipelineId: p.id, expectedGraphRevision: base.graphRevision, expectedLayoutRevision: base.layoutRevision,
+        mergeIndependent: true,
         ...(!same(graph(p), graph(base.document)) ? { graph: graph(p) } : {}),
         ...(!same(p.presentation, base.document.presentation) ? { presentation: p.presentation } : {}),
       };
@@ -77,17 +86,17 @@ export function PipelineControls(props: Props) {
     setBase(result.record); setRemote(null); setSummary(result.summary);
     live.current.onNotice(`服务端草稿已保存：流程 v${result.record.graphRevision} / 布局 v${result.record.layoutRevision}`);
   }
-  async function list() { const result = await currentResult(client.execute("pipelines.list", { workspaceId: "local" })); setItems(result.items); live.current.onNotice(result.items.length ? "请选择服务端流程，再点击载入。" : "服务端暂无流程，可先保存当前草稿。"); }
+  async function list() { const result = await currentResult(client.execute("pipelines.list", { workspaceId })); setItems(result.items); live.current.onNotice(result.items.length ? "请选择服务端流程，再点击载入。" : "服务端暂无流程，可先保存当前草稿。"); }
   async function load() {
     const sent = structuredClone(live.current.document);
-    const result = await currentResult(client.execute("pipelines.get", { workspaceId: "local", pipelineId: chosen }));
+    const result = await currentResult(client.execute("pipelines.get", { workspaceId, pipelineId: chosen }));
     if (!same(live.current.document, sent) || live.current.disabled) throw new Error("载入期间画布已修改或开始预演，旧结果未应用，请重试。");
     if ((!base || !same(live.current.document, base.document)) && !window.confirm("载入服务端流程会替换当前画布，是否继续？")) return;
     live.current.onLoad(result.document); setBase(result); setRemote(null); setSummary([]); live.current.onNotice("已载入服务端流水线，后续 AI 修改会在无本地变更时自动同步。");
   }
   async function layout(partial: boolean) {
     const p = structuredClone(live.current.document);
-    const result = await currentResult(client.execute("pipelines.preview_layout", { workspaceId: "local", document: p, options: { direction: "RIGHT", ...(partial && props.selectedId ? { nodeIds: [props.selectedId] } : {}) } }));
+    const result = await currentResult(client.execute("pipelines.preview_layout", { workspaceId, document: p, options: { direction: "RIGHT", ...(partial && props.selectedId ? { nodeIds: [props.selectedId] } : {}) } }));
     if (!same(live.current.document, p) || live.current.disabled) throw new Error("排版期间画布已修改或开始预演，旧结果未应用，请重试。");
     live.current.onApply(result.document); live.current.onNotice("排版已应用到本地画布，可撤销；保存到服务端后 AI 可读取新布局。");
   }
@@ -99,7 +108,7 @@ export function PipelineControls(props: Props) {
   async function undoRemote() {
     if (!base) return;
     const sent = structuredClone(live.current.document);
-    const input = { workspaceId: "local", pipelineId: base.document.id, expectedGraphRevision: base.graphRevision, expectedLayoutRevision: base.layoutRevision };
+    const input = { workspaceId, pipelineId: base.document.id, expectedGraphRevision: base.graphRevision, expectedLayoutRevision: base.layoutRevision };
     const result = await currentResult(client.execute("pipelines.undo", input, keyFor(["undo", input])));
     if (live.current.document.id !== sent.id) { live.current.onNotice("原流程已在服务端撤销；当前已切换流程，未应用旧结果。"); return; }
     setBase(result.record); setSummary(result.summary);
@@ -107,7 +116,7 @@ export function PipelineControls(props: Props) {
     else { setRemote(result.record); live.current.onNotice("服务端已撤销；操作期间的新本地修改已保留，可先导出备份后载入服务端版本。"); return; }
     live.current.onNotice("已撤销服务端最新一批修改，修订号保持递增。");
   }
-  async function history() { if (base) { const result = await currentResult(client.execute("pipelines.history", { workspaceId: "local", pipelineId: base.document.id })); setSummary(result.items.slice(-5).flatMap(e => [`${e.actorId} · ${e.command} · v${e.graphRevision}/${e.layoutRevision}`, ...e.summary])); } }
+  async function history() { if (base) { const result = await currentResult(client.execute("pipelines.history", { workspaceId, pipelineId: base.document.id })); setSummary(result.items.slice(-5).flatMap(e => [`${e.actorId} · ${e.command} · v${e.graphRevision}/${e.layoutRevision}`, ...e.summary])); } }
   const status = <span>{base ? `服务端 v${base.graphRevision} / 布局 v${base.layoutRevision}${dirty ? " · 本地有修改" : " · 已同步"}` : "尚未保存到服务端"}</span>;
   const toolbar = <><button disabled={locked} onClick={() => void run(save)}>保存到服务端</button><button disabled={locked} onClick={() => void run(() => layout(false))}>自动排版</button></>;
   const file = <div className="keep-menu-open"><button disabled={locked} onClick={() => void run(list)}>读取流程列表</button>

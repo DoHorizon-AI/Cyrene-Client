@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { serverSpec, type Observation, type ServerRecord, type ServerSpec, type auditEvent } from "../../../../packages/server-control/contracts";
+import { serverSpec, type ResolvedServer, type Observation, type ServerRecord, type ServerSpec, type auditEvent } from "../../../../packages/server-control/contracts";
 import type { PipelineNode } from "../../../../packages/pipeline-model";
 import { serverClient } from "./client";
+import { useTeamIdentity } from "../team/TeamGate";
 import "./servers.css";
 
 const attachmentLabels = { HOST_AGENT: "自管服务器", CONTAINER_AGENT: "容器算力", PROVIDER_MANAGED: "云平台托管" };
@@ -22,6 +23,9 @@ export function ServerManager() {
 }
 
 export function ServerManagerBody() {
+  const { workspaceId, scopes } = useTeamIdentity();
+  const canWrite = scopes.includes("servers.write");
+  const [resolved, setResolved] = useState<ResolvedServer | null>(null);
   const [items, setItems] = useState<ServerRecord[]>([]), [selected, setSelected] = useState<ServerRecord | null>(null);
   const [spec, setSpec] = useState<ServerSpec>({ ...emptySpec }), [filter, setFilter] = useState("");
   const [events, setEvents] = useState<z.infer<typeof auditEvent>[]>([]), [status, setStatus] = useState<Observation | null>(null);
@@ -35,8 +39,8 @@ export function ServerManagerBody() {
   };
   async function reload() {
     const [list, history] = await Promise.all([
-      serverClient.execute("servers.list", { workspaceId: "local" }),
-      serverClient.execute("servers.events", { workspaceId: "local", after: 0 }),
+      serverClient.execute("servers.list", { workspaceId }),
+      serverClient.execute("servers.events", { workspaceId, after: 0 }),
     ]);
     if (!mounted.current) return;
     setItems(list.items); setEvents(history.items); setReady(true);
@@ -49,10 +53,10 @@ export function ServerManagerBody() {
   }
   useEffect(() => { mounted.current = true; void run(reload); return () => { mounted.current = false; generation.current++; }; }, []);
   function choose(item: ServerRecord | null) {
-    generation.current++; setSelected(item); setSpec(item ? serverSpec.parse(itemSpec(item)) : { ...emptySpec }); setStatus(null); setMessage("");
+    generation.current++; setSelected(item); setSpec(item ? serverSpec.parse(itemSpec(item)) : { ...emptySpec }); setStatus(null); setResolved(null); setMessage("");
   }
   async function save() {
-    const input = { workspaceId: "local", spec: serverSpec.parse(spec) };
+    const input = { workspaceId, spec: serverSpec.parse(spec) };
     const target = selected ? { ...input, serverId: selected.id, expectedRevision: selected.revision } : input;
     const result = selected ? await serverClient.execute("servers.update", target as typeof input & { serverId: string; expectedRevision: number }, keyFor(["update", target])) : await serverClient.execute("servers.register", input, keyFor(["register", input]));
     if (!mounted.current) return;
@@ -60,7 +64,7 @@ export function ServerManagerBody() {
   }
   async function archive() {
     if (!selected) return;
-    const input = { workspaceId: "local", serverId: selected.id, expectedRevision: selected.revision };
+    const input = { workspaceId, serverId: selected.id, expectedRevision: selected.revision };
     const result = await serverClient.execute("servers.archive", input, keyFor(["archive", input]));
     if (!mounted.current) return;
     choose(result); setMessage("登记已归档；目标服务器及其运行任务未被修改。"); await reload();
@@ -68,11 +72,17 @@ export function ServerManagerBody() {
   async function readStatus() {
     if (!selected) return;
     const version = generation.current;
-    const result = await serverClient.execute("servers.status", { workspaceId: "local", serverId: selected.id });
+    const result = await serverClient.execute("servers.status", { workspaceId, serverId: selected.id });
     if (mounted.current && generation.current === version) setStatus(result);
   }
+  async function resolveTarget() {
+    if (!selected) return;
+    const version = generation.current; setResolved(null);
+    const result = await serverClient.execute("servers.resolve", { workspaceId, serverId: selected.id });
+    if (mounted.current && generation.current === version) setResolved(result);
+  }
   const visible = items.filter(s => `${s.name} ${s.provider} ${s.region}`.toLowerCase().includes(filter.toLowerCase()));
-  const locked = busy || !ready || !!selected?.archived;
+  const locked = busy || !ready || !!selected?.archived || !canWrite;
   return <>
     <p className="server-intro">集中登记自管服务器、容器算力和云平台资源。连接状态来自控制服务，资源登记不会分配 GPU。</p>
     <div className="server-summary"><span><b>{items.filter(s => !s.archived).length}</b> 有效登记</span><span>本地登记库 · 状态按需查询</span><button disabled={busy} onClick={() => void run(reload)}>刷新登记</button></div>
@@ -93,7 +103,8 @@ export function ServerManagerBody() {
             <button className="primary" type="submit">保存服务器登记</button>
           </fieldset>
         </form>
-        {selected && <div className="server-actions"><button disabled={busy} onClick={() => void run(readStatus)}>查询连接状态</button><button disabled={locked} onClick={() => void run(archive)}>归档登记</button></div>}
+        {selected && <div className="server-actions"><button disabled={busy} onClick={() => void run(readStatus)}>查询连接状态</button><button disabled={busy || selected.archived} onClick={() => void run(resolveTarget)}>核对执行身份</button><button disabled={locked} onClick={() => void run(archive)}>归档登记</button></div>}
+        {resolved && <p role="status">已核对登记 v{resolved.revision} · 节点 {resolved.nodeRef.nodeId} · 代次 {resolved.nodeRef.epoch}。启动任务时仍需取得资源租约。</p>}
         {status && <div className="server-observation" role="status"><strong>{({ UNCONNECTED: "未连接", ONLINE: "在线", OFFLINE: "离线", STALE: "观测已过期" })[status.state]}</strong><p>{status.message}</p><small>{status.observedAt ? `观测时间：${status.observedAt}` : "尚无观测时间"}</small></div>}
         <div className="server-guidance"><strong>目标服务器组件</strong><p>{spec.attachment === "HOST_AGENT" ? "使用 Platform 的 cy-node-agent，主动建立 mTLS 连接，桥接本机 Kernel。" : spec.attachment === "CONTAINER_AGENT" ? "使用 Platform 的 cy-runtime-agent，适合没有 root、systemd 或入站端口的容器算力。" : "通过云提供方适配器接入，凭据保存在控制服务端。"}</p><small>当前版本完成资源登记；目标端安装、心跳、GPU 监控与云平台操作尚未接通。</small></div>
       </section>

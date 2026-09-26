@@ -46,6 +46,8 @@ export interface GraphHandle {
   remove(id: string): void;
   select(id: string): void;
   fit(): void;
+  getView?(): { scale: number; offset: [number, number] } | undefined;
+  setView?(view: { scale: number; offset: [number, number] }): void;
 }
 interface Props { initial: Pipeline; interactive?: boolean; onChange(p: Pipeline): void; onSelect(id: string | null): void }
 
@@ -99,6 +101,8 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
       if (n) { c.canvas.selectNode(n); c.canvas.centerOnNode(n); callbacks.current.onSelect(id); }
     },
     fit,
+    getView() { const c = live.current?.canvas; return c ? { scale: c.ds.scale, offset: [c.ds.offset[0], c.ds.offset[1]] } : undefined; },
+    setView(view) { const c = live.current?.canvas; if (c) { c.ds.scale = view.scale; c.ds.offset[0] = view.offset[0]; c.ds.offset[1] = view.offset[1]; c.setDirty(true, true); } },
   }), []);
 
   useEffect(() => {

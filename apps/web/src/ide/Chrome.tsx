@@ -69,7 +69,7 @@ export function useIdeLayout() {
   useEffect(() => { try { localStorage.setItem("cyrene.studio.layout.v1", JSON.stringify(layout)); } catch { /* Layout preferences are optional. */ } }, [layout]);
   useEffect(() => {
     const resize = () => { if (innerWidth < 1000) setLayout(s => s.left && s.right ? { ...s, left: null } : s); };
-    window.addEventListener("resize", resize); return () => window.removeEventListener("resize", resize);
+    window.addEventListener("resize", resize); resize(); return () => window.removeEventListener("resize", resize);
   }, []);
   const left = (tool: LeftTool) => setLayout(s => ({ ...s, left: s.left === tool ? null : tool, ...(innerWidth < 1000 ? { right: null } : {}) }));
   const right = (tool: RightTool) => setLayout(s => ({ ...s, right: s.right === tool ? null : tool, ...(innerWidth < 1000 ? { left: null } : {}) }));

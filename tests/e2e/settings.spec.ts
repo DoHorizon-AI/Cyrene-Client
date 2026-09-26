@@ -1,6 +1,6 @@
 import { menuAction } from "./ide-helpers";
 import { expect, test, type Page } from "@playwright/test";
-import { authSession, draft, hostStatus, ids, models, sessions, suite, version } from "../fixtures/settings";
+import { artifact, authSession, draft, hostStatus, ids, models, sessions, suite, version } from "../fixtures/settings";
 import { examplePipeline } from "../../packages/pipeline-model";
 
 async function fixtures(page: Page) {
@@ -63,7 +63,7 @@ test("all seven nodes use settings APIs; only explicit saves write, and never st
   await expect(panel(page).getByText(/Fixture dataset/)).toBeVisible();
   await panel(page).getByLabel("数据版本 ID（留空读取数据集）").fill(ids.version);
   await panel(page).getByRole("button", { name: "读取服务设置" }).click();
-  await expect(page.getByLabel("数据集版本引用")).toHaveValue(ids.version);
+  await expect(page.getByLabel("数据集版本引用")).toHaveValue(artifact.uri);
 
   await select(page, "基础模型");
   await panel(page).getByRole("button", { name: "读取服务设置" }).click();

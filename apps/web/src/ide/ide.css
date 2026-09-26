@@ -74,7 +74,8 @@
 .ide-source-view > div span { color: #778090; white-space: nowrap; margin-left: 10px; }
 .ide-source-view pre { margin: 0; padding: 16px 24px; overflow: auto; font: 12px/1.7 Consolas, "Microsoft YaHei", monospace; color: #b8c5e3; flex: 1; tab-size: 2; }
 .ide-studio .bottom-panel { position: relative; height: var(--bottom-height); min-height: 100px; max-height: 50%; background: #242529; border-color: #44474f; }
-.ide-studio .bottom-tabs { height: 33px; padding: 0 10px; gap: 15px; border-bottom-color: #35373d; }
+.ide-studio .bottom-tabs { height: 33px; padding: 0 10px; gap: 15px; border-bottom-color: #35373d; overflow-x: auto; min-width: 0; }
+.ide-studio .bottom-tabs > button { flex-shrink: 0; }
 .ide-studio .bottom-tabs button { display: flex; gap: 5px; align-items: center; height: 33px; font-size: 11px; padding: 7px 0; border: 0; border-radius: 0; background: transparent; color: #939aa6; }
 .ide-studio .bottom-tabs button svg { width: 13px; height: 13px; }.ide-studio .bottom-tabs button.active { border-bottom: 2px solid #548af7; color: #dfe1e5; }.ide-studio .bottom-tabs button span { background: #3d3f44; color: #a9afba; }.ide-studio .bottom-tabs .ide-bottom-close { margin-left: auto; }
 .ide-studio .check-content, .ide-studio .preview-content { max-height: calc(var(--bottom-height) - 35px); padding: 15px; }.ide-studio .check-pass > span { border-radius: 3px; background: #303b31; color: #a4bf97; }.ide-studio .check-pass strong { color: #c3ccc0; }.ide-studio .check-pass p { color: #858d9b; font-size: 11px; }

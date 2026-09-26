@@ -1,0 +1,32 @@
+import { expect, test } from "@playwright/test";
+
+test("team login, saved graph, unavailable execution and member permissions use the independent service", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("团队用户名").fill("owner"); await page.getByLabel("团队密码").fill("browser-fixture-owner-password");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.getByLabel("流水线名称")).toBeVisible();
+  await page.getByLabel("流水线名称").fill("Team control acceptance");
+  await page.getByRole("button", { name: "保存到服务端", exact: true }).click();
+  await expect(page.locator(".footer [role=status]")).toContainText("服务端草稿已保存");
+  await page.getByRole("button", { name: "真实运行", exact: true }).click();
+  await page.getByRole("button", { name: "运行预检", exact: true }).click();
+  await expect(page.getByLabel("真实运行管理")).toContainText("尚未连接执行适配器");
+  await expect(page.getByRole("button", { name: "启动真实运行", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "owner · 账号", exact: true }).click();
+  await page.getByLabel("新成员用户名").fill("reader"); await page.getByLabel("新成员初始密码").fill("browser-fixture-reader-password");
+  await page.getByRole("button", { name: "添加", exact: true }).click();
+  await expect(page.getByLabel("新成员用户名")).toHaveValue("");
+  await page.getByRole("button", { name: "退出登录", exact: true }).click();
+  await page.getByLabel("团队用户名").fill("reader"); await page.getByLabel("团队密码").fill("browser-fixture-reader-password");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.getByLabel("流水线名称")).toBeVisible();
+  const session = await (await page.request.get("/studio-pipelines/v1/session")).json();
+  const request = (name: string, input: unknown) => page.request.post("/studio-pipelines/v1/commands", { headers: { "x-studio-control-token": session.token }, data: { name, input, requestId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID() } });
+  const list = await (await request("pipelines.list", { workspaceId: "local" })).json();
+  const saved = list.result.items.filter((item: { id: string }) => item.id === "instruction-tuning");
+  expect(saved).toHaveLength(1); expect(saved[0].name).toBe("Team control acceptance");
+  const denied = await request("pipelines.patch", { workspaceId: "local", pipelineId: saved[0].id, expectedGraphRevision: 1, expectedLayoutRevision: 1, edits: [{ op: "rename", name: "Denied mutation" }] });
+  expect(denied.status()).toBe(403);
+  await page.getByRole("button", { name: "reader · 账号", exact: true }).click();
+  await expect(page.getByLabel("新成员用户名")).toHaveCount(0);
+});

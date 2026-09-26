@@ -1,0 +1,53 @@
+name: cyrene-studio
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: studio
+      POSTGRES_USER: studio
+      POSTGRES_PASSWORD: ${STUDIO_DB_PASSWORD:?Set STUDIO_DB_PASSWORD}
+    volumes:
+      - studio-database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U studio -d studio"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+  studio-control:
+    build:
+      context: .
+      target: control
+    environment:
+      STUDIO_MODE: team
+      STUDIO_DATABASE_URL: postgresql://studio:${STUDIO_DB_PASSWORD:?Set STUDIO_DB_PASSWORD}@postgres:5432/studio
+      STUDIO_PUBLIC_ORIGINS: ${STUDIO_PUBLIC_ORIGINS:-http://127.0.0.1:5180}
+      STUDIO_NAVIGATOR_URL: ${STUDIO_NAVIGATOR_URL:-}
+      STUDIO_YIELD_EXECUTION_URL: ${STUDIO_YIELD_EXECUTION_URL:-}
+      STUDIO_YIELD_EXECUTION_TOKEN: ${STUDIO_YIELD_EXECUTION_TOKEN:-}
+      STUDIO_ECHO_EXECUTION_URL: ${STUDIO_ECHO_EXECUTION_URL:-}
+      STUDIO_ECHO_EXECUTION_TOKEN: ${STUDIO_ECHO_EXECUTION_TOKEN:-}
+      STUDIO_NODE_PACKAGES_DIR: /app/node-packages
+    volumes:
+      - ./node-packages:/app/node-packages:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:5182/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  studio-web:
+    build:
+      context: .
+      target: web
+    ports:
+      - "127.0.0.1:${STUDIO_WEB_PORT:-5180}:8080"
+    depends_on:
+      studio-control:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  studio-database:

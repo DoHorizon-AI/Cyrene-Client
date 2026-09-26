@@ -4,11 +4,13 @@
 
 公司仓库：[DoHorizon-AI/Cyrene-Studio](https://github.com/DoHorizon-AI/Cyrene-Studio)。默认开发分支为 `develop`；GitHub Actions 负责测试和构建，目前不部署服务或发布 npm 包。
 
-**当前已接入节点设置客户端，流水线执行仍是本地预演。** 默认不配置服务地址；连接 Navigator Web Host 后，可读取节点资源设置，显式保存 Yield 草稿参数或另存 Echo 评估配置。不会申请 GPU、启动训练、部署模型或发送 Agent 消息。当前验证使用隔离接口测试，尚未完成真实运行环境联调。
+**已增加独立控制服务、团队存储、分容器部署、运行协调以及 Yield/Echo 私有执行提供方。完整的双服务器训练→评估链路仍需目标环境验收。** 默认仍可使用原有本地预演；真实运行会先通过 Product 适配器预检。Yield 还要求实际 Kernel 训练绑定，Echo 还要求受信的模型推理输入准备器；缺少任一依赖都会明确拒绝启动。节点设置继续通过 Navigator 提供的现有接口操作。部署、迁移、能力边界与剩余实施项见 [分布式控制服务](docs/distributed-control.md)。
+
+新增“构建 / 运行”菜单、持久化 GitHub Actions 构建任务、结果验证和显式节点版本启用；对应操作共享 HTTP/MCP 契约。需管理员配置真实构建仓库和凭据，使用方法见 [节点镜像构建](docs/node-builds.md)。
 
 ## 本地启动
 
-Node.js 22.12+，已在 Node.js 24 下验证。
+Node.js 24+；独立开发存储使用 Node 内置 SQLite。
 
 ```powershell
 git clone https://github.com/DoHorizon-AI/Cyrene-Studio.git
@@ -18,6 +20,10 @@ npm run dev
 ```
 
 打开 <http://127.0.0.1:5180>。开发服务器仅监听回环地址；端口占用时退出，不会终止已有进程。
+
+使用新增独立后端运行 `npm run dev:services`。切换前停止旧开发进程；需要继承原 `.studio/*.json` 时先执行 `npm run control:migrate`，原文件及备份保留。团队部署使用 PostgreSQL，详见上面的部署说明。
+
+团队 Compose 连接 Yield/Echo 时推荐挂载专用凭据文件：设置 `STUDIO_YIELD_EXECUTION_URL`、`STUDIO_YIELD_EXECUTION_TOKEN_FILE`、`STUDIO_ECHO_EXECUTION_URL` 和 `STUDIO_ECHO_EXECUTION_TOKEN_FILE`，再运行 `docker compose -f compose.yaml -f compose.executions.yaml up -d --build`。本地非容器运行也支持对应的 `STUDIO_*_EXECUTION_TOKEN_FILE`。同一 Product 不能同时配置 `TOKEN` 和 `TOKEN_FILE`，URL 与凭据必须成对出现。
 
 ## 可以尝试
 
@@ -113,9 +119,9 @@ Studio 是独立仓库，可单独打开此目录开发；多仓库工作区将�
 
 ## 下一阶段
 
-先使用实际 Web Host 地址完成节点联调，并接入第一台运行 Platform Agent 的目标服务器。在已有草稿持久化、版本与 MCP 编辑入口之上建立执行计划和运行协调器，再逐个接入真实训练、评估、部署、云管理与 Agent 执行。
+执行计划、构建控制、运行协调器和 Yield/Echo 私有执行契约已经加入。下一阶段是生产装配：让 Product supervisor 调用 Platform 容器启动器、接通跨机制品传输和实际目标服务器，再验收双服务器训练→评估。
 
-本轮不包含运行编排、远端执行、云供应商管理、真实制品血缘、审批、任务重试、CRDT 协作与子图。草稿持久化及撤销已实现，重做尚未实现。示例的同一数据集连接用于展示端口，真实训练与评估需明确数据切分；评估完成不等于评估门禁通过，正式部署必须增加服务端检查。
+现有运行协调包括意图持久化、终态确认和有限重试；Yield/Echo 提供方测试不等于 GPU 或模型推理验收。云供应商管理、跨机制品平面、CRDT、子图与重做仍未实现。示例的同一数据集连接用于展示端口，真实训练与评估需明确数据切分；评估完成不等于评估门禁通过，正式部署必须增加服务端检查。
 
 上游核心包的数字控件含 `eval`，构建会发出警告。本原型通过 React 表单编辑参数，不使用该数字控件，也关闭上游通用菜单、原生图导入与剪贴板入口。发布前仍需评估严格 CSP、无 eval 构建和依赖维护方案；当前构建通过不等于具备生产发布条件。
 

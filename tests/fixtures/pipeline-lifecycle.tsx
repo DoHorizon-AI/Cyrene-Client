@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { PipelineControls } from "../../apps/web/src/pipelines/PipelineControls";
 import { pipelineClient } from "../../apps/web/src/pipelines/client";
 import { examplePipeline } from "../../packages/pipeline-model";
+import type { PipelineRecord } from "../../packages/pipeline-control/contracts";
 
 declare global {
   interface Window { pipelineLifecycle: { callbacks: string[]; completed: number } }
@@ -16,10 +17,11 @@ pipelineClient.execute = (async (...args: Parameters<typeof execute>) => {
 
 function Harness() {
   const [open, setOpen] = useState(true);
+  const [base, setBase] = useState<PipelineRecord | null>(null);
   const [document] = useState(() => ({ ...examplePipeline(), id: `lifecycle-${crypto.randomUUID()}` }));
   const record = (name: string) => { window.pipelineLifecycle.callbacks.push(name); };
   return <><button onClick={() => setOpen(false)}>关闭工作台</button>{open && <PipelineControls
-    document={document} selectedId={null} disabled={false} canUndo={false}
+    document={document} serverBase={base} onServerBase={setBase} selectedId={null} disabled={false} canUndo={false}
     onApply={() => record("apply")} onLoad={() => record("load")}
     onNotice={() => record("notice")} onUndo={() => record("undo")}
   />}</>;

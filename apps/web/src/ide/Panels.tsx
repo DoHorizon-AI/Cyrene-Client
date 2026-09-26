@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { Pipeline } from "../../../../packages/pipeline-model";
 import { Icon } from "./Chrome";
+import { useTeamIdentity } from "../team/TeamGate";
 
 export function FilePanel({ document, disabled, onImport, onPreview, onSource, onNotice }: { document: Pipeline; disabled: boolean; onImport(file: File): void; onPreview(name: string, text: string): void; onSource(): void; onNotice(message: string): void }) {
   const input = useRef<HTMLInputElement>(null), folder = useRef<HTMLInputElement>(null), readVersion = useRef(0);
@@ -25,14 +26,19 @@ export function FilePanel({ document, disabled, onImport, onPreview, onSource, o
 }
 
 export function AssistantPanel({ document, selectedId, onNotice }: { document: Pipeline; selectedId: string | null; onNotice(message: string): void }) {
+  const { workspaceId } = useTeamIdentity();
   const [prompt, setPrompt] = useState(""), [tools, setTools] = useState<{ name: string; readOnly: boolean }[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState("");
   async function loadTools() {
     setBusy(true); setError("");
-    try { const response = await fetch("/studio-pipelines/v1/session", { signal: AbortSignal.timeout(10000) }); if (!response.ok) throw new Error("控制服务不可用。"); const data = await response.json(); if (!Array.isArray(data.commands) || data.commands.some((t: any) => typeof t.name !== "string" || typeof t.readOnly !== "boolean")) throw new Error("工具目录格式不匹配。"); setTools(data.commands); }
+    try {
+      let response = await fetch("/studio-commands/v1/session", { signal: AbortSignal.timeout(10000) });
+      if (response.status === 404 || !response.headers.get("content-type")?.includes("application/json")) response = await fetch("/studio-pipelines/v1/session", { signal: AbortSignal.timeout(10000) });
+      if (!response.ok) throw new Error("控制服务不可用。"); const data = await response.json(); if (!Array.isArray(data.commands) || data.commands.some((t: any) => typeof t.name !== "string" || typeof t.readOnly !== "boolean")) throw new Error("工具目录格式不匹配。"); setTools(data.commands);
+    }
     catch (e) { setError(e instanceof Error ? e.message : "无法读取工具目录。"); } finally { setBusy(false); }
   }
   async function copy() {
-    try { await navigator.clipboard.writeText(`请通过 Cyrene Studio MCP 操作工作空间 local 中的流程 ${document.id}。${selectedId ? `当前选中节点：${selectedId}。` : ""}\n先读取服务端最新版本并校验。\n\n${prompt}`); onNotice("任务与流程上下文已复制，可粘贴到已连接 Studio MCP 的 AI 客户端。"); }
+    try { await navigator.clipboard.writeText(`请通过 Cyrene Studio MCP 操作工作空间 ${workspaceId} 中的流程 ${document.id}。${selectedId ? `当前选中节点：${selectedId}。` : ""}\n先读取服务端最新版本并校验。\n\n${prompt}`); onNotice("任务与流程上下文已复制，可粘贴到已连接 Studio MCP 的 AI 客户端。"); }
     catch { onNotice("剪贴板不可用，可手动选择任务文字复制。"); }
   }
   return <section className="ide-assistant"><div className="ide-assistant-head"><Icon name="assistant" /><h3>一起构建下一步</h3><p>把想法变成可编辑的流水线。</p></div>

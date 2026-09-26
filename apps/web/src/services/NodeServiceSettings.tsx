@@ -62,7 +62,7 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
         const item = await client.datasetVersion(z.string().uuid().parse(resourceId.trim()), signal);
         if (!active(signal)) return;
         if (item.state !== "PUBLISHED" || !item.output) throw new Error("该数据版本尚未发布，或没有输出制品，未应用到节点。");
-        apply({ datasetRef: item.id }, { kind: "dataset-version", resourceId: item.id });
+        apply({ datasetRef: item.output.uri }, { kind: "dataset-version", resourceId: item.id, artifact: item.output });
         setFacts([`数据集：${item.datasetId}`, `版本：${item.version} · ${item.state}`, `行数：${item.rowCount ?? "未报告"}`]);
         setMessage("已读取已发布版本并更新本地节点。");
       } else {
@@ -74,7 +74,7 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
       const items = await client.models(signal); if (!active(signal)) return;
       const ready = items.filter((x) => x.state === "READY" && x.modelArtifact);
       setChoices(ready.map((x) => ({ id: x.id, label: x.name, apply: () => {
-        apply({ modelRef: x.modelArtifact!.uri }, { kind: "model-import", resourceId: x.id });
+        apply({ modelRef: x.modelArtifact!.uri }, { kind: "model-import", resourceId: x.id, artifact: x.modelArtifact! });
         setMessage(`已选择 ${x.name}，模型制品引用已写入本地节点。`);
       } })));
       setMessage(`已读取 ${items.length} 个模型，其中 ${ready.length} 个可选择。`);

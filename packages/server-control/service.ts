@@ -33,6 +33,14 @@ export class ServerControl {
       }
       const args = commands["servers.status"].input.parse(input);
       const server = this.find(db, args.workspaceId, args.serverId);
+      if (request.name === "servers.resolve") {
+        if (server.archived) throw new ControlError("ARCHIVED", "服务器登记已归档。", 409);
+        const status = observation.parse(await this.execute({ name: "servers.status", input: args, requestId: request.requestId }, actor));
+        const latest = this.find(await this.store.read(), args.workspaceId, args.serverId);
+        if (latest.revision !== server.revision || latest.archived) throw new ControlError("REVISION_CONFLICT", "观测期间服务器登记发生变化，请重新预检。", 409);
+        if (status.state !== "ONLINE" || !status.nodeRef) throw new ControlError("SERVER_UNAVAILABLE", "服务器尚未取得新鲜的在线 Node 身份，不能用于执行。", 409);
+        return { serverId: server.id, revision: server.revision, nodeRef: status.nodeRef };
+      }
       const adapter = !server.archived && this.observers.get(server.connectionRef);
       if (!adapter) return observation.parse({ serverId: server.id, state: "UNCONNECTED", observedAt: null, nodeRef: null, capabilities: [], message: server.archived ? "登记已归档。" : "已登记；连接适配器尚未接入，没有实时资源观测。" });
       const result = observation.parse(await adapter.read(server, actor));

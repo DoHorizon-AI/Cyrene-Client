@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { catalog, definitions } from "../../../packages/pipeline-model/catalog";
+import { catalog, definitions, getDefinition } from "../../../packages/pipeline-model/catalog";
 import { examplePipeline, inspect, type PipelineNode } from "../../../packages/pipeline-model";
 import { GraphCanvas } from "./graph/GraphCanvas";
 import { SettingsClient } from "./services/client";
@@ -9,13 +9,17 @@ import type { HostStatus } from "../../../packages/service-settings/contracts";
 import { ServerManagerBody, ComputeTargetSettings } from "./servers/ServerManager";
 import { PipelineControls } from "./pipelines/PipelineControls";
 import { usePipelineDocument } from "./pipelines/usePipelineDocument";
+import { useRunControl } from "./runs/RunPanel";
+import { useBuildControl } from "./builds/useBuildControl";
+import { useNodeCatalog } from "./pipelines/useNodeCatalog";
 
 import { Icon, Menu, ResizeHandle, useIdeLayout } from "./ide/Chrome";
 import { FilePanel, AssistantPanel, PluginPanel } from "./ide/Panels";
 
-type Tab = "checks" | "preview" | "log";
+type Tab = "checks" | "preview" | "log" | "runs" | "builds";
 
 export function App() {
+  const catalogRevision = useNodeCatalog();
   const { layout, setLayout, left, right, reset } = useIdeLayout();
   const [serverVisited, setServerVisited] = useState(false);
   const [editorTab, setEditorTab] = useState<"graph" | "source" | "file">("graph");
@@ -30,14 +34,17 @@ export function App() {
   const [plan, setPlan] = useState<string[]>([]);
   const [cursor, setCursor] = useState(0);
   const [running, setRunning] = useState(false);
-  const { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, changed, recordChange, applyDocument, loadServerDocument, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor } = usePipelineDocument({
+  const { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, changed, recordChange, applyDocument, loadServerDocument, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor, recoveries, recoveryStatus, recover, serverBase, updateServerBase } = usePipelineDocument({
     selectedId, onSelect: setSelectedId, onNotice: setNotice,
     onResetPreview: () => { setRunning(false); setPlan([]); setCursor(0); },
     onShowGraph: () => setEditorTab("graph"),
   });
-  const validation = useMemo(() => inspect(pipeline), [pipeline]);
+  const validation = useMemo(() => inspect(pipeline), [pipeline, catalogRevision]);
+  const runControl = useRunControl({ document: pipeline, selectedId, onNotice: setNotice });
+  const buildControl = useBuildControl(setNotice);
+  const showBottom = (next: Tab) => { setTab(next); setLayout(s => ({ ...s, bottom: true })); };
   const selected = pipeline.nodes.find((n) => n.id === selectedId);
-  const selectedDefinition = selected && definitions.get(selected.type);
+  const selectedDefinition = selected && getDefinition(selected.type, selected.typeVersion);
   const groups = [...new Set(catalog.map((d) => d.category))];
 
   useEffect(() => {
@@ -79,15 +86,16 @@ export function App() {
   const rightTitle = layout.right === "assistant" ? "平台 MCP" : layout.right === "plugins" ? "页面插件" : "节点信息";
   const css = { "--left-width": `${layout.leftWidth}px`, "--right-width": `${layout.rightWidth}px`, "--bottom-height": `${layout.bottomHeight}px` } as CSSProperties;
   return <div className={`studio ide-studio ${layout.left ? "has-left" : ""} ${layout.right ? "has-right" : ""}`} style={css}>
-    <PipelineControls document={pipeline} selectedId={selectedId} disabled={running} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} render={controls => <>
+    <PipelineControls serverBase={serverBase} onServerBase={updateServerBase} document={pipeline} selectedId={selectedId} disabled={running} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} render={controls => <>
       <header className="ide-titlebar">
         <div className="ide-brand" aria-label="Cyrene Studio">C<span>↗</span></div>
         <nav className="ide-menubar" aria-label="主菜单">
-          <Menu label="文件"><button aria-label="保存草稿" disabled={running} onClick={save}>保存草稿 <kbd>Ctrl S</kbd></button><button disabled={!savedDraft || running} onClick={restore}>载入草稿</button><button disabled={running} onClick={() => fileInput.current?.click()}>导入 JSON</button><button disabled={running} onClick={exportJson}>导出 JSON</button><hr />{controls.file}</Menu>
+          <Menu label="文件"><button aria-label="保存草稿" disabled={running} onClick={save}>保存草稿 <kbd>Ctrl S</kbd></button><button disabled={!savedDraft || running} onClick={restore}>载入草稿</button><button disabled={running} onClick={() => fileInput.current?.click()}>导入 JSON</button><button disabled={running} onClick={exportJson}>导出 JSON</button><hr />{controls.file}<hr /><details><summary>恢复未保存编辑</summary>{recoveries.length ? recoveries.slice(0, 20).map(record => <button key={record.id} disabled={running} onClick={() => recover(record.id)}>{record.document.name} · {new Date(record.savedAt).toLocaleString()}</button>) : <span>暂无恢复记录</span>}</details></Menu>
           <Menu label="编辑">{controls.edit}</Menu>
-          <Menu label="视图"><button onClick={() => left("files")}>项目文件 <kbd>Alt 1</kbd></button><button onClick={() => left("nodes")}>节点库 <kbd>Alt 2</kbd></button><button onClick={() => left("servers")}>服务器管理 <kbd>Alt 3</kbd></button><hr /><button onClick={() => right("info")}>节点信息</button><button onClick={() => right("plugins")}>页面插件</button><button onClick={() => right("assistant")}>平台 MCP</button><button onClick={() => setLayout(s => ({ ...s, bottom: !s.bottom }))}>切换底部工具窗口 <kbd>Alt 9</kbd></button><hr /><button onClick={reset}>恢复默认布局</button></Menu>
-          <Menu label="流程"><button disabled={running} onClick={() => { showChecks(); setNotice(validation.issues.length ? `发现 ${validation.issues.length} 个问题。` : "结构校验通过；真实资源可用性与业务门禁尚未验证。"); }}>校验流程</button><button disabled={running} onClick={() => replace(examplePipeline(), "已载入训练示例。")}>训练示例</button>{controls.history}</Menu>
-          <Menu label="工具"><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}>事件日志</button><button onClick={() => { setEditorTab("source"); }}>查看流程 JSON</button><button onClick={() => right("assistant")}>MCP 工具与上下文</button></Menu>
+          <Menu label="视图"><button onClick={() => left("files")}>项目文件 <kbd>Alt 1</kbd></button><button onClick={() => left("nodes")}>节点库 <kbd>Alt 2</kbd></button><button onClick={() => left("servers")}>服务器管理 <kbd>Alt 3</kbd></button><hr /><button onClick={() => right("info")}>节点信息</button><button onClick={() => right("plugins")}>页面插件</button><button onClick={() => right("assistant")}>平台 MCP</button><button onClick={() => showBottom("builds")}>构建输出</button><button onClick={() => showBottom("runs")}>运行详情与日志</button><button onClick={() => setLayout(s => ({ ...s, bottom: !s.bottom }))}>切换底部工具窗口 <kbd>Alt 9</kbd></button><hr /><button onClick={reset}>恢复默认布局</button></Menu>
+          <Menu label="构建"><button disabled={running} onClick={() => { showChecks(); setNotice(validation.issues.length ? `发现 ${validation.issues.length} 个问题。` : "结构校验通过；真实资源可用性与业务门禁尚未验证。"); }}>校验流程</button><button onClick={() => showBottom("builds")}>节点镜像与版本管理</button><div onClick={() => showBottom("runs")}>{runControl.compileAction}</div><div onClick={() => showBottom("builds")}>{buildControl.menu}</div><hr /><button disabled={running} onClick={() => replace(examplePipeline(), "已载入训练示例。")}>训练示例</button>{controls.history}</Menu>
+          <Menu label="运行"><button onClick={() => showBottom("runs")}>执行服务器与运行列表</button><div onClick={() => showBottom("runs")}>{runControl.menu}</div><hr /><button disabled={running} onClick={preview}>本地预演</button></Menu>
+          <Menu label="工具"><button onClick={() => showBottom("builds")}>节点包管理</button><button onClick={() => left("servers")}>服务器注册与连接诊断</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}>事件日志</button><button onClick={() => { setEditorTab("source"); }}>查看流程 JSON</button><button onClick={() => right("assistant")}>MCP 工具与上下文</button></Menu>
         </nav>
         <div className="ide-project-title">Cyrene Studio <span> / </span> <b>Local Workspace</b></div>
         <div className="ide-window-meta"><span className="ide-status-dot" /> 本地工作空间</div>
@@ -132,10 +140,12 @@ export function App() {
         </div>
         <section className="bottom-panel" hidden={!layout.bottom} aria-label="底部工具窗口">
           <ResizeHandle orientation="horizontal" value={layout.bottomHeight} min={100} max={400} sign={-1} label="调整底部窗口高度" onChange={v => setLayout(s => ({ ...s, bottomHeight: v }))} />
-          <div className="bottom-tabs"><button className={tab === "checks" ? "active" : ""} onClick={() => setTab("checks")}><Icon name="check" />流程检查 <span>{validation.issues.length}</span></button><button className={tab === "preview" ? "active" : ""} onClick={() => setTab("preview")}><Icon name="play" />运行预演</button><button className={tab === "log" ? "active" : ""} onClick={() => setTab("log")}><Icon name="log" />事件日志</button><button className="ide-bottom-close" aria-label="收起底部窗口" onClick={() => setLayout(s => ({ ...s, bottom: false }))}><Icon name="close" /></button></div>
-          <div hidden={tab === "log"}>
+          <div className="bottom-tabs"><button className={tab === "builds" ? "active" : ""} onClick={() => setTab("builds")}>构建输出</button><button className={tab === "runs" ? "active" : ""} onClick={() => setTab("runs")}>真实运行</button><button className={tab === "checks" ? "active" : ""} onClick={() => setTab("checks")}><Icon name="check" />流程检查 <span>{validation.issues.length}</span></button><button className={tab === "preview" ? "active" : ""} onClick={() => setTab("preview")}><Icon name="play" />运行预演</button><button className={tab === "log" ? "active" : ""} onClick={() => setTab("log")}><Icon name="log" />事件日志</button><button className="ide-bottom-close" aria-label="收起底部窗口" onClick={() => setLayout(s => ({ ...s, bottom: false }))}><Icon name="close" /></button></div>
+          <div hidden={tab === "log" || tab === "runs" || tab === "builds"}>
           {tab === "checks" ? <div className="check-content">{validation.issues.length ? <ul className="issues">{validation.issues.map((i, index) => <li key={`${i.code}-${index}`}><button onClick={() => { if (i.nodeId) withEditor(handle => handle.select(i.nodeId!)); }}>! {i.message}</button></li>)}</ul> : <div className="check-pass"><span>✓</span><div><strong>结构检查通过</strong><p>端口类型、必填参数与依赖顺序有效。服务连接、资源可用性及评估门禁尚未验证。</p></div></div>}</div> : <div className="preview-content"><div className="preview-heading"><span>{running ? "依赖顺序预演中" : plan.length ? `已预演 ${cursor} / ${plan.length} 步` : "尚未开始预演"}</span>{running && <button onClick={() => { setRunning(false); setNotice("预演已停止，未执行外部操作。"); }}>停止预演</button>}</div><div className="run-steps">{plan.map((id, index) => <span className={`run-step ${index < cursor ? "done" : index === cursor && running ? "current" : ""}`} key={id}>{index < cursor ? "✓" : String(index + 1).padStart(2, "0")} {pipeline.nodes.find((n) => n.id === id)?.label}</span>)}</div><p>这里只模拟步骤顺序，不生成模型、评估指标或真实端点。</p></div>}
           </div>
+          <div hidden={tab !== "runs"}>{runControl.panel}</div>
+          <div hidden={tab !== "builds"}>{buildControl.panel}</div>
           <div className="ide-event-log" hidden={tab !== "log"}>{events.map((e, i) => <div key={i}><time>{e.time}</time><span>INFO</span><p>{e.message}</p></div>)}</div>
         </section>
       </main>
@@ -168,7 +178,7 @@ export function App() {
       </nav>
     </div>
     <div className="ide-bottom-bar"><button onClick={showChecks}><Icon name="check" />问题 {validation.issues.length ? `(${validation.issues.length})` : ""}</button><button onClick={() => { setTab("preview"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="play" />运行</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="log" />日志</button><span>{running ? "正在本地预演" : "远端任务监控尚未接入"}</span></div>
-    <footer className="footer ide-statusbar"><p role="status" title={notice}>{notice}</p><div><span>{hostStatus ? "Web Host 已连接" : "Web Host 未连接"}</span><span>UTF-8</span><span>JSON</span><span>Cyrene Studio</span></div></footer>
+    <footer className="footer ide-statusbar"><p role="status" title={notice}>{notice}</p><div><span aria-label="编辑恢复状态">{recoveryStatus}</span><span>{hostStatus ? "Web Host 已连接" : "Web Host 未连接"}</span><span>UTF-8</span><span>JSON</span><span>Cyrene Studio</span></div></footer>
     <input hidden ref={fileInput} type="file" accept=".json,application/json" aria-label="导入流程文件" onChange={e => void importJson(e.target.files?.[0])} />
   </div>;
 }
