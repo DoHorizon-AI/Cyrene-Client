@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1.4
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY apps/web/services/navigator apps/web/services/navigator
+RUN npm --prefix apps/web/services/navigator ci
 RUN npm run build:web:navigator
 
 FROM nginx:1.27-alpine AS runtime

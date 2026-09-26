@@ -19,6 +19,20 @@ jobs:
     name: Test and build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: studio_test
+          POSTGRES_USER: studio_test
+          POSTGRES_PASSWORD: studio-ci-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U studio_test -d studio_test"
+          --health-interval 5s --health-timeout 3s --health-retries 15
+    env:
+      STUDIO_TEST_DATABASE_URL: postgresql://studio_test:studio-ci-test-only@127.0.0.1:5432/studio_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,6 +42,13 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run check
+      - run: npm --prefix apps/web/services/navigator ci
+      - run: npm run check:web:navigator
+      - name: Build Studio web and control images
+        run: |
+          docker build -f deploy/studio.Dockerfile --target web --tag cyrene-studio:web-development .
+          docker build -f deploy/studio.Dockerfile --target control --tag cyrene-studio:control-development .
+      - run: npm run test:containers
       - name: Build Web Host image
         run: docker build --tag cyrene-client-web:ci .
       - name: Validate Web Host routing configuration

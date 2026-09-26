@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { PipelineNode } from "../../../../packages/pipeline-model";
 import { trainingParametersSchema, type HostStatus, type TrainingDraft } from "../../../../packages/service-settings/contracts";
 import { SettingsClient } from "./client";
+import { useI18n } from "../i18n";
 
 interface Choice { id: string; label: string; apply(): void }
 interface Props { node: PipelineNode; client: SettingsClient; status: HostStatus | null; disabled: boolean; onUpdate(node: PipelineNode): void }
@@ -18,6 +19,7 @@ const description: Record<string, string> = {
 };
 
 export function NodeServiceSettings({ node, client, status, disabled, onUpdate }: Props) {
+  const { locale, t } = useI18n();
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [choices, setChoices] = useState<Choice[]>([]);
   const [resourceId, setResourceId] = useState(node.settingsBinding?.resourceId ?? "");
@@ -62,7 +64,7 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
         const item = await client.datasetVersion(z.string().uuid().parse(resourceId.trim()), signal);
         if (!active(signal)) return;
         if (item.state !== "PUBLISHED" || !item.output) throw new Error("该数据版本尚未发布，或没有输出制品，未应用到节点。");
-        apply({ datasetRef: item.id }, { kind: "dataset-version", resourceId: item.id });
+        apply({ datasetRef: item.output.uri }, { kind: "dataset-version", resourceId: item.id, artifact: item.output });
         setFacts([`数据集：${item.datasetId}`, `版本：${item.version} · ${item.state}`, `行数：${item.rowCount ?? "未报告"}`]);
         setMessage("已读取已发布版本并更新本地节点。");
       } else {
@@ -74,7 +76,7 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
       const items = await client.models(signal); if (!active(signal)) return;
       const ready = items.filter((x) => x.state === "READY" && x.modelArtifact);
       setChoices(ready.map((x) => ({ id: x.id, label: x.name, apply: () => {
-        apply({ modelRef: x.modelArtifact!.uri }, { kind: "model-import", resourceId: x.id });
+        apply({ modelRef: x.modelArtifact!.uri }, { kind: "model-import", resourceId: x.id, artifact: x.modelArtifact! });
         setMessage(`已选择 ${x.name}，模型制品引用已写入本地节点。`);
       } })));
       setMessage(`已读取 ${items.length} 个模型，其中 ${ready.length} 个可选择。`);
@@ -113,40 +115,44 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
     }
   }
   async function saveTraining(signal: AbortSignal) {
-    const id = latest.current.settingsBinding?.resourceId;
-    if (!id || latest.current.settingsBinding?.kind !== "training-draft") throw new Error("请先选择训练草稿。");
-    if (latest.current.config.method !== "LoRA") throw new Error("当前 Yield 设置契约仅支持 SFT / LoRA，Full 参数未发送。");
+    const sent = structuredClone(latest.current);
+    const id = sent.settingsBinding?.resourceId;
+    if (!id || sent.settingsBinding?.kind !== "training-draft") throw new Error("请先选择训练草稿。");
+    if (sent.config.method !== "LoRA") throw new Error("当前 Yield 设置契约仅支持 SFT / LoRA，Full 参数未发送。");
     const fresh = await client.draft(id, signal);
     if (!active(signal)) return;
+    if (JSON.stringify(latest.current) !== JSON.stringify(sent)) throw new Error("保存期间节点或资源绑定已变化，旧操作已取消；请确认当前设置后重试。");
+    if (fresh.id !== id) throw new Error("服务返回的训练草稿身份不匹配，未保存。");
     if (fresh.state === "STARTED" || fresh.trainingRun) throw new Error("草稿已启动，不能修改训练设置。");
     if (!fresh.configuration) throw new Error("草稿缺少已准备的基础模型配置。");
-    const edits = Object.fromEntries(Object.entries(latest.current.config).filter(([key]) => key !== "method"));
+    const edits = Object.fromEntries(Object.entries(sent.config).filter(([key]) => key !== "method"));
     const parameters = trainingParametersSchema.parse({ ...fresh.configuration.parameters, ...edits });
     const result = await client.prepareDraft(id, { ...fresh.configuration, parameters });
     if (!active(signal)) return;
     setDraft(result); setMessage(`Yield 已确认保存（${result.state}）；未启动训练。`);
   }
   async function createSuite(signal: AbortSignal) {
-    const config = latest.current.config;
+    const sent = structuredClone(latest.current), config = sent.config;
     const payload = { name: config.suite, evaluator: config.evaluator ?? "exact_match.v1", expectedField: config.expectedField ?? "expected", actualField: config.actualField ?? "actual", threshold: config.threshold ?? 0.8, ...(config.judgeProfileId ? { judgeProfileId: config.judgeProfileId } : {}) };
     const serialized = JSON.stringify(payload);
     if (suiteRequest.current?.payload !== serialized) suiteRequest.current = { payload: serialized, key: crypto.randomUUID() };
     const item = await client.createSuite(payload, suiteRequest.current!.key);
     if (!active(signal)) return;
+    if (JSON.stringify(latest.current) !== JSON.stringify(sent)) { setMessage(`Echo 已创建评估配置 ${item.id}；节点期间发生变化，未替换当前绑定。`); return; }
     apply({}, { kind: "evaluation-suite", resourceId: item.id }); setMessage(`Echo 已创建评估配置「${item.name}」；未发起评估。`);
   }
 
-  return <section className="service-settings" aria-label="节点服务设置">
-    <div className="settings-heading"><strong>服务端设置</strong><span>{!status ? "未连接" : available ? "可请求" : "入口未开放"}</span></div>
-    <p>{description[node.type]}</p>
-    {!status && <p className="settings-hint">请先从页面右上角连接 Web Host。</p>}
-    {status && !available && <p className="settings-hint">Web Host 未开放 {service} 入口，此节点保留本地设置。</p>}
-    {(node.type === "dataset" || node.type === "evaluation") && <label className="field"><span>{node.type === "dataset" ? "数据版本 ID（留空读取数据集）" : "评估配置 ID"}</span><input value={resourceId} onChange={(e) => setResourceId(e.target.value)} disabled={disabled || busy} /></label>}
-    {node.type === "agent" && <label className="field"><span>Navigator 工作空间 ID</span><input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} disabled={disabled || busy} /></label>}
-    <div className="settings-actions"><button disabled={locked} onClick={() => void perform(load)}>{busy ? "请求中…" : "读取服务设置"}</button>{node.type === "training" && <button disabled={locked || !draft || draft.state === "STARTED" || !draft.configuration} onClick={() => void perform(saveTraining)}>保存参数到 Yield</button>}{node.type === "evaluation" && <button disabled={locked} onClick={() => void perform(createSuite)}>另存到 Echo</button>}</div>
+  return <section className="service-settings" aria-label={t("节点服务设置")}>
+    <div className="settings-heading"><strong>{t("服务端设置")}</strong><span>{t(!status ? "未连接" : available ? "可请求" : "入口未开放")}</span></div>
+    <p>{t(description[node.type])}</p>
+    {!status && <p className="settings-hint">{t("请先从页面右上角连接 Web Host。")}</p>}
+    {status && !available && <p className="settings-hint">{locale === "zh-CN" ? `Web Host 未开放 ${service} 入口，此节点保留本地设置。` : `Web Host does not expose the ${service} endpoint. This node keeps its local settings.`}</p>}
+    {(node.type === "dataset" || node.type === "evaluation") && <label className="field"><span>{t(node.type === "dataset" ? "数据版本 ID（留空读取数据集）" : "评估配置 ID")}</span><input value={resourceId} onChange={(e) => setResourceId(e.target.value)} disabled={disabled || busy} /></label>}
+    {node.type === "agent" && <label className="field"><span>{t("Navigator 工作空间 ID")}</span><input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} disabled={disabled || busy} /></label>}
+    <div className="settings-actions"><button disabled={locked} onClick={() => void perform(load)}>{t(busy ? "请求中…" : "读取服务设置")}</button>{node.type === "training" && <button disabled={locked || !draft || draft.state === "STARTED" || !draft.configuration} onClick={() => void perform(saveTraining)}>{t("保存参数到 Yield")}</button>}{node.type === "evaluation" && <button disabled={locked} onClick={() => void perform(createSuite)}>{t("另存到 Echo")}</button>}</div>
     {choices.length > 0 && <div className="resource-choices">{choices.map((c) => <button key={c.id} disabled={locked} onClick={c.apply}>{c.label}<small>{c.id}</small></button>)}</div>}
     {!!facts.length && <ul className="resource-facts">{facts.map((f, i) => <li key={i}>{f}</li>)}</ul>}
     {message && <p role="status" className="settings-message">{message}</p>}
-    {node.settingsBinding && <div className="settings-binding"><small>已绑定 · {node.settingsBinding.kind}</small><code>{node.settingsBinding.resourceId}</code><button disabled={disabled || busy} onClick={() => { const { settingsBinding: _, ...rest } = latest.current; onUpdate(rest); setResourceId(""); setDraft(null); setMessage("已解除服务资源绑定，节点本地参数保留。"); }}>解除绑定</button></div>}
+    {node.settingsBinding && <div className="settings-binding"><small>{t("已绑定")} · {node.settingsBinding.kind}</small><code>{node.settingsBinding.resourceId}</code><button disabled={disabled || busy} onClick={() => { const { settingsBinding: _, ...rest } = latest.current; onUpdate(rest); setResourceId(""); setDraft(null); setMessage(locale === "zh-CN" ? "已解除服务资源绑定，节点本地参数保留。" : "The service resource binding was removed; local node parameters were preserved."); }}>{t("解除绑定")}</button></div>}
   </section>;
 }

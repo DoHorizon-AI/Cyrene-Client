@@ -21,12 +21,14 @@ import {
   TrainingPage,
 } from "./pages";
 import { pushRoute, routeForPath, ROUTES, type RouteId } from "./router";
+import { LanguageSelect, useI18n } from "./i18n";
 
 /**
  * Own the browser session gate and mount only authenticated Product surfaces.
  * 拥有浏览器会话入口，并且只挂载已经认证的 Product 页面。
  */
 export function App() {
+  const { t } = useI18n();
   const [api] = useState(() => new NavigatorApi());
   const [session, setSession] = useState<SessionPayload | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -83,9 +85,9 @@ export function App() {
         <div className="center-state">
           <StateBlock
             kind="error"
-            title="Navigator Web Host is unreachable"
+            title={t("Navigator Web Host is unreachable")}
             detail={bootError}
-            action={<Button onClick={() => window.location.reload()}>Retry session check</Button>}
+            action={<Button onClick={() => window.location.reload()}>{t("Retry session check")}</Button>}
           />
         </div>
       </AppFrame>
@@ -96,7 +98,7 @@ export function App() {
     return (
       <AppFrame>
         <div className="center-state">
-          <StateBlock kind="loading" title="Opening Navigator" detail="Checking the same-origin Web Host session." />
+          <StateBlock kind="loading" title={t("Opening Navigator")} detail={t("Checking the same-origin Web Host session." )} />
         </div>
       </AppFrame>
     );
@@ -125,6 +127,7 @@ interface LoginViewProps {
  * 使用启动器交付的一次性代码完成配对，且不持久化保存该代码。
  */
 function LoginView({ api, onAuthenticated }: LoginViewProps) {
+  const { t } = useI18n();
   const [pairingCode, setPairingCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -148,31 +151,31 @@ function LoginView({ api, onAuthenticated }: LoginViewProps) {
         <section className="login-card">
           <div className="brand-mark brand-mark--large" aria-hidden="true">N</div>
           <p className="eyebrow">Navigator / Web Host</p>
-          <h1>Enter the field.</h1>
-          <p className="login-copy">Pair this browser with the local Navigator host. The code is printed once by the host launcher and is never stored by the UI.</p>
+          <h1>{t("Enter the field.")}</h1>
+          <p className="login-copy">{t("Pair this browser with the local Navigator host. The code is printed once by the host launcher and is never stored by the UI.")}</p>
           <form onSubmit={submit}>
             <label className="field">
-              <span className="field__label">One-time pairing code</span>
+              <span className="field__label">{t("One-time pairing code")}</span>
               <input
                 autoFocus
                 className="input-mono input-large"
                 value={pairingCode}
                 onChange={(event) => setPairingCode(event.target.value)}
                 autoComplete="one-time-code"
-                placeholder="Paste the launcher code"
+                placeholder={t("Paste the launcher code")}
               />
             </label>
             <Button tone="primary" type="submit" disabled={submitting || !pairingCode.trim()}>
-              {submitting ? "Pairing..." : "Open console"}
+              {submitting ? t("Pairing...") : t("Open console")}
             </Button>
             {error ? <p className="form-message form-message--error" role="alert">{error}</p> : null}
           </form>
-          <p className="login-footnote">Same-origin session | rotating refresh | CSRF protected mutations</p>
+          <p className="login-footnote">{t("Same-origin session | rotating refresh | CSRF protected mutations")}</p>
         </section>
-        <aside className="login-aside" aria-label="Navigator boundary notes">
-          <span className="eyebrow">What stays true</span>
-          <strong>Every page reads the owner.</strong>
-          <p>Navigator presents Product projections. It does not copy lifecycle state into browser storage or choose arbitrary upstream origins.</p>
+        <aside className="login-aside" aria-label={t("Navigator boundary notes")}>
+          <span className="eyebrow">{t("What stays true")}</span>
+          <strong>{t("Every page reads the owner.")}</strong>
+          <p>{t("Navigator presents Product projections. It does not copy lifecycle state into browser storage or choose arbitrary upstream origins.")}</p>
           <div className="login-aside__line" />
           <span className="mono-label">SESSION / PRODUCT / PROXY</span>
         </aside>
@@ -192,6 +195,7 @@ interface AppShellProps {
  * 为七个路由页面提供桌面侧栏和响应式页面框架。
  */
 function AppShell({ api, session, onSessionChange }: AppShellProps) {
+  const { t } = useI18n();
   const [route, setRoute] = useState<RouteId>(() => routeForPath(window.location.pathname));
 
   useEffect(() => {
@@ -223,11 +227,11 @@ function AppShell({ api, session, onSessionChange }: AppShellProps) {
           <div className="brand-mark" aria-hidden="true">N</div>
           <div>
             <strong>Navigator</strong>
-            <span>operations console</span>
+            <span>{t("operations console")}</span>
           </div>
         </div>
         <div className="rail-rule" />
-        <nav className="main-nav" aria-label="Primary navigation">
+        <nav className="main-nav" aria-label={t("Primary navigation")}>
           {ROUTES.map((definition) => (
             <button
               className={`nav-item ${definition.id === route ? "nav-item--active" : ""}`.trim()}
@@ -237,33 +241,34 @@ function AppShell({ api, session, onSessionChange }: AppShellProps) {
             >
               <span className="nav-item__glyph" aria-hidden="true">{navGlyph(definition.id)}</span>
               <span>
-                <strong>{definition.label}</strong>
-                <small>{definition.description}</small>
+                <strong>{t(definition.label)}</strong>
+                <small>{t(definition.description)}</small>
               </span>
             </button>
           ))}
         </nav>
         <div className="rail-footer">
           <span className="status-led" aria-hidden="true" />
-          <span>Web Host session active</span>
+          <span>{t("Web Host session active")}</span>
         </div>
       </aside>
 
       <main className="main-column">
         <header className="topbar">
           <div className="topbar__context">
-            <span className="topbar__path">Navigator / {currentRoute.label}</span>
+            <span className="topbar__path">Navigator / {t(currentRoute.label)}</span>
             <span className="topbar__mode"><span className="status-led" aria-hidden="true" /> SAME-ORIGIN</span>
           </div>
           <div className="topbar__session">
-            <span className="topbar__expiry">Refresh window | {formatDate(session.refreshExpiresAt)}</span>
-            <Button onClick={() => void logout()}>Sign out</Button>
+            <span className="topbar__expiry">{t("Refresh window")} | {formatDate(session.refreshExpiresAt)}</span>
+            <LanguageSelect compact />
+            <Button onClick={() => void logout()}>{t("Sign out")}</Button>
           </div>
         </header>
-        <div className="mobile-nav" aria-label="Mobile navigation">
+        <div className="mobile-nav" aria-label={t("Mobile navigation")}>
           {ROUTES.map((definition) => (
             <button className={definition.id === route ? "mobile-nav__item mobile-nav__item--active" : "mobile-nav__item"} key={definition.id} onClick={() => navigate(definition.id)}>
-              {definition.label}
+              {t(definition.label)}
             </button>
           ))}
         </div>
@@ -335,5 +340,5 @@ function errorMessage(error: unknown): string {
 }
 
 function AppFrame({ children }: { children: ReactNode }) {
-  return <div className="app-root">{children}</div>;
+  return <div className="app-root"><div className="app-frame-language"><LanguageSelect compact /></div>{children}</div>;
 }

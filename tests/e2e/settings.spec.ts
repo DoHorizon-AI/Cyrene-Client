@@ -1,6 +1,7 @@
 import { menuAction } from "./ide-helpers";
 import { expect, test, type Page } from "@playwright/test";
-import { authSession, draft, hostStatus, ids, models, sessions, suite, version } from "../fixtures/settings";
+import { artifact, authSession, draft, hostStatus, ids, models, sessions, suite, version } from "../fixtures/settings";
+import { examplePipeline } from "../../packages/pipeline-model";
 
 async function fixtures(page: Page) {
   const writes: { path: string; method: string; body: any; headers: Record<string, string> }[] = [];
@@ -62,7 +63,7 @@ test("all seven nodes use settings APIs; only explicit saves write, and never st
   await expect(panel(page).getByText(/Fixture dataset/)).toBeVisible();
   await panel(page).getByLabel("数据版本 ID（留空读取数据集）").fill(ids.version);
   await panel(page).getByRole("button", { name: "读取服务设置" }).click();
-  await expect(page.getByLabel("数据集版本引用")).toHaveValue(ids.version);
+  await expect(page.getByLabel("数据集版本引用")).toHaveValue(artifact.uri);
 
   await select(page, "基础模型");
   await panel(page).getByRole("button", { name: "读取服务设置" }).click();
@@ -161,4 +162,38 @@ test("unconfigured local bridge fails explicitly and blocks execution routes", a
   await expect(page.getByRole("region", { name: "服务连接设置" }).getByRole("status")).toContainText("尚未配置 Web Host");
   const denied = await page.request.post("/api/v1/yield/training-drafts/example/actions/start");
   expect(denied.status()).toBe(403);
+});
+
+for (const change of ["binding", "parameters"] as const) test(`training save cancels when MCP changes ${change} during its preflight read`, async ({ page }) => {
+  const writes = await fixtures(page); await connect(page);
+  const document = examplePipeline(); document.id = `training-race-${change}-${Date.now()}`;
+  await page.getByLabel("导入流程文件").setInputFiles({ name: "pipeline.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(document)) });
+  await select(page, "模型微调");
+  await panel(page).getByRole("button", { name: "读取服务设置" }).click();
+  await panel(page).getByRole("button", { name: /Fixture LoRA draft/ }).click();
+  await page.getByRole("button", { name: "保存到服务端", exact: true }).click();
+  await expect(page.locator(".footer [role=status]")).toContainText("服务端草稿已保存");
+
+  let release!: () => void, arrived!: () => void;
+  const gate = new Promise<void>(r => { release = r; }), requested = new Promise<void>(r => { arrived = r; });
+  await page.route(`**/api/v1/yield/training-drafts/${ids.draft}`, async route => {
+    if (route.request().method() !== "GET") return route.fallback();
+    arrived(); await gate; await route.fulfill({ json: draft });
+  });
+  await panel(page).getByRole("button", { name: "保存参数到 Yield" }).click(); await requested;
+  const { token } = await (await page.request.get("/studio-pipelines/v1/session")).json();
+  const response = await page.request.post("/studio-pipelines/v1/commands", {
+    headers: { "x-studio-control-token": token },
+    data: { name: "pipelines.patch", requestId: crypto.randomUUID(), idempotencyKey: crypto.randomUUID(), input: {
+      workspaceId: "local", pipelineId: document.id, expectedGraphRevision: 1, expectedLayoutRevision: 1,
+      edits: [{ op: "update_node", nodeId: "training", config: { epochs: 77 },
+        ...(change === "binding" ? { settingsBinding: { kind: "training-draft", resourceId: "66666666-6666-4666-8666-666666666666" } } : {}),
+      }],
+    } },
+  });
+  expect(response.ok()).toBeTruthy();
+  await expect(page.getByLabel("训练轮数")).toHaveValue("77", { timeout: 8000 }); release();
+  await expect(panel(page).getByRole("status")).toContainText("旧操作已取消");
+  expect(writes).toEqual([]);
+  await expect(page.getByLabel("训练轮数")).toHaveValue("77");
 });

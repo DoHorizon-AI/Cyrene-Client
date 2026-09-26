@@ -71,7 +71,8 @@ test("MCP panel reads actual tools and copies task references without a model re
   await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
   await expect(page.getByText("内置对话模型尚未配置。", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "查看可用工具" }).click();
-  await expect(page.locator(".ide-tool-list code")).toHaveCount(12);
+  await expect(page.locator(".ide-tool-list code")).toHaveCount(13);
+  await expect(page.locator(".ide-tool-list")).toContainText("pipelines.redo");
   await expect(page.locator(".ide-tool-list")).toContainText("pipelines.patch");
   await page.getByLabel("任务草稿").fill("增加评估节点，保留已锁定的位置。");
   await page.getByRole("button", { name: /复制任务与上下文/ }).click();

@@ -26,6 +26,8 @@ export const observation = z.object({
   message: z.string().max(500),
 }).strict();
 export type Observation = z.infer<typeof observation>;
+export const resolvedServerSchema = z.object({ serverId: identifier, revision: z.number().int().positive(), nodeRef: observation.shape.nodeRef.unwrap() }).strict();
+export type ResolvedServer = z.infer<typeof resolvedServerSchema>;
 export const auditEvent = z.object({
   sequence: z.number().int().positive(), requestId: identifier,
   workspaceId: identifier, actorId: identifier, command: z.string(),
@@ -37,6 +39,7 @@ const mutation = target.extend({ expectedRevision: z.number().int().positive() }
 export const commands = {
   "servers.list": { input: workspace, output: z.object({ items: z.array(serverRecord) }).strict(), scope: "servers.read", readOnly: true },
   "servers.status": { input: target, output: observation, scope: "servers.read", readOnly: true },
+  "servers.resolve": { input: target, output: resolvedServerSchema, scope: "servers.read", readOnly: true, description: "核对当前登记与在线 Node 身份；返回登记版本及 Node epoch，不申请资源租约。" },
   "servers.events": { input: workspace.extend({ after: z.number().int().nonnegative().default(0) }), output: z.object({ items: z.array(auditEvent), nextCursor: z.number().int().nonnegative() }).strict(), scope: "servers.read", readOnly: true },
   "servers.register": { input: workspace.extend({ spec: serverSpec }), output: serverRecord, scope: "servers.write", readOnly: false },
   "servers.update": { input: mutation.extend({ spec: serverSpec }), output: serverRecord, scope: "servers.write", readOnly: false },
@@ -45,7 +48,7 @@ export const commands = {
 export type CommandName = keyof typeof commands;
 export type Output<N extends CommandName> = z.infer<(typeof commands)[N]["output"]>;
 export const commandRequest = z.object({
-  name: z.enum(["servers.list", "servers.status", "servers.events", "servers.register", "servers.update", "servers.archive"]),
+  name: z.enum(["servers.list", "servers.status", "servers.resolve", "servers.events", "servers.register", "servers.update", "servers.archive"]),
   input: z.unknown(), requestId: identifier, idempotencyKey: identifier.optional(),
 }).strict();
 // Supplied by a trusted transport, not by the model/browser request body.

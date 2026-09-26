@@ -1,0 +1,5 @@
+.run-panel { padding: 12px; overflow: auto; max-height: calc(var(--bottom-height, 220px) - 40px); font-size: 12px; }
+.run-panel button, .run-panel input, .run-panel select { margin: 3px; }
+.run-panel table { width: 100%; border-collapse: collapse; }
+.run-panel td, .run-panel th { text-align: left; padding: 6px; border-bottom: 1px solid #41434a; vertical-align: top; }
+.run-panel code { white-space: pre-wrap; overflow-wrap: anywhere; }

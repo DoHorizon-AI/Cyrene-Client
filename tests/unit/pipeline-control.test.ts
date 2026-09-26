@@ -175,6 +175,12 @@ it("MCP tools expose real schemas and share edit/validate state with the UI serv
     const conflict = await client.callTool({ name: "pipelines.patch", arguments: { ...expected, edits: [{ op: "rename", name: "Stale" }], idempotencyKey: "stale" } });
     expect(conflict.isError).toBe(true);
     expect(JSON.stringify(conflict.content)).toContain("REVISION_CONFLICT");
+    await call("pipelines.undo", { ...expected, expectedGraphRevision: 2 });
+    const redoArgs = { ...expected, expectedGraphRevision: 3, idempotencyKey: "mcp-redo" };
+    const redo = await client.callTool({ name: "pipelines.redo", arguments: redoArgs });
+    expect(redo.isError).not.toBe(true);
+    expect((await call("pipelines.get", target)).document.name).toBe("Edited through MCP");
+    expect(await client.callTool({ name: "pipelines.redo", arguments: redoArgs })).toEqual(redo);
   } finally { await client.close(); await server.close(); }
 });
 
@@ -185,6 +191,7 @@ it("real stdio MCP entrypoint negotiates and reads the same persisted document",
   try {
     await client.connect(transport);
     expect((await client.listTools()).tools.some(t => t.name === "pipelines.patch")).toBe(false);
+    expect((await client.listTools()).tools.some(t => t.name === "pipelines.redo")).toBe(false);
     const result = await client.callTool({ name: "pipelines.get", arguments: target });
     expect(result.isError).not.toBe(true);
     expect((result.structuredContent as PipelineRecord).document.id).toBe(target.pipelineId);

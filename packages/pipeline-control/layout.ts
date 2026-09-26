@@ -1,5 +1,5 @@
 import ELK from "elkjs/lib/elk.bundled.js";
-import { parsePipeline, type Pipeline } from "../pipeline-model";
+import { parsePipeline, visualDefinition, type Pipeline } from "../pipeline-model";
 import { definitions } from "../pipeline-model/catalog";
 import { nodeSize, TITLE_HEIGHT } from "../pipeline-model/geometry";
 import { ControlError } from "../server-control/contracts";
@@ -18,7 +18,7 @@ export async function arrange(document: Pipeline, options: { direction: "RIGHT" 
   const graph = await elk.layout({
     id: "layout", layoutOptions: { "elk.algorithm": "layered", "elk.direction": options.direction, "elk.spacing.nodeNode": "60", "elk.layered.spacing.nodeNodeBetweenLayers": "100", "elk.randomSeed": "1" },
     children: moving.map(n => {
-      const d = definitions.get(n.type)!, [width, height] = nodeSize(n.type);
+      const d = visualDefinition(n)!, [width, height] = nodeSize(n.type, n.typeVersion);
       return { id: n.id, width, height: height + TITLE_HEIGHT,
         layoutOptions: { "elk.portConstraints": "FIXED_ORDER" },
         ports: [...d.inputs.map((port, i) => ({ id: `${n.id}:in:${port.name}`, width: 1, height: 1, layoutOptions: { "elk.port.side": "WEST", "elk.port.index": String(i) } })), ...d.outputs.map((port, i) => ({ id: `${n.id}:out:${port.name}`, width: 1, height: 1, layoutOptions: { "elk.port.side": "EAST", "elk.port.index": String(i) } }))],
