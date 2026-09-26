@@ -269,7 +269,8 @@ interface I18nValue {
   t: (message: string) => string;
 }
 
-const I18nContext = createContext<I18nValue | null>(null);
+const fallbackI18n: I18nValue = { locale: "zh-CN", setLocale: () => undefined, t: (message) => message };
+const I18nContext = createContext<I18nValue>(fallbackI18n);
 
 export function normalizeLocale(value: string | null | undefined): AppLocale {
   return value?.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
@@ -319,9 +320,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
 }
 
 export function useI18n(): I18nValue {
-  const value = useContext(I18nContext);
-  if (!value) throw new Error("useI18n must be used inside LocaleProvider");
-  return value;
+  return useContext(I18nContext);
 }
 
 export function LanguageSelect({ compact = false }: { compact?: boolean }) {
