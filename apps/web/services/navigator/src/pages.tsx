@@ -2400,7 +2400,7 @@ export function GatewayPage({ api }: PageProps) {
         baseUrl,
         apiKeyHint: text(route["name"] || model),
       });
-      pushRoute("chat");
+      pushRoute("navigator");
     } catch (err) {
       setActionError(errorMessage(err));
     }
@@ -3081,7 +3081,7 @@ export function ChatPage({ api }: PageProps) {
             title="Active route required"
             detail={routeError ?? "No gateway route has been activated for this session yet. Go to Gateway to select and activate a route."}
             action={
-              <Button tone="primary" onClick={() => pushRoute("gateway")}>
+              <Button tone="primary" onClick={() => pushRoute("exchange")}>
                 Go to Gateway
               </Button>
             }
@@ -3285,3 +3285,18 @@ function errorMessage(error: unknown): string {
   }
   return "The Navigator request failed without a readable error.";
 }
+
+// -----------------------------------------------------------------------------
+// Core Service Workspaces & Save-as-Node Exports
+// -----------------------------------------------------------------------------
+export {
+  CatalystWorkspace,
+  YieldWorkspace,
+  EchoWorkspace,
+  ReactorWorkspace,
+  ExchangeWorkspace,
+  NavigatorWorkspace,
+  SaveNodeToast,
+  SaveAsNodeButton,
+} from "./workspaces";
+export type { SaveNodeToastInfo } from "./workspaces";
