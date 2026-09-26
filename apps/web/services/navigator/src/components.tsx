@@ -81,12 +81,17 @@ export function StatusPill({ value }: { value: string | undefined }) {
     normalized.includes("active") ||
     normalized.includes("complete") ||
     normalized.includes("published") ||
+    normalized === "up" ||
+    normalized === "available" ||
+    normalized === "mounted" ||
     normalized === "ok"
       ? "good"
       : normalized.includes("fail") ||
           normalized.includes("error") ||
           normalized.includes("revoked") ||
-          normalized.includes("unhealthy")
+          normalized.includes("unhealthy") ||
+          normalized === "unavailable" ||
+          normalized === "blocked"
         ? "bad"
         : normalized.includes("running") || normalized.includes("start") || normalized.includes("validat")
           ? "live"

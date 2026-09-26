@@ -95,14 +95,14 @@ export function OverviewPage({ api }: PageProps) {
   const refresh = () => setReloadKey((value) => value + 1);
 
   return (
-    <div className="page-stack">
+    <div className="page-stack overview-page">
       <PageHeader
-        eyebrow="Workspace observatory / 00"
-        title="The state of the stack."
-        description="Navigator reads each owning Product directly. This surface is a pulse, not a second source of truth."
+        eyebrow="System / Overview"
+        title="Workspace status"
+        description="Current service availability and host resources reported by the configured Product endpoints."
         action={
           <Button onClick={refresh} disabled={loading} aria-label="Refresh overview">
-            {loading ? "Reading..." : "Refresh pulse"}
+            {loading ? "Refreshing..." : "Refresh"}
           </Button>
         }
       />
@@ -111,35 +111,35 @@ export function OverviewPage({ api }: PageProps) {
         <MetricCard
           label="Model imports"
           value={loading ? "..." : count(models?.length ?? null)}
-          detail={models === null ? "Reactor unavailable" : "Reactor-owned"}
+          detail={models === null ? "Reactor unavailable" : "Reactor"}
           accent="lime"
         />
         <MetricCard
           label="Dataset containers"
           value={loading ? "..." : count(datasets?.length ?? null)}
-          detail={datasets === null ? "Catalyst unavailable" : "Catalyst-owned"}
+          detail={datasets === null ? "Catalyst unavailable" : "Catalyst"}
           accent="blue"
         />
         <MetricCard
           label="Training drafts"
           value={loading ? "..." : count(drafts?.length ?? null)}
-          detail={drafts === null ? "Yield unavailable" : "Yield-owned"}
+          detail={drafts === null ? "Yield unavailable" : "Yield"}
           accent="orange"
         />
         <MetricCard
           label="Deployments"
           value={loading ? "..." : count(deployments?.length ?? null)}
-          detail={deployments === null ? "Reactor unavailable" : "Reactor-owned"}
+          detail={deployments === null ? "Reactor unavailable" : "Reactor"}
           accent="gray"
         />
       </div>
 
       {loading ? (
-        <StateBlock kind="loading" title="Reading Product surfaces" detail="Navigator is asking each configured owner for a fresh projection." />
+        <StateBlock kind="loading" title="Refreshing status" detail="Reading the host and configured Product endpoints." />
       ) : (
         <div className="overview-grid">
           <Panel
-            title="Service reachability"
+            title="Services"
             meta={<StatusPill value={system?.status ?? "UNKNOWN"} />}
           >
             <div className="service-list">
@@ -152,23 +152,23 @@ export function OverviewPage({ api }: PageProps) {
                 <div className="service-row" key={String(label)}>
                   <span className={`service-dot ${available ? "service-dot--good" : "service-dot--bad"}`} aria-hidden="true" />
                   <span>{label}</span>
-                  <strong>{available ? "Available" : "Needs attention"}</strong>
+                  <strong>{available ? "Available" : "Unavailable"}</strong>
                 </div>
               ))}
             </div>
             <div className="panel-footnote">
               {system
-                ? `${system.proxyPrefixes.length} proxy paths configured | observed ${formatDate(system.observedAt)}`
-                : "The Web Host status endpoint did not return a projection."}
+                ? `${system.proxyPrefixes.length} routes · Updated ${formatDate(system.observedAt)}`
+                : "Host status is unavailable."}
             </div>
           </Panel>
 
-          <Panel title="Attention queue" meta={<span className="mono-label">LIVE READS</span>}>
+          <Panel title="Issues" meta={<span className="mono-label">{failures.length} FAILED</span>}>
             {failures.length === 0 ? (
               <StateBlock
                 kind="empty"
-                title="No blocked reads"
-                detail="Every configured overview read answered. Resource state still belongs to its owning Product."
+                title="No reported issues"
+                detail="All configured status requests completed successfully."
               />
             ) : (
               <div className="attention-list">
@@ -177,7 +177,7 @@ export function OverviewPage({ api }: PageProps) {
                     <span className="attention-item__icon" aria-hidden="true">!</span>
                     <div>
                       <strong>{failure}</strong>
-                      <p>Open the owning page and retry after checking its Product binding.</p>
+                      <p>Check the service endpoint and its current binding, then refresh.</p>
                     </div>
                   </div>
                 ))}
@@ -186,7 +186,7 @@ export function OverviewPage({ api }: PageProps) {
           </Panel>
 
           <Panel
-            title="GPU & Accelerators"
+            title="Accelerators"
             meta={<StatusPill value={system?.gpu?.available ? "AVAILABLE" : "UNAVAILABLE"} />}
           >
             {system?.gpu?.available && system.gpu.gpus && system.gpu.gpus.length > 0 ? (
@@ -202,14 +202,14 @@ export function OverviewPage({ api }: PageProps) {
             ) : (
               <StateBlock
                 kind="empty"
-                title="No GPU detected"
-                detail={system?.gpu?.available === false ? "nvidia-smi unavailable or no supported GPU found." : "Hardware information not reported."}
+                title="No accelerator data"
+                detail={system?.gpu?.available === false ? "nvidia-smi is unavailable or no supported GPU was found." : "The host did not report hardware information."}
               />
             )}
           </Panel>
 
           <Panel
-            title="Storage & Disk"
+            title="Storage"
             meta={<StatusPill value={system?.disk?.available !== false ? "MOUNTED" : "UNAVAILABLE"} />}
           >
             {system?.disk?.totalGib ? (
@@ -225,7 +225,7 @@ export function OverviewPage({ api }: PageProps) {
           </Panel>
 
           <Panel
-            title="Workspace blockers"
+            title="Readiness"
             meta={
               system?.blockers && system.blockers.length > 0 ? (
                 <StatusPill value="BLOCKED" />
@@ -249,15 +249,15 @@ export function OverviewPage({ api }: PageProps) {
             ) : (
               <StateBlock
                 kind="empty"
-                title="No blockers detected"
-                detail="All system requirements, GPU resources, disk space, and service dependencies are ready."
+                title="No reported blockers"
+                detail="The host status endpoint did not report any readiness blockers."
               />
             )}
           </Panel>
 
           <Panel
             title="Installed plugins"
-            meta={<span className="mono-label">RUNTIME ENGINES</span>}
+            meta={<span className="mono-label">RUNTIME</span>}
           >
             {system?.plugins && system.plugins.length > 0 ? (
               <div className="service-list">
