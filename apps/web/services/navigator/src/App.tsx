@@ -5,7 +5,7 @@
 // 中文：模块职责：管理会话入口、顶栏品牌与上下文切换器 (Context Switcher)、
 //       外壳侧边栏导航，并组合 Cyrene 统一客户端各页面与服务。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import type { FormEvent, ReactNode } from "react";
 
 import { Button, formatDate, StateBlock } from "./components";
@@ -22,6 +22,12 @@ import {
 import { FlowPage } from "./canvas/FlowPage";
 import { IntegrationsPage } from "./integrations/IntegrationsPage";
 import { pushRoute, routeForPath, ROUTES, type RouteId } from "./router";
+import {
+  ConnectionStatusBadge,
+  ConnectionDiagnosticsModal,
+  probeConnection,
+  type ConnectionHealth,
+} from "./connectivity/ConnectionStatus";
 
 /**
  * Own the browser session gate and mount only authenticated Product surfaces.
@@ -195,7 +201,40 @@ interface AppShellProps {
 function AppShell({ api, session, onSessionChange }: AppShellProps) {
   const [route, setRoute] = useState<RouteId>(() => routeForPath(window.location.pathname));
   const [isSwitcherOpen, setIsSwitcherOpen] = useState(false);
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
+  const [isRefreshingDiagnostics, setIsRefreshingDiagnostics] = useState(false);
+  const [health, setHealth] = useState<ConnectionHealth>({
+    state: "CHECKING",
+    latencyMs: null,
+    lastChecked: null,
+    host: typeof window !== "undefined" ? window.location.host : "localhost",
+    endpoints: [],
+  });
   const switcherRef = useRef<HTMLDivElement>(null);
+
+  const refreshHealth = useCallback(async () => {
+    setIsRefreshingDiagnostics(true);
+    try {
+      const res = await probeConnection(api);
+      setHealth(res);
+    } catch {
+      setHealth((prev) => ({
+        ...prev,
+        state: "DISCONNECTED",
+        lastChecked: new Date(),
+      }));
+    } finally {
+      setIsRefreshingDiagnostics(false);
+    }
+  }, [api]);
+
+  useEffect(() => {
+    void refreshHealth();
+    const timer = setInterval(() => {
+      void refreshHealth();
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [refreshHealth]);
 
   useEffect(() => {
     const handlePopState = () => setRoute(routeForPath(window.location.pathname));
@@ -264,8 +303,44 @@ function AppShell({ api, session, onSessionChange }: AppShellProps) {
           ))}
         </nav>
         <div className="rail-footer">
-          <span className="status-led" aria-hidden="true" />
-          <span>Web Host session active</span>
+          <button
+            type="button"
+            className="rail-footer__btn"
+            onClick={() => setIsDiagnosticsOpen(true)}
+            title="点击查看网络与服务连接诊断"
+          >
+            <span
+              className="status-led"
+              style={{
+                background:
+                  health.state === "CONNECTED"
+                    ? "var(--success)"
+                    : health.state === "DEGRADED"
+                      ? "var(--orange)"
+                      : health.state === "DISCONNECTED"
+                        ? "var(--red)"
+                        : "var(--muted)",
+                boxShadow:
+                  health.state === "CONNECTED"
+                    ? "0 0 10px rgba(108, 201, 160, 0.7)"
+                    : health.state === "DEGRADED"
+                      ? "0 0 10px rgba(255, 183, 107, 0.7)"
+                      : health.state === "DISCONNECTED"
+                        ? "0 0 10px rgba(242, 145, 140, 0.7)"
+                        : "none",
+              }}
+              aria-hidden="true"
+            />
+            <span>
+              {health.state === "CONNECTED"
+                ? `Web Host 在线 (${health.latencyMs ?? 0}ms)`
+                : health.state === "DEGRADED"
+                  ? "Web Host 在线 (微服务就绪中)"
+                  : health.state === "DISCONNECTED"
+                    ? "Web Host 离线 · 点击诊断"
+                    : "检测连接中..."}
+            </span>
+          </button>
         </div>
       </aside>
 
@@ -401,6 +476,11 @@ function AppShell({ api, session, onSessionChange }: AppShellProps) {
           </div>
 
           <div className="topbar__session">
+            <ConnectionStatusBadge
+              api={api}
+              externalHealth={health}
+              onOpenDiagnostics={() => setIsDiagnosticsOpen(true)}
+            />
             <span className="topbar__expiry">Refresh window | {formatDate(session.refreshExpiresAt)}</span>
             <Button onClick={() => void logout()}>Sign out</Button>
           </div>
@@ -421,6 +501,15 @@ function AppShell({ api, session, onSessionChange }: AppShellProps) {
 
         <div className="page-container">{renderPage(route, api, session)}</div>
       </main>
+
+      <ConnectionDiagnosticsModal
+        api={api}
+        isOpen={isDiagnosticsOpen}
+        onClose={() => setIsDiagnosticsOpen(false)}
+        health={health}
+        onRefresh={refreshHealth}
+        isRefreshing={isRefreshingDiagnostics}
+      />
     </div>
   );
 }
