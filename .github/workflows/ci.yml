@@ -37,7 +37,7 @@ jobs:
             --add-host cyrene-echo:127.0.0.1 \
             --add-host cyrene-reactor:127.0.0.1 \
             --add-host cyrene-yield:127.0.0.1 \
-            --add-host cyrene-exchange.whitefield-8c4d4393.eastasia.azurecontainerapps.io:127.0.0.1 \
+            --add-host cyrene-exchange:127.0.0.1 \
             cyrene-client-web:ci nginx -t
       - name: Upload browser failure evidence
         if: failure()
