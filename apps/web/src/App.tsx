@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Component, type ErrorInfo, type ReactNode, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { catalog, definitions, getDefinition } from "../../../packages/pipeline-model/catalog";
 import { examplePipeline, inspect, type PipelineNode } from "../../../packages/pipeline-model";
 import { GraphCanvas } from "./graph/GraphCanvas";
@@ -15,10 +15,55 @@ import { useNodeCatalog } from "./pipelines/useNodeCatalog";
 
 import { Icon, Menu, ResizeHandle, useIdeLayout } from "./ide/Chrome";
 import { FilePanel, AssistantPanel, PluginPanel } from "./ide/Panels";
+import { logError } from "./logger";
 
 type Tab = "checks" | "preview" | "log" | "runs" | "builds";
 
-export function App() {
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error?: Error;
+}
+
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    logError(
+      "studio.unhandled_error",
+      "STUDIO.REACT_RENDER_ERROR",
+      error.message || "React render error",
+      {
+        componentStack: errorInfo.componentStack,
+        stack: error.stack,
+      }
+    );
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 24, color: "#e06c75", fontFamily: "sans-serif" }}>
+          <h2>应用发生未捕获错误</h2>
+          <pre>{this.state.error?.message}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AppView() {
   const catalogRevision = useNodeCatalog();
   const { layout, setLayout, left, right, reset } = useIdeLayout();
   const [serverVisited, setServerVisited] = useState(false);
@@ -34,7 +79,7 @@ export function App() {
   const [plan, setPlan] = useState<string[]>([]);
   const [cursor, setCursor] = useState(0);
   const [running, setRunning] = useState(false);
-  const { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, changed, recordChange, applyDocument, loadServerDocument, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor, recoveries, recoveryStatus, recover, serverBase, updateServerBase } = usePipelineDocument({
+  const { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, redoCount, redoLocal, changed, recordChange, applyDocument, loadServerDocument, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor, recoveries, recoveryStatus, recover, serverBase, updateServerBase } = usePipelineDocument({
     selectedId, onSelect: setSelectedId, onNotice: setNotice,
     onResetPreview: () => { setRunning(false); setPlan([]); setCursor(0); },
     onShowGraph: () => setEditorTab("graph"),
@@ -53,6 +98,12 @@ export function App() {
   useEffect(() => { if (layout.left === "servers") setServerVisited(true); }, [layout.left]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const editingText = target?.isContentEditable || !!target?.closest("input, textarea, select");
+      if ((e.ctrlKey || e.metaKey) && !editingText && !running) {
+        if (e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) redoLocal(); else undoLocal(); }
+        else if (e.key.toLowerCase() === "y") { e.preventDefault(); redoLocal(); }
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); if (!running) save(); }
       if (e.altKey && ["1", "2", "3", "0", "9"].includes(e.key)) {
         e.preventDefault();
@@ -62,6 +113,47 @@ export function App() {
     };
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
   });
+  useEffect(() => {
+    const handleGlobalError = (event: ErrorEvent) => {
+      logError(
+        "studio.unhandled_error",
+        "STUDIO.UNHANDLED_ERROR",
+        event.message || "Unhandled window error",
+        {
+          filename: event.filename,
+          lineno: event.lineno,
+          colno: event.colno,
+          stack: event.error?.stack,
+        }
+      );
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      const message =
+        reason instanceof Error
+          ? reason.message
+          : typeof reason === "string"
+          ? reason
+          : "Unhandled promise rejection";
+      logError(
+        "studio.unhandled_rejection",
+        "STUDIO.UNHANDLED_REJECTION",
+        message,
+        {
+          stack: reason instanceof Error ? reason.stack : undefined,
+        }
+      );
+    };
+
+    window.addEventListener("error", handleGlobalError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+
+    return () => {
+      window.removeEventListener("error", handleGlobalError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, []);
   useEffect(() => {
     if (!running) return;
     if (cursor >= plan.length) { setRunning(false); setNotice("本地预演完成：已遍历依赖顺序，未执行训练、评估或部署。"); return; }
@@ -86,9 +178,9 @@ export function App() {
   const rightTitle = layout.right === "assistant" ? "平台 MCP" : layout.right === "plugins" ? "页面插件" : "节点信息";
   const css = { "--left-width": `${layout.leftWidth}px`, "--right-width": `${layout.rightWidth}px`, "--bottom-height": `${layout.bottomHeight}px` } as CSSProperties;
   return <div className={`studio ide-studio ${layout.left ? "has-left" : ""} ${layout.right ? "has-right" : ""}`} style={css}>
-    <PipelineControls serverBase={serverBase} onServerBase={updateServerBase} document={pipeline} selectedId={selectedId} disabled={running} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} render={controls => <>
+    <PipelineControls serverBase={serverBase} onServerBase={updateServerBase} document={pipeline} selectedId={selectedId} disabled={running} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} canRedo={redoCount > 0} onRedo={redoLocal} render={controls => <>
       <header className="ide-titlebar">
-        <div className="ide-brand" aria-label="Cyrene Studio">C<span>↗</span></div>
+        <div className="ide-brand" aria-label="Cyrene Client">C<span>↗</span></div>
         <nav className="ide-menubar" aria-label="主菜单">
           <Menu label="文件"><button aria-label="保存草稿" disabled={running} onClick={save}>保存草稿 <kbd>Ctrl S</kbd></button><button disabled={!savedDraft || running} onClick={restore}>载入草稿</button><button disabled={running} onClick={() => fileInput.current?.click()}>导入 JSON</button><button disabled={running} onClick={exportJson}>导出 JSON</button><hr />{controls.file}<hr /><details><summary>恢复未保存编辑</summary>{recoveries.length ? recoveries.slice(0, 20).map(record => <button key={record.id} disabled={running} onClick={() => recover(record.id)}>{record.document.name} · {new Date(record.savedAt).toLocaleString()}</button>) : <span>暂无恢复记录</span>}</details></Menu>
           <Menu label="编辑">{controls.edit}</Menu>
@@ -97,7 +189,7 @@ export function App() {
           <Menu label="运行"><button onClick={() => showBottom("runs")}>执行服务器与运行列表</button><div onClick={() => showBottom("runs")}>{runControl.menu}</div><hr /><button disabled={running} onClick={preview}>本地预演</button></Menu>
           <Menu label="工具"><button onClick={() => showBottom("builds")}>节点包管理</button><button onClick={() => left("servers")}>服务器注册与连接诊断</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}>事件日志</button><button onClick={() => { setEditorTab("source"); }}>查看流程 JSON</button><button onClick={() => right("assistant")}>MCP 工具与上下文</button></Menu>
         </nav>
-        <div className="ide-project-title">Cyrene Studio <span> / </span> <b>Local Workspace</b></div>
+        <div className="ide-project-title">Cyrene Client <span> / </span> <b>Local Workspace</b></div>
         <div className="ide-window-meta"><span className="ide-status-dot" /> 本地工作空间</div>
       </header>
       <div className="ide-main-toolbar"><div className="ide-document-name"><Icon name="nodes" /><input aria-label="流水线名称" maxLength={100} value={pipeline.name} disabled={running} onChange={e => recordChange({ ...pipeline, name: e.target.value })} /><span className="ide-dirty" title={dirty ? "本地有未保存修改" : "草稿"}>{dirty ? "●" : ""}</span></div><span className="ide-version">{controls.status}</span><div className="ide-toolbar-actions">{controls.toolbar}<button className="ide-run" onClick={preview} disabled={running}><Icon name="play" />本地预演</button><ConnectionPanel client={settingsClient} status={hostStatus} onConnected={setHostStatus} /></div></div>
@@ -178,7 +270,15 @@ export function App() {
       </nav>
     </div>
     <div className="ide-bottom-bar"><button onClick={showChecks}><Icon name="check" />问题 {validation.issues.length ? `(${validation.issues.length})` : ""}</button><button onClick={() => { setTab("preview"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="play" />运行</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="log" />日志</button><span>{running ? "正在本地预演" : "远端任务监控尚未接入"}</span></div>
-    <footer className="footer ide-statusbar"><p role="status" title={notice}>{notice}</p><div><span aria-label="编辑恢复状态">{recoveryStatus}</span><span>{hostStatus ? "Web Host 已连接" : "Web Host 未连接"}</span><span>UTF-8</span><span>JSON</span><span>Cyrene Studio</span></div></footer>
+    <footer className="footer ide-statusbar"><p role="status" title={notice}>{notice}</p><div><span aria-label="编辑恢复状态">{recoveryStatus}</span><span>{hostStatus ? "Web Host 已连接" : "Web Host 未连接"}</span><span>UTF-8</span><span>JSON</span><span>Cyrene Client</span></div></footer>
     <input hidden ref={fileInput} type="file" accept=".json,application/json" aria-label="导入流程文件" onChange={e => void importJson(e.target.files?.[0])} />
   </div>;
+}
+
+export function App() {
+  return (
+    <ErrorBoundary>
+      <AppView />
+    </ErrorBoundary>
+  );
 }

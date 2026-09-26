@@ -1,12 +1,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { LGraph, LGraphCanvas } from "litegraph.js/build/litegraph.core.js";
 import { createNode, type Pipeline, type PipelineNode } from "../../../../packages/pipeline-model";
-import { appendNode, editorNodes, loadGraph, snapshotGraph, type EditorGraph, type StudioNode } from "./adapter";
+import { appendNode, editorNodes, loadGraph, snapshotGraph, type EditorGraph, type ClientNode } from "./adapter";
 
 // Keep mutation entrypoints inside the adapter. Raw LiteGraph imports, clipboard,
 // property panels and menus would bypass the versioned document and node catalog.
+// 所有变更入口都应保留在适配器中。直接导入 LiteGraph、使用剪贴板、属性面板或菜单，都会绕过带版本的文档模型和节点目录。
 function createCanvas(element: HTMLCanvasElement, graph: LGraph, interactive: () => boolean) {
   // Upstream attachCanvas checks constructor equality, so use composition.
+  // 上游 attachCanvas 会检查构造函数是否完全相同，因此这里采用组合方式。
   const options = { skip_events: true, skip_render: true };
   const canvas = new LGraphCanvas(element, graph, options);
   Reflect.set(canvas, "clear_background_color", "");
@@ -21,6 +23,7 @@ function createCanvas(element: HTMLCanvasElement, graph: LGraph, interactive: ()
   canvas.unbindEvents = () => {
     // 0.7.14's cleanup uses mismatched callbacks and omits capture=true.
     // Remove the actual listeners before upstream clears its callback fields.
+    // LiteGraph 0.7.14 的清理逻辑使用了不匹配的回调，且漏掉 capture=true。上游清空回调字段前，先移除实际注册的监听器。
     const handlers = canvas as unknown as Record<string, EventListener>;
     for (const target of [canvas.canvas, canvas.canvas.ownerDocument]) {
       for (const [event, field] of [
@@ -124,6 +127,7 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
         queued = false; if (disposed) return;
         // LiteGraph's multi-selection drag ignores individual pinned flags.
         // Restore fixed coordinates before publishing the edited document.
+        // LiteGraph 的多选拖动会忽略各节点单独设置的固定标记。发布编辑后的文档前，先恢复固定节点的坐标。
         for (const n of editorNodes(graph)) {
           const position = base.current.presentation.nodes[n.properties.document.id];
           if (position?.pinned) { n.pos[0] = position.x; n.pos[1] = position.y; }
@@ -137,8 +141,8 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
     graph.onConnectionChange = emit.current;
     graph.onNodeRemoved = emit.current;
     canvas.onNodeMoved = emit.current;
-    canvas.onSelectionChange = (selected) => callbacks.current.onSelect((Object.values(selected)[0] as StudioNode | undefined)?.properties.document.id ?? null);
-    canvas.onShowNodePanel = (node) => callbacks.current.onSelect((node as StudioNode).properties.document.id);
+    canvas.onSelectionChange = (selected) => callbacks.current.onSelect((Object.values(selected)[0] as ClientNode | undefined)?.properties.document.id ?? null);
+    canvas.onShowNodePanel = (node) => callbacks.current.onSelect((node as ClientNode).properties.document.id);
     const resize = () => { const box = container.current!.getBoundingClientRect(); canvas.resize(Math.floor(box.width), Math.floor(box.height)); };
     const observer = new ResizeObserver(resize); observer.observe(container.current!);
     resize(); fit();

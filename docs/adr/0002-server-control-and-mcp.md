@@ -13,7 +13,7 @@
 目标结构：
 
 ```text
-Studio Web UI ── HTTP adapter ─┐
+Client Web UI ── HTTP adapter ─┐
                              ├─ Application services ─ Product adapters
 AI clients ── MCP adapter ───┘       │                   Catalyst/Yield/...
                                     ├─ Registry / revisions / events
@@ -40,12 +40,12 @@ AI clients ── MCP adapter ───┘       │                   Catalyst/
 
 ## 仓库职责
 
-- Studio：流水线产品、服务器登记投影、UI/API、跨 Product 应用服务，以及后续 MCP 入口。
+- Client：流水线产品、服务器登记投影、UI/API、跨 Product 应用服务，以及后续 MCP 入口。
 - Platform：节点身份、硬件事实、资源租约、Fence、进程生命周期及既有 Agent。
 - 独立云适配器：提供方凭据引用、实例生命周期、配额与价格投影；使用窄接口连接控制服务。
 - 各 Product：继续拥有训练、评估、部署等业务任务。工作流步骤只引用它们的任务身份。
 
-本轮所有文件仍在 Studio；没有修改 Platform、其他 Product、Workspace 或 IDE 配置。正式扩展时可以将控制服务与 MCP adapter 放在 Studio 的 `apps/control` 和 `apps/mcp`，共用 `packages/`；只有需要独立发布与权限边界时才拆仓库。
+本轮所有文件仍在 Client；没有修改 Platform、其他 Product、Workspace 或 IDE 配置。正式扩展时可以将控制服务与 MCP adapter 放在 Client 的 `apps/control` 和 `apps/mcp`，共用 `packages/`；只有需要独立发布与权限边界时才拆仓库。
 
 ## 已实现契约
 

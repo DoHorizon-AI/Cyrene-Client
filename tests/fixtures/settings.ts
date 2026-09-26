@@ -1,4 +1,5 @@
 // Isolated API fixtures, never presented as a running Product environment.
+// 这些 API fixture 相互隔离，不会被呈现为正在运行的 Product 环境。
 export const ids = {
   dataset: "11111111-1111-4111-8111-111111111111",
   version: "22222222-2222-4222-8222-222222222222",

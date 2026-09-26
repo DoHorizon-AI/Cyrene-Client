@@ -11,5 +11,6 @@
     "esModuleInterop": true,
     "types": ["vite/client", "node"]
   },
-  "include": ["apps", "packages", "tests", "tooling", "scripts", "*.ts"]
+  "include": ["apps", "packages", "tests", "tooling", "scripts", "*.ts"],
+  "exclude": ["apps/web/services/navigator"]
 }

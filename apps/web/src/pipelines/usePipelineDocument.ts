@@ -4,6 +4,7 @@ import type { GraphHandle } from "../graph/GraphCanvas";
 import { listRecoveries, saveRecovery, recoveryDocumentSchema, type Recovery } from "./recovery";
 import { useTeamIdentity } from "../team/TeamGate";
 import type { PipelineRecord } from "../../../../packages/pipeline-control/contracts";
+import { logError } from "../logger";
 
 const STORAGE_KEY = "cyrene.studio.prototype.v1.draft";
 interface Options {
@@ -25,7 +26,8 @@ export function usePipelineDocument(options: Options) {
   const [pipeline, setPipeline] = useState(initial);
   const [dirty, setDirty] = useState(false), dirtyRef = useRef(false);
   const [savedDraft, setSavedDraft] = useState(false), [undoCount, setUndoCount] = useState(0);
-  const current = useRef(initial), history = useRef<Pipeline[]>([]);
+  const [redoCount, setRedoCount] = useState(0);
+  const current = useRef(initial), history = useRef<Pipeline[]>([]), future = useRef<Pipeline[]>([]);
   const [serverBase, setServerBase] = useState<PipelineRecord | null>(null);
   const baseRef = useRef<PipelineRecord | null>(null);
   const editor = useRef<GraphHandle>(null), fileInput = useRef<HTMLInputElement>(null);
@@ -52,6 +54,7 @@ export function usePipelineDocument(options: Options) {
   }, [dirty]);
 
   function error(e: unknown) {
+    logError("studio.action.failed", "STUDIO.ACTION.FAILED", e instanceof Error ? e.message : String(e));
     if (mounted.current) live.current.onNotice(`操作未完成：${e instanceof Error ? e.message : String(e)}`);
   }
   function requireEditor() {
@@ -71,7 +74,7 @@ export function usePipelineDocument(options: Options) {
   }
   function persistRecovery() {
     const sequence = ++recoverySequence.current;
-    const record: Recovery = { id: `${identity.actorId}:${identity.workspaceId}:${tabId}:${current.current.id}`, ...identity, tabId, sequence, savedAt: new Date().toISOString(), document: structuredClone(current.current), history: structuredClone(history.current), selectedId: live.current.selectedId, view: editor.current?.getView?.(), ...(baseRef.current ? { serverBase: structuredClone(baseRef.current) } : {}) };
+    const record: Recovery = { id: `${identity.actorId}:${identity.workspaceId}:${tabId}:${current.current.id}`, ...identity, tabId, sequence, savedAt: new Date().toISOString(), document: structuredClone(current.current), history: structuredClone(history.current), future: structuredClone(future.current), selectedId: live.current.selectedId, view: editor.current?.getView?.(), ...(baseRef.current ? { serverBase: structuredClone(baseRef.current) } : {}) };
     setRecoveryStatus("正在保存恢复记录");
     recoveryQueue.current = recoveryQueue.current.catch(() => {}).then(() => saveRecovery(record)).then(() => {
       if (mounted.current && sequence === recoverySequence.current) setRecoveryStatus("编辑可恢复");
@@ -89,6 +92,7 @@ export function usePipelineDocument(options: Options) {
       const p = recoveryDocumentSchema.parse(record.document);
       if (record.serverBase && (record.serverBase.workspaceId !== identity.workspaceId || record.serverBase.document.id !== p.id)) throw new Error("恢复记录的服务端基线与流程身份不匹配。");
       loadCanvas(p, false); history.current = record.history.map(row => recoveryDocumentSchema.parse(row)); setUndoCount(history.current.length);
+      future.current = (record.future ?? []).map(row => recoveryDocumentSchema.parse(row)); setRedoCount(future.current.length);
       baseRef.current = record.serverBase ?? null; setServerBase(baseRef.current);
       if (record.selectedId && p.nodes.some(node => node.id === record.selectedId)) requireEditor().select(record.selectedId);
       if (record.view) requireEditor().setView?.(record.view);
@@ -98,6 +102,7 @@ export function usePipelineDocument(options: Options) {
   function recordChange(p: Pipeline) {
     if (JSON.stringify(current.current) === JSON.stringify(p)) return;
     history.current = [...history.current.slice(-49), structuredClone(current.current)];
+    future.current = []; setRedoCount(0);
     setUndoCount(history.current.length); publish(p, true);
   }
   function changed(p: Pipeline) { recordChange({ ...p, name: current.current.name }); }
@@ -109,16 +114,27 @@ export function usePipelineDocument(options: Options) {
   function applyDocument(p: Pipeline) { loadCanvas(p); recordChange(p); }
   function loadServerDocument(p: Pipeline) {
     loadCanvas(p, false); publish(p, false);
-    history.current = []; setUndoCount(0);
+    history.current = []; future.current = []; setUndoCount(0); setRedoCount(0);
   }
   function undoLocal() {
     try {
       const p = history.current.at(-1); if (!p) return;
-      loadCanvas(p); history.current.pop(); publish(p, true); setUndoCount(history.current.length);
+      loadCanvas(p); history.current.pop();
+      future.current = [...future.current.slice(-49), structuredClone(current.current)]; setRedoCount(future.current.length);
+      publish(p, true); setUndoCount(history.current.length);
       live.current.onNotice("已撤销本地修改；服务端版本尚未改变。");
     } catch (e) { error(e); }
   }
   function snapshot() { return { ...requireEditor().snapshot(), name: current.current.name }; }
+  function redoLocal() {
+    try {
+      const p = future.current.at(-1); if (!p) return;
+      loadCanvas(p); future.current.pop();
+      history.current = [...history.current.slice(-49), structuredClone(current.current)]; setUndoCount(history.current.length);
+      publish(p, true); setRedoCount(future.current.length);
+      live.current.onNotice("已重做本地修改；服务端版本尚未改变。");
+    } catch (e) { error(e); }
+  }
   function replace(p: Pipeline, message: string) {
     if (dirtyRef.current && !window.confirm("当前流程有未保存修改，是否替换？")) return;
     baseRef.current = null; setServerBase(null);
@@ -161,6 +177,6 @@ export function usePipelineDocument(options: Options) {
     finally { if (version === imports.current && fileInput.current) fileInput.current.value = ""; }
   }
 
-  return { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, changed, recordChange,
+  return { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, redoCount, redoLocal, changed, recordChange,
     applyDocument, loadServerDocument, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor, recoveries, recoveryStatus, recover, serverBase, updateServerBase };
 }

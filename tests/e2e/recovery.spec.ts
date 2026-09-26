@@ -62,3 +62,25 @@ test("recovery preserves incomplete configuration instead of silently replacing 
   await expect(page.getByLabel("训练轮数", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("流水线名称")).toHaveValue("未完成的参数");
 });
+
+test("redo shortcuts and redo history survive draft recovery", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("流水线名称").fill("可重做的恢复草稿");
+  await page.getByLabel("训练轮数", { exact: true }).fill("9");
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByRole("button", { name: "撤销本地修改", exact: true }).click();
+  await expect(page.getByLabel("训练轮数", { exact: true })).toHaveValue("3");
+  await expect(page.getByLabel("编辑恢复状态")).toHaveText("编辑可恢复");
+  page.on("dialog", dialog => dialog.accept()); await page.reload();
+  await page.getByRole("button", { name: "文件", exact: true }).click();
+  await page.getByText("恢复未保存编辑", { exact: true }).click();
+  await page.getByRole("button", { name: /可重做的恢复草稿 ·/ }).first().click();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByRole("button", { name: "重做本地修改", exact: true }).click();
+  await expect(page.getByLabel("训练轮数", { exact: true })).toHaveValue("9");
+  await page.getByRole("button", { name: "编辑", exact: true }).focus();
+  await page.keyboard.press("Control+z");
+  await expect(page.getByLabel("训练轮数", { exact: true })).toHaveValue("3");
+  await page.keyboard.press("Control+Shift+z");
+  await expect(page.getByLabel("训练轮数", { exact: true })).toHaveValue("9");
+});

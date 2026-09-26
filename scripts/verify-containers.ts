@@ -48,13 +48,20 @@ try {
   };
   const document = examplePipeline(); document.name = "Container restart acceptance";
   await command("pipelines.create", { workspaceId: "local", document }, "acceptance-create");
+  const target = { workspaceId: "local", pipelineId: document.id, expectedLayoutRevision: 1 };
+  await command("pipelines.patch", { ...target, expectedGraphRevision: 1, edits: [{ op: "rename", name: "Redo after container replacement" }] }, "acceptance-patch");
+  await command("pipelines.undo", { ...target, expectedGraphRevision: 2 }, "acceptance-undo");
   await docker("stop", "--time", "10", control); await docker("rm", control); await start(); await ready();
   const restored = await command("pipelines.get", { workspaceId: "local", pipelineId: document.id });
-  assert.equal(restored.document.name, document.name); assert.equal(restored.graphRevision, 1);
+  assert.equal(restored.document.name, document.name); assert.equal(restored.graphRevision, 3);
+  const redone = await command("pipelines.redo", { ...target, expectedGraphRevision: 3 }, "acceptance-redo");
+  assert.equal(redone.record.document.name, "Redo after container replacement");
+  const replay = await command("pipelines.redo", { ...target, expectedGraphRevision: 3 }, "acceptance-redo");
+  assert.deepEqual(replay, redone);
   await command("pipelines.create", { workspaceId: "local", document }, "acceptance-create");
   assert.equal((await command("pipelines.list", { workspaceId: "local" })).items.length, 1);
   assert.match(await (await request("/")).text(), /<div id="root">/);
-  process.stdout.write("PASS: gateway login, shared PostgreSQL graph, session and idempotency survive control-container replacement.\n");
+  process.stdout.write("PASS: gateway login, PostgreSQL graph, actor redo, session and idempotency survive control-container replacement.\n");
 } finally {
   for (const name of created.reverse()) await docker("rm", "-f", "-v", name).catch(() => {});
   await docker("network", "rm", network).catch(() => {});

@@ -17,6 +17,7 @@ export function controlMiddleware(control: { execute(raw: unknown, actor: import
     try {
       // Development boundary only: loopback Host, same Origin, and per-process
       // CSRF token. The future HTTP/MCP adapter must supply authenticated actors.
+      // 仅用于开发边界：loopback Host、同源校验和进程级 CSRF token。未来的 HTTP/MCP adapter 必须提供经过身份验证的 actor。
       const host = req.headers.host ?? "";
       if (!/^(127\.0\.0\.1|localhost|\[::1\]):\d+$/.test(host) ||
         (req.headers.origin && req.headers.origin !== `http://${host}`) || req.headers["sec-fetch-site"] === "cross-site") throw new ControlError("FORBIDDEN", "仅允许本机同源访问。", 403);
@@ -35,6 +36,19 @@ export function controlMiddleware(control: { execute(raw: unknown, actor: import
       send(res, 200, { result });
     } catch (e) {
       const err = e instanceof ControlError ? e : e instanceof z.ZodError ? new ControlError("INVALID_INPUT", "请求或登记数据不符合契约。") : new ControlError("STORE_ERROR", "无法读取或保存登记库；已有文件未被重置。", 500);
+      console.error(JSON.stringify({
+        schema_version: 1,
+        timestamp: new Date().toISOString(),
+        level: "ERROR",
+        "event.name": "studio.control.error",
+        "service.name": "cyrene-client",
+        message: err.message,
+        attributes: {
+          "error.code": `STUDIO.CONTROL.${err.code}`,
+          url: req.url,
+          status: err.status,
+        },
+      }));
       send(res, err.status, { error: { code: err.code, message: err.message } });
     }
   };

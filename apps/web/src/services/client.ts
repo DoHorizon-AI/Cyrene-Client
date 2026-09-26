@@ -1,13 +1,103 @@
 import { z } from "zod";
+import { logError } from "../logger";
 import {
   bindingSchema, datasetSchema, datasetVersionSchema, hostStatusSchema, modelImportSchema,
   navigatorSessionsSchema, pathId, sessionSchema, suiteInputSchema, suiteSchema, trainingConfigurationSchema, trainingDraftSchema,
   type HostSession,
 } from "../../../../packages/service-settings/contracts";
 
-export class ServiceError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status = 0) { super(message); }
+export interface DiagnosticInfo {
+  readonly traceId?: string;
+  readonly requestId?: string;
+  readonly recoveryAction?: string;
+  readonly retryable?: boolean;
 }
+
+export class ServiceError extends Error {
+  public readonly traceId?: string;
+  public readonly requestId?: string;
+  public readonly recoveryAction?: string;
+  public readonly retryable?: boolean;
+
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status = 0,
+    diagnostics?: DiagnosticInfo,
+  ) {
+    super(message);
+    this.name = "ServiceError";
+    this.traceId = diagnostics?.traceId;
+    this.requestId = diagnostics?.requestId;
+    this.recoveryAction = diagnostics?.recoveryAction;
+    this.retryable = diagnostics?.retryable;
+
+    try {
+      logError("studio.service.request_failed", code, message, {
+        status,
+        trace_id: diagnostics?.traceId,
+        request_id: diagnostics?.requestId,
+        recovery_action: diagnostics?.recoveryAction,
+        retryable: diagnostics?.retryable,
+      });
+    } catch {
+      // logging failure should never break error propagation
+      // 日志记录失败不得中断错误传播。
+    }
+  }
+}
+
+/**
+ * Route shape for diagnostics.
+ *
+ * Resource ids are legitimate log attributes, but these clients only need the
+ * route shape, so id-looking segments are replaced before a record is written.
+ *
+ * 用于诊断记录的路由形态。resource ID 可以作为合法日志属性，但这些客户端只需要路由形态，
+ * 因此写入记录前会将类似 ID 的路径段替换为占位符。
+ */
+function pathShape(path: string): string {
+  return path.split("/").map((segment) => (/^[0-9a-f-]{8,}$/i.test(segment) ? ":id" : segment)).join("/");
+}
+
+export function formatDiagnosticSummary(error: ServiceError): string {
+  const parts: string[] = [error.message];
+  if (error.recoveryAction) parts.push(`建议操作: ${error.recoveryAction}`);
+  if (error.requestId) parts.push(`Request ID: ${error.requestId}`);
+  if (error.traceId) parts.push(`Trace ID: ${error.traceId}`);
+  return parts.join(" | ");
+}
+/**
+ * W3C trace context helpers.
+ *
+ * The trace id is 16 random bytes and the span id 8; neither may be all zeros,
+ * so the leading nibble is forced non-zero. The Web Host forwards `traceparent`
+ * unchanged, which is what makes one browser action followable end to end.
+ *
+ * W3C trace 上下文辅助函数。trace ID 由 16 个随机字节组成，span ID 由 8 个组成；二者都不能全为零，
+ * 因此会将首个 nibble 强制设为非零。Web Host 原样转发 `traceparent`，让一次浏览器操作能够端到端追踪。
+ */
+function randomHex(bytes: number): string {
+  const buffer = crypto.getRandomValues(new Uint8Array(bytes));
+  return Array.from(buffer, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function withNonZeroPrefix(value: string): string {
+  return value.startsWith("0") && /^0+$/.test(value) ? `1${value.slice(1)}` : value;
+}
+
+export function newTraceId(): string {
+  return withNonZeroPrefix(randomHex(16));
+}
+
+export function newSpanId(): string {
+  return withNonZeroPrefix(randomHex(8));
+}
+
+export function formatTraceparent(traceId: string, spanId: string): string {
+  return `00-${traceId}-${spanId}-01`;
+}
+
 type Fetcher = typeof fetch;
 const connectionSchema = z.object({ configured: z.boolean(), target: z.string().nullable() });
 
@@ -65,19 +155,41 @@ export class SettingsClient {
     return this.read(`/api/v1/navigator/harness/workspaces/${pathId(workspace)}/sessions`, navigatorSessionsSchema, signal);
   }
   private async read<T extends z.ZodTypeAny>(path: string, schema: T, signal?: AbortSignal): Promise<z.infer<T>> {
-    try { return await this.request(path, schema, { signal }); }
+    // One trace id per operation: a refresh-and-retry keeps the same trace so the
+    // two attempts stay linkable, while each attempt carries its own span.
+    // 每个操作使用一个 trace ID：刷新并重试时保留同一 trace，以关联两次尝试；每次尝试仍使用各自的 span。
+    const traceId = newTraceId();
+    try { return await this.request(path, schema, { signal }, traceId); }
     catch (e) {
       if (!(e instanceof ServiceError) || e.status !== 401 || signal?.aborted) throw e;
       try { if (!(await this.refresh()).authenticated) throw e; }
-      catch { this.csrf = null; this.onExpired?.(); throw e; }
-      return this.request(path, schema, { signal });
+      catch {
+        this.csrf = null;
+        logError("studio.services.session_refresh_failed", "STUDIO.SESSION.REFRESH_FAILED", "设置会话刷新失败，请求未重试。", {
+          path_shape: pathShape(path),
+          http_status: 401,
+          outcome: "rejected",
+        });
+        this.onExpired?.();
+        throw e;
+      }
+      return this.request(path, schema, { signal }, traceId);
     }
   }
-  private async request<T extends z.ZodTypeAny>(path: string, schema: T, init: RequestInit): Promise<z.infer<T>> {
+  private async request<T extends z.ZodTypeAny>(path: string, schema: T, init: RequestInit, traceId?: string): Promise<z.infer<T>> {
     const headers = new Headers(init.headers); headers.set("Accept", "application/json");
     const method = init.method ?? "GET";
     if (init.body) headers.set("Content-Type", "application/json");
     if (method !== "GET" && this.csrf) headers.set("X-CSRF-Token", this.csrf);
+    if (!headers.has("X-Request-ID")) {
+      headers.set("X-Request-ID", `req-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`);
+    }
+    // W3C trace context: the Web Host forwards this unchanged, so one browser
+    // action is followable through every Product it touches.
+    // W3C trace 上下文会由 Web Host 原样转发，因此一次浏览器操作可以贯穿其访问的所有 Product。
+    if (!headers.has("traceparent")) {
+      headers.set("traceparent", formatTraceparent(traceId ?? newTraceId(), newSpanId()));
+    }
     let response: Response;
     try {
       const signal = AbortSignal.any([AbortSignal.timeout(this.timeoutMs), ...(init.signal ? [init.signal] : [])]);
@@ -91,12 +203,25 @@ export class SettingsClient {
     try { payload = await response.json(); }
     catch { throw new ServiceError("NON_JSON", `服务没有返回 JSON 设置（HTTP ${response.status}）。`, response.status); }
     if (!response.ok) {
-      const problem = z.object({ code: z.string().max(100).regex(/^[A-Z][A-Z0-9_]+$/).optional() }).safeParse(payload);
-      const code = problem.success ? problem.data.code ?? `HTTP_${response.status}` : `HTTP_${response.status}`;
+      const problem = z.object({
+        code: z.string().max(128).regex(/^[A-Za-z0-9_.-]+$/).optional(),
+        traceId: z.string().max(128).optional(),
+        requestId: z.string().max(128).optional(),
+        recoveryAction: z.string().max(64).optional(),
+        retryable: z.boolean().optional(),
+      }).safeParse(payload);
+      const code = problem.success && problem.data.code ? problem.data.code : `HTTP_${response.status}`;
+      const diagnostics: DiagnosticInfo = problem.success ? {
+        traceId: problem.data.traceId,
+        requestId: problem.data.requestId,
+        recoveryAction: problem.data.recoveryAction,
+        retryable: problem.data.retryable,
+      } : {};
       // No arbitrary upstream payloads (possibly containing credentials) enter UI errors.
+      // UI 错误不会包含任意上游载荷（其中可能含有凭据）。
       const text: Record<number, string> = { 401: "会话已过期，请重新连接或配对。", 403: "没有此接口权限，或 Web Host 未开放该服务。", 404: "资源或设置接口不存在。", 409: "资源状态已变化，请重新读取。", 422: "服务端拒绝了设置参数。", 502: "Web Host 无法访问目标服务。", 503: "服务尚未配置或暂不可用。" };
       if (response.status === 401 && method !== "GET" && !path.startsWith("/api/v1/auth/")) this.onExpired?.();
-      throw new ServiceError(code, `${text[response.status] ?? "服务请求失败。"}（${code}）`, response.status);
+      throw new ServiceError(code, `${text[response.status] ?? "服务请求失败。"}（${code}）`, response.status, diagnostics);
     }
     const parsed = schema.safeParse(payload);
     if (!parsed.success) throw new ServiceError("CONTRACT", "服务响应与已核对的设置契约不符；本地配置未被替换。");

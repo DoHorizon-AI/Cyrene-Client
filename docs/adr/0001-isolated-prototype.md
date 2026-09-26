@@ -1,5 +1,7 @@
 # ADR 0001: 独立施工的 Studio 原型
 
+> 命名说明：本文按创建时的名称记录 Cyrene-Studio；该仓库已于 2026-09-25 更名为 Cyrene-Client。下文保留当时的路径和名称，作为历史背景。
+
 状态：本地原型已选择；正式 Product 边界和公开 API 尚未冻结。
 
 后续登记（2026-09-21）：用户已授权将 Studio 挂载到 IDEA 工作区，并在 `DoHorizon-AI/Cyrene-Studio` 建立独立仓库。下文的“不修改 Workspace”描述最初施工边界；后续仅增加 Studio 的仓库和 IDE 登记，未改变其他 Product 的业务代码或统一发布锁。

@@ -66,7 +66,7 @@ export function useIdeLayout() {
         leftWidth: bounded(s.leftWidth, 210, 480, 240), rightWidth: bounded(s.rightWidth, 260, 520, 310), bottomHeight: bounded(s.bottomHeight, 100, 400, 175) };
     } catch { return defaults; }
   });
-  useEffect(() => { try { localStorage.setItem("cyrene.studio.layout.v1", JSON.stringify(layout)); } catch { /* Layout preferences are optional. */ } }, [layout]);
+  useEffect(() => { try { localStorage.setItem("cyrene.studio.layout.v1", JSON.stringify(layout)); } catch { /* Layout preferences are optional. 布局偏好设置为可选项。 */ } }, [layout]);
   useEffect(() => {
     const resize = () => { if (innerWidth < 1000) setLayout(s => s.left && s.right ? { ...s, left: null } : s); };
     window.addEventListener("resize", resize); resize(); return () => window.removeEventListener("resize", resize);

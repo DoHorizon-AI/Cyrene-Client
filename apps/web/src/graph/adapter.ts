@@ -4,7 +4,7 @@ import { visualDefinition, type Pipeline, type PipelineNode } from "../../../../
 import { nodeSize } from "../../../../packages/pipeline-model/geometry";
 
 export type EditorGraph = LGraph & { onAfterChange?: () => void; onConnectionChange?: () => void; onNodeRemoved?: () => void };
-export class StudioNode extends LGraphNode {
+export class ClientNode extends LGraphNode {
   properties: { document: PipelineNode } = { document: { id: "", type: "", typeVersion: "1", label: "", config: {} } };
 }
 
@@ -12,7 +12,7 @@ export function registerNodes(extra: NodeDefinition[] = []) {
   for (const d of [...allDefinitions(), ...extra]) {
     const name = `cyrene/${d.type}@${d.version}`;
     if (LiteGraph.registered_node_types[name]) continue;
-    class VisualNode extends StudioNode {
+    class VisualNode extends ClientNode {
       constructor() {
         super(d.title);
         for (const p of d.inputs) this.addInput(p.label, p.kind);
@@ -33,14 +33,14 @@ export function registerNodes(extra: NodeDefinition[] = []) {
   }
 }
 
-export function editorNodes(graph: LGraph): StudioNode[] {
-  return (Reflect.get(graph, "_nodes") as LGraphNode[]).filter((node): node is StudioNode => node instanceof StudioNode);
+export function editorNodes(graph: LGraph): ClientNode[] {
+  return (Reflect.get(graph, "_nodes") as LGraphNode[]).filter((node): node is ClientNode => node instanceof ClientNode);
 }
 
 export function appendNode(graph: LGraph, n: PipelineNode, position: { x: number; y: number }) {
   const definition = visualDefinition(n);
   if (definition) registerNodes([definition]);
-  const node = LiteGraph.createNode(`cyrene/${n.type}@${n.typeVersion}`) as StudioNode | null;
+  const node = LiteGraph.createNode(`cyrene/${n.type}@${n.typeVersion}`) as ClientNode | null;
   if (!node) throw new Error(`节点类型尚未注册：${n.type}`);
   // A placeholder may have registered this type before its package arrived, or
   // another draft may retain a different unavailable port snapshot. Configure
@@ -78,6 +78,7 @@ export function snapshotGraph(graph: LGraph, base: Pipeline): Pipeline {
     return { id: old?.id ?? crypto.randomUUID(), from: { node: source.id, port: output }, to: { node: target.id, port: input } };
   });
   // Preserve authored order across loading, independent of LiteGraph registration order.
+  // 加载时保留文档中定义的顺序，不受 LiteGraph 注册顺序影响。
   const rank = new Map(base.nodes.map((n, i) => [n.id, i]));
   nodes.sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity));
   const edgeRank = new Map(base.edges.map((e, i) => [e.id, i]));

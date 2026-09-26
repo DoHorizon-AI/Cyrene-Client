@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 // Allow only settings operations in this development bridge. In particular,
 // /actions/start, /actions/deploy and arbitrary cloud/provider URLs are absent.
+// 此开发桥接层仅允许设置相关操作。尤其不开放 /actions/start、/actions/deploy 或任意云服务商 URL。
 export function allowedSettingsRequest(method: string, pathname: string) {
   const rules: [string, RegExp][] = [
     ["GET", /^\/api\/v1\/(auth\/session|system\/status)$/],
@@ -51,5 +52,5 @@ export function settingsBridge(target?: string): Plugin {
     if (!target) { respond(503, { code: "STUDIO_HOST_NOT_CONFIGURED" }); return; }
     next();
   };
-  return { name: "studio-settings-bridge", configureServer(server) { server.middlewares.use(middleware); }, configurePreviewServer(server) { server.middlewares.use(middleware); } };
+  return { name: "client-settings-bridge", configureServer(server) { server.middlewares.use(middleware); }, configurePreviewServer(server) { server.middlewares.use(middleware); } };
 }

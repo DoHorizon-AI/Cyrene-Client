@@ -1,5 +1,5 @@
 {
-  "name": "@cyrene/studio-prototype",
+  "name": "@cyrene/client",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -19,7 +19,12 @@
     "test:e2e": "playwright test",
     "test:e2e:control": "playwright test --config playwright.control.config.ts",
     "test:containers": "tsx scripts/verify-containers.ts",
-    "check": "npm test && npm run build && npm run test:e2e && npm run test:e2e:control"
+    "check": "npm test && npm run build && npm run test:e2e && npm run test:e2e:control",
+    "dev:web:navigator": "npm --prefix apps/web/services/navigator run dev",
+    "build:web:navigator": "npm --prefix apps/web/services/navigator run build",
+    "check:web:navigator": "npm --prefix apps/web/services/navigator run check",
+    "build:win:installer": "cargo build --manifest-path apps/win/Cargo.toml --workspace",
+    "check:win:installer": "cargo check --manifest-path apps/win/Cargo.toml --workspace"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

@@ -6,6 +6,7 @@ import { ControlError } from "../server-control/contracts";
 
 // Server-side ELK: the canvas does not download the layout engine. Persisted
 // coordinates are authoritative; browser and MCP use this same implementation.
+// 由服务端运行 ELK：画布不会下载布局引擎。持久化坐标具有权威性；浏览器与 MCP 共用此实现。
 export async function arrange(document: Pipeline, options: { direction: "RIGHT" | "DOWN"; nodeIds?: string[] }): Promise<Pipeline> {
   const p = parsePipeline(document), ids = new Set(p.nodes.map(n => n.id));
   if (options.nodeIds?.some(id => !ids.has(id))) throw new ControlError("UNKNOWN_NODE", "排版范围包含未知节点。");
@@ -32,6 +33,7 @@ export async function arrange(document: Pipeline, options: { direction: "RIGHT" 
   const boxes = fixed.map(n => { const pos = p.presentation.nodes[n.id], [w, h] = nodeSize(n.type); return { x: pos.x, y: pos.y - TITLE_HEIGHT, w, h: h + TITLE_HEIGHT }; });
   // Fixed nodes are obstacles. For partial layout, translate the whole computed
   // block until it clears obstacles, preserving the internal layered structure.
+  // 固定节点作为障碍物。局部排版时，整体平移计算出的节点块，直到避开障碍，同时保留块内的分层结构。
   const children = graph.children!;
   let shiftY = 0;
   for (let attempt = 0; attempt <= fixed.length * children.length; attempt++) {

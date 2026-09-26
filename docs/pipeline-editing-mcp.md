@@ -4,7 +4,7 @@
 
 ## 页面使用
 
-1. 启动 Studio，在画布编辑流程。“文件 → 保存草稿”或 Ctrl/Cmd+S 保存浏览器副本；顶部“保存到服务端”写入 `.studio/pipelines.json`。
+1. 启动 Client，在画布编辑流程。“文件 → 保存草稿”或 Ctrl/Cmd+S 保存浏览器副本；顶部“保存到服务端”写入 `.studio/pipelines.json`。
 2. 在“文件”菜单中用“读取流程列表 → 选择流程 → 载入服务端流程”打开已有版本。创建时不覆盖同 ID 的已有流程。
 3. 点击顶部“自动排版”整理未锁定节点；“编辑 → 整理选中节点”只移动当前选中的一个节点。MCP 的 `nodeIds` 支持一次指定多个节点。
 4. “编辑 → 锁定节点位置”保留位置，解除锁定后可重新整理。排版只改变布局，不修改参数与连线语义。
@@ -13,7 +13,7 @@
 
 页面不会自动把每次输入提交到服务端。AI 看到的是最后保存的版本。浏览器本地草稿、导入导出和已有节点设置仍可使用。
 
-右侧“平台 MCP”可读取实际的 11 项工具目录、编写任务草稿并复制流程/节点引用。内置聊天模型尚未接入；该面板本身不会调用模型或执行 MCP 编辑。工具窗口布局见 [工作台界面](ide-workbench.md)。
+右侧“平台 MCP”可读取实际的 12 项工具目录、编写任务草稿并复制流程/节点引用。内置聊天模型尚未接入；该面板本身不会调用模型或执行 MCP 编辑。工具窗口布局见 [工作台界面](ide-workbench.md)。
 
 ## 连接 AI 客户端
 
@@ -22,18 +22,18 @@
 ```json
 {
   "mcpServers": {
-    "cyrene-studio": {
+    "cyrene-client": {
       "command": "node",
       "args": [
-        "C:/work/Cyrene-Services/Cyrene-Studio/node_modules/tsx/dist/cli.mjs",
-        "C:/work/Cyrene-Services/Cyrene-Studio/apps/mcp/main.ts"
+        "C:/work/Cyrene-Client/node_modules/tsx/dist/cli.mjs",
+        "C:/work/Cyrene-Client/apps/mcp/main.ts"
       ]
     }
   }
 }
 ```
 
-将示例中的 `C:/work/Cyrene-Services/Cyrene-Studio` 替换为实际克隆目录。MCP 默认使用 Studio 根目录的 `.studio`，与默认 Vite 入口共享文件。若给 Vite 配置了 `STUDIO_CONTROL_DATA_DIR`，MCP 也必须指向同一个绝对目录。
+将示例中的 `C:/work/Cyrene-Client` 替换为实际克隆目录。MCP 默认使用 Client 根目录的 `.studio`，与默认 Vite 入口共享文件。若给 Vite 配置了 `STUDIO_CONTROL_DATA_DIR`，MCP 也必须指向同一个绝对目录。
 
 本机 stdio 进程代表启动它的本地用户，工作空间固定为 `local`，写入来源记录为 `local-mcp`；它不接受调用方自报 actor。设置 `STUDIO_MCP_READ_ONLY=1` 可只暴露读取与布局预览工具。默认允许草稿编辑，连接客户端即授予这组本地编辑能力。
 
@@ -60,7 +60,10 @@
 | `pipelines.preview_layout` | 根据传入草稿计算布局，不保存 |
 | `pipelines.validate` | 结构校验与拓扑顺序；明确返回 `executable: false` |
 | `pipelines.history` | 最近 50 次成功变更的来源、版本及摘要 |
-| `pipelines.undo` | 撤销最新一批修改，保留递增版本和历史记录 |
+| `pipelines.undo` | 撤销当前操作者最近一批修改，保留其他人的独立编辑和递增版本 |
+| `pipelines.redo` | 重做当前操作者最近撤销的一批修改；任何操作者对该流程的新有效写入会清空重做栈 |
+
+撤销和重做按 workspace、pipeline 和 actor 隔离，使用操作前后快照作三方合并基线，不以整份快照覆盖当前文档。重叠图或布局修改返回 `REVISION_CONFLICT`，不消耗重做记录。无 `redo` 字段的旧库默认空栈；旧格式重做记录只有在历史能唯一证明同一操作者及前后版本时才能恢复，否则保留记录并拒绝重放。JSON、SQLite 与 PostgreSQL 使用相同迁移语义。
 
 每个写工具要求 `idempotencyKey`。重试必须使用同一键及相同参数；内容变化时使用新键。同一 actor/workspace 下，幂等结果在进程重启后仍可回读。业务错误作为 MCP `isError` 返回，并携带稳定 code；不会伪造成功。
 

@@ -18,6 +18,7 @@ services:
     build:
       context: .
       target: control
+      dockerfile: deploy/studio.Dockerfile
     environment:
       STUDIO_MODE: team
       STUDIO_DATABASE_URL: postgresql://studio:${STUDIO_DB_PASSWORD:?Set STUDIO_DB_PASSWORD}@postgres:5432/studio
@@ -43,6 +44,7 @@ services:
     build:
       context: .
       target: web
+      dockerfile: deploy/studio.Dockerfile
     ports:
       - "127.0.0.1:${STUDIO_WEB_PORT:-5180}:8080"
     depends_on:

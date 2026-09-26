@@ -21,9 +21,9 @@ function Harness() {
   const [document] = useState(() => ({ ...examplePipeline(), id: `lifecycle-${crypto.randomUUID()}` }));
   const record = (name: string) => { window.pipelineLifecycle.callbacks.push(name); };
   return <><button onClick={() => setOpen(false)}>关闭工作台</button>{open && <PipelineControls
-    document={document} serverBase={base} onServerBase={setBase} selectedId={null} disabled={false} canUndo={false}
+    document={document} serverBase={base} onServerBase={setBase} selectedId={null} disabled={false} canUndo={false} canRedo={false}
     onApply={() => record("apply")} onLoad={() => record("load")}
-    onNotice={() => record("notice")} onUndo={() => record("undo")}
+    onNotice={() => record("notice")} onUndo={() => record("undo")} onRedo={() => record("redo")}
   />}</>;
 }
 createRoot(document.getElementById("root")!).render(<StrictMode><Harness /></StrictMode>);

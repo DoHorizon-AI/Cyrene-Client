@@ -125,9 +125,11 @@ Platform 现已提供 supervisor 停止闭环：`ExecutionController::stop` 只�
 2026-09-24 构建控制开发后的验证：100 项 Studio 单元测试（含真实 PostgreSQL、SQLite 构建重启和受信构建脚本）、TypeScript/Vite build；浏览器回归包含 27 项原有 E2E 和 2 项独立团队服务 E2E。构建浏览器测试模拟 GitHub 结果，没有发布镜像。先前独立容器替换检查验证了 Nginx 登录、保存草稿、重建 control 后继续使用原会话和幂等键；这次没有重新部署公司服务。
 
 ```powershell
-docker build --target control -t cyrene-studio:control-development .
-docker build --target web -t cyrene-studio:web-development .
+docker build -f deploy/studio.Dockerfile --target control -t cyrene-studio:control-development .
+docker build -f deploy/studio.Dockerfile --target web -t cyrene-studio:web-development .
 npm run test:containers
 ```
+
+仓库根 `Dockerfile` 保留 Azure Container Apps 的 Navigator Web Host（80 端口及 Product 直连路由）；独立流水线工作台使用 `deploy/studio.Dockerfile` 的 `control`（5182）和 `web`（8080）目标。Compose 已指向后者。两个前端各有自己的依赖锁，Navigator 检查运行 `npm --prefix apps/web/services/navigator ci` 和 `npm run check:web:navigator`；流水线工作台根 TypeScript 构建不包含 Navigator 项目。
 
 Platform 在 Linux Docker 内使用仓库指定 Rust 1.96.1，`cargo test -p cy-execution-control -p cy-runtime-agent --locked` 的 53 项测试通过，包含真实 Kernel UDS/mTLS TCK；格式检查和严格 Clippy 通过。另显式执行 1 项默认忽略的真实 Docker 测试，验证启动器重开后容器 ID/启动时间不变、删除后不重建。真实 Runtime 基础镜像已本地构建，但容器测试使用测试 Lease 和不可达控制端点，未认证派发训练、使用 GPU 或发布镜像。这些证据不能替代双机工作流验收。LiteGraph eval 和前端 bundle 大小警告仍存在。未提交、未推送、未验证远端 CI 或部署到公司环境。

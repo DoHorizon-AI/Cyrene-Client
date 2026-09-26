@@ -6,6 +6,7 @@ import type { z } from "zod";
 
 // Atomic file store for the single-user prototype; replace with a transactional
 // store for the deployed control service. A competing process fails explicitly.
+// 单用户原型使用原子文件存储；部署控制服务时应替换为事务存储。若有其他进程竞争，会明确报错。
 export class AtomicJsonStore<D> {
   private pending: Promise<void> = Promise.resolve();
   constructor(private file: string, private schema: z.ZodType<D, z.ZodTypeDef, any>, private empty: () => D) {}

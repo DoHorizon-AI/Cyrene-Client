@@ -3,6 +3,7 @@ import { z } from "zod";
 export const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
 const label = z.string().trim().min(1).max(100);
 // A registration is user intent, never a Platform NodeRef or a resource lease.
+// 注册表示用户意图，不代表 Platform NodeRef 或资源租约。
 export const serverSpec = z.object({
   name: label,
   attachment: z.enum(["HOST_AGENT", "CONTAINER_AGENT", "PROVIDER_MANAGED"]),
@@ -51,6 +52,7 @@ export const commandRequest = z.object({
   input: z.unknown(), requestId: identifier, idempotencyKey: identifier.optional(),
 }).strict();
 // Supplied by a trusted transport, not by the model/browser request body.
+// 由可信传输层提供，不从模型或浏览器请求正文中接收。
 export interface Actor { id: string; workspaceIds: string[]; scopes: string[] }
 export class ControlError extends Error {
   constructor(public code: string, message: string, public status = 400) { super(message); }

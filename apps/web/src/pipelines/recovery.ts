@@ -10,6 +10,7 @@ export const recoverySchema = z.object({
   id: z.string(), actorId: z.string(), workspaceId: z.string(), tabId: z.string(), sequence: z.number().int().nonnegative(), savedAt: z.string(),
   document: recoveryDocumentSchema, history: z.array(recoveryDocumentSchema).max(50), selectedId: z.string().nullable(),
   serverBase: recordSchema.optional(),
+  future: z.array(recoveryDocumentSchema).max(50).optional(),
   view: z.object({ scale: z.number().positive().max(100), offset: z.tuple([z.number().finite(), z.number().finite()]) }).optional(),
 });
 export type Recovery = z.infer<typeof recoverySchema>;

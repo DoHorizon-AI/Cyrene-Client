@@ -1,8 +1,12 @@
-# Cyrene Studio
+# Cyrene Client
+
+[![Client CI](https://github.com/DoHorizon-AI/Cyrene-Client/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/DoHorizon-AI/Cyrene-Client/actions/workflows/ci.yml)
+[![Package MSIX](https://github.com/DoHorizon-AI/Cyrene-Client/actions/workflows/package-msix.yml/badge.svg?branch=develop)](https://github.com/DoHorizon-AI/Cyrene-Client/actions/workflows/package-msix.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 模块化流水线工作台的第一阶段原型。React + TypeScript + Vite 提供应用界面，LiteGraph 0.7.14 提供节点画布。
 
-公司仓库：[DoHorizon-AI/Cyrene-Studio](https://github.com/DoHorizon-AI/Cyrene-Studio)。默认开发分支为 `develop`；GitHub Actions 负责测试和构建，目前不部署服务或发布 npm 包。
+公司仓库：[DoHorizon-AI/Cyrene-Client](https://github.com/DoHorizon-AI/Cyrene-Client)。默认开发分支为 `develop`；GitHub Actions 负责测试和构建，目前不部署服务或发布 npm 包。
 
 **已增加独立控制服务、团队存储、分容器部署、运行协调以及 Yield/Echo 私有执行提供方。完整的双服务器训练→评估链路仍需目标环境验收。** 默认仍可使用原有本地预演；真实运行会先通过 Product 适配器预检。Yield 还要求实际 Kernel 训练绑定，Echo 还要求受信的模型推理输入准备器；缺少任一依赖都会明确拒绝启动。节点设置继续通过 Navigator 提供的现有接口操作。部署、迁移、能力边界与剩余实施项见 [分布式控制服务](docs/distributed-control.md)。
 
@@ -13,8 +17,8 @@
 Node.js 24+；独立开发存储使用 Node 内置 SQLite。
 
 ```powershell
-git clone https://github.com/DoHorizon-AI/Cyrene-Studio.git
-cd Cyrene-Studio
+git clone https://github.com/DoHorizon-AI/Cyrene-Client.git
+cd Cyrene-Client
 npm ci
 npm run dev
 ```
@@ -41,7 +45,7 @@ npm run dev
 
 ## 服务器管理与 MCP 预留
 
-左侧工具栏的 **服务器管理** 可新增、编辑、筛选和归档自管服务器、容器算力、云平台托管资源的登记；算力节点可读取登记并选择目标。登记保存在 Studio 服务端的 `.studio/server-registry.json`，包含修订号、幂等回执和操作记录，刷新浏览器后仍在。
+左侧工具栏的 **服务器管理** 可新增、编辑、筛选和归档自管服务器、容器算力、云平台托管资源的登记；算力节点可读取登记并选择目标。登记保存在 Client 服务端的 `.studio/server-registry.json`，包含修订号、幂等回执和操作记录，刷新浏览器后仍在。
 
 当前完成的是资源登记，真实心跳、GPU 监控和云平台操作尚未接入；查询未配置的连接会明确显示“未连接”。连接标识是未来控制服务中的配置引用，不是服务器 URL，不填写密码或令牌。归档只影响登记，已有服务器不会被停止。
 
@@ -55,9 +59,9 @@ npm run dev
 STUDIO_NAVIGATOR_URL=http://127.0.0.1:8100
 ```
 
-重启 `npm run dev`，点击右上角“服务连接 → 检查连接”。如未登录，输入 **Web Host 启动时提供的一次性配对码**。配对码只进入当前请求，不写入本地草稿；会话采用 HttpOnly cookie 和内存中的 CSRF token。不要填写云厂商令牌。地址只由 Studio 服务端配置，节点 JSON 无法选择任意远端地址。
+重启 `npm run dev`，点击右上角“服务连接 → 检查连接”。如未登录，输入 **Web Host 启动时提供的一次性配对码**。配对码只进入当前请求，不写入本地草稿；会话采用 HttpOnly cookie 和内存中的 CSRF token。不要填写云厂商令牌。地址只由 Client 服务端配置，节点 JSON 无法选择任意远端地址。
 
-Web Host 需要按已有部署方式开放以下前缀，并配置对应 Product 的凭据；一般将前缀映射到各服务的 `/api/v1` 基址。Studio 不修改 Web Host 配置、不自动启动其他仓库服务。
+Web Host 需要按已有部署方式开放以下前缀，并配置对应 Product 的凭据；一般将前缀映射到各服务的 `/api/v1` 基址。Client 不修改 Web Host 配置、不自动启动其他仓库服务。
 
 | 节点 | Web Host 前缀 | 本轮能力 |
 | --- | --- | --- |
@@ -93,6 +97,22 @@ npm run check
 
 自动测试覆盖本地 HTTP、流水线事务、布局和真实 stdio MCP 握手；浏览器覆盖原有交互与服务端版本同步。服务器登记及流水线测试使用真实本地文件/API；Product 设置测试使用显式 fixtures，不能作为真实 Product 已连通的证据。测试不访问真实 Product 或云厂商。当前结果见 [流水线编辑与 MCP](docs/pipeline-editing-mcp.md)。
 
+## Apps
+
+| Path | Role |
+| --- | --- |
+| `apps/web/` | Primary browser client and shared web workbench |
+| `apps/web/services/<service>/` | Independently buildable web UI modules for Catalyst, Yield, Echo, Reactor, Exchange, and Navigator. Navigator is currently standalone; the other service screens remain in the shared workbench. |
+| `apps/win/` | Secondary Windows native client and installer. MSIX packaging exists; the WinUI client and module downloader are not implemented. |
+| `apps/mac/` | Deferred native macOS client; no implementation is planned in the current phase. |
+| `apps/cli/` | Secondary command-line client; module commands are future work. |
+| `apps/mcp/` | Local MCP stdio entry point for pipeline editing. |
+| `packages/` | Client packages shared across platforms; platform UI stays under its platform root. |
+
+The browser workbench is the current primary client. Shared web components live at the `apps/web/` layer, service-specific web applications live under `apps/web/services/`, and cross-platform client logic belongs in `packages/`. See [UI module and installer layout](docs/ui-module-layout.md) for the module boundaries, build commands, and planned download contract.
+
+Navigator can be checked independently with `npm run check:web:navigator`; the Windows installer crate has separate `npm run check:win:installer` and `npm run build:win:installer` commands. These are local package gates and are not part of the browser-only `npm run check` command.
+
 ## 文件与边界
 
 | 路径 | 职责 |
@@ -115,13 +135,13 @@ npm run check
 | `tests/e2e/` | 真实浏览器中的画布交互、保存、导入导出和预演 |
 | `docs/adr/0001-isolated-prototype.md` | 本轮施工边界与后续服务接入顺序 |
 
-Studio 是独立仓库，可单独打开此目录开发；多仓库工作区将它挂载到 `Cyrene-Services/Cyrene-Studio`。Workspace 只保存拓扑和 IDE 挂载信息，不复制 Studio 源码。现有 Product 的业务代码和统一发布锁不因 Studio 原型上传而改变。
+Client 是独立仓库，可单独打开 `../Cyrene-Client` 开发；Workspace 只保存拓扑和 IDE 挂载信息，不复制 Client 源码。现有 Product 的业务代码和统一发布锁不因 Client 原型上传而改变。
 
 ## 下一阶段
 
 执行计划、构建控制、运行协调器和 Yield/Echo 私有执行契约已经加入。下一阶段是生产装配：让 Product supervisor 调用 Platform 容器启动器、接通跨机制品传输和实际目标服务器，再验收双服务器训练→评估。
 
-现有运行协调包括意图持久化、终态确认和有限重试；Yield/Echo 提供方测试不等于 GPU 或模型推理验收。云供应商管理、跨机制品平面、CRDT、子图与重做仍未实现。示例的同一数据集连接用于展示端口，真实训练与评估需明确数据切分；评估完成不等于评估门禁通过，正式部署必须增加服务端检查。
+现有运行协调包括意图持久化、终态确认和有限重试；Yield/Echo 提供方测试不等于 GPU 或模型推理验收。云供应商管理、跨机制品平面、CRDT 与子图仍未实现；草稿撤销与重做按操作者隔离，保留其他人的独立修改。示例的同一数据集连接用于展示端口，真实训练与评估需明确数据切分；评估完成不等于评估门禁通过，正式部署必须增加服务端检查。
 
 上游核心包的数字控件含 `eval`，构建会发出警告。本原型通过 React 表单编辑参数，不使用该数字控件，也关闭上游通用菜单、原生图导入与剪贴板入口。发布前仍需评估严格 CSP、无 eval 构建和依赖维护方案；当前构建通过不等于具备生产发布条件。
 

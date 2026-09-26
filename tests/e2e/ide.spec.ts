@@ -71,7 +71,8 @@ test("MCP panel reads actual tools and copies task references without a model re
   await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
   await expect(page.getByText("内置对话模型尚未配置。", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "查看可用工具" }).click();
-  await expect(page.locator(".ide-tool-list code")).toHaveCount(12);
+  await expect(page.locator(".ide-tool-list code")).toHaveCount(13);
+  await expect(page.locator(".ide-tool-list")).toContainText("pipelines.redo");
   await expect(page.locator(".ide-tool-list")).toContainText("pipelines.patch");
   await page.getByLabel("任务草稿").fill("增加评估节点，保留已锁定的位置。");
   await page.getByRole("button", { name: /复制任务与上下文/ }).click();
@@ -79,7 +80,7 @@ test("MCP panel reads actual tools and copies task references without a model re
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied).toContain("instruction-tuning"); expect(copied).toContain("training"); expect(copied).toContain("增加评估节点");
   expect(requests).toEqual([]);
-  await page.screenshot({ path: "test-results/studio-ide-mcp.png", fullPage: true });
+  await page.screenshot({ path: "test-results/client-ide-mcp.png", fullPage: true });
 });
 
 test("narrow windows avoid overlapping docks and horizontal overflow", async ({ page }) => {
@@ -96,5 +97,5 @@ test("narrow windows avoid overlapping docks and horizontal overflow", async ({ 
     await page.setViewportSize({ width, height: 900 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
-  await page.screenshot({ path: "test-results/studio-ide-narrow.png", fullPage: true });
+  await page.screenshot({ path: "test-results/client-ide-narrow.png", fullPage: true });
 });
