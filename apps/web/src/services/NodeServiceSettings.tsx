@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { PipelineNode } from "../../../../packages/pipeline-model";
 import { trainingParametersSchema, type HostStatus, type TrainingDraft } from "../../../../packages/service-settings/contracts";
 import { SettingsClient } from "./client";
+import type { WorkspaceSummary } from "./workspace-bff-client";
 
 interface Choice { id: string; label: string; apply(): void }
 interface Props { node: PipelineNode; client: SettingsClient; status: HostStatus | null; disabled: boolean; onUpdate(node: PipelineNode): void }
@@ -22,6 +23,10 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
   const [choices, setChoices] = useState<Choice[]>([]);
   const [resourceId, setResourceId] = useState(node.settingsBinding?.resourceId ?? "");
   const [workspaceId, setWorkspaceId] = useState(node.settingsBinding?.workspaceId ?? "");
+  const [workspaceChoices, setWorkspaceChoices] = useState<readonly WorkspaceSummary[]>([]);
+  const [workspaceDiscovery, setWorkspaceDiscovery] = useState<"idle" | "loading" | "ready" | "failed">("idle");
+  const [workspaceDiscoveryError, setWorkspaceDiscoveryError] = useState("");
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const [draft, setDraft] = useState<TrainingDraft | null>(null);
   const [facts, setFacts] = useState<string[]>([]);
   const latest = useRef(node); latest.current = node;
@@ -35,9 +40,47 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
   useEffect(() => {
     request.current?.abort(); setBusy(false); setChoices([]); setFacts([]); setDraft(null); setMessage("");
   }, [status]);
+  const workspaceBffEnabled = client.workspaceBffEnabled;
+  useEffect(() => {
+    if (!workspaceBffEnabled) return;
+    const controller = new AbortController();
+    setWorkspaceDiscovery("loading"); setWorkspaceDiscoveryError("");
+    void client.discoverWorkspaceBffWorkspaces(controller.signal).then((items) => {
+      if (controller.signal.aborted) return;
+      setWorkspaceChoices(items);
+      setSelectedWorkspaceId((previous) => {
+        if (items.length === 1) return items[0].workspaceId;
+        return items.some((item) => item.workspaceId === previous) ? previous : "";
+      });
+      setWorkspaceDiscovery("ready");
+    }, (error: unknown) => {
+      if (controller.signal.aborted) return;
+      setWorkspaceChoices([]); setSelectedWorkspaceId("");
+      setWorkspaceDiscoveryError(error instanceof Error ? error.message : "Workspace 发现失败。");
+      setWorkspaceDiscovery("failed");
+    });
+    return () => controller.abort();
+  }, [client, workspaceBffEnabled]);
   const service = prefix[node.type];
-  const available = !!status && (!service || status.proxyPrefixes.some((p) => p === `/api/v1/${service}`));
+  const hostAvailable = !!status && (!service || status.proxyPrefixes.some((p) => p === `/api/v1/${service}`));
+  const selectedWorkspace = workspaceChoices.find((item) => item.workspaceId === selectedWorkspaceId);
+  const workspaceReady = workspaceDiscovery === "ready" && !!selectedWorkspace;
+  const bffReadSupported = node.type === "dataset"
+    ? !resourceId.trim()
+    : node.type === "model"
+      ? true
+      : node.type === "training"
+        ? !!resourceId.trim()
+        : node.type === "evaluation"
+          ? !!resourceId.trim()
+          : node.type === "compute";
+  const bffCreateSupported = node.type === "evaluation";
+  const available = workspaceBffEnabled
+    ? node.type === "compute" ? hostAvailable : workspaceReady && (bffReadSupported || bffCreateSupported)
+    : hostAvailable;
   const locked = disabled || busy || !available;
+  const readLocked = locked || (workspaceBffEnabled && !bffReadSupported);
+  const createLocked = locked || (workspaceBffEnabled && !bffCreateSupported);
 
   function apply(config: PipelineNode["config"], binding?: PipelineNode["settingsBinding"]) {
     if (!mounted.current) return;
@@ -66,12 +109,12 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
         setFacts([`数据集：${item.datasetId}`, `版本：${item.version} · ${item.state}`, `行数：${item.rowCount ?? "未报告"}`]);
         setMessage("已读取已发布版本并更新本地节点。");
       } else {
-        const items = await client.datasets(signal); if (!active(signal)) return;
+        const items = await client.datasets(signal, selectedWorkspaceId); if (!active(signal)) return;
         setFacts(items.map((x) => `${x.name} · ${x.id} · ${x.state}`));
         setMessage(items.length ? "以下是数据集容器；请填写需要使用的数据版本 ID 后读取。" : "服务返回空数据集列表。");
       }
     } else if (node.type === "model") {
-      const items = await client.models(signal); if (!active(signal)) return;
+      const items = await client.models(signal, selectedWorkspaceId); if (!active(signal)) return;
       const ready = items.filter((x) => x.state === "READY" && x.modelArtifact);
       setChoices(ready.map((x) => ({ id: x.id, label: x.name, apply: () => {
         apply({ modelRef: x.modelArtifact!.uri }, { kind: "model-import", resourceId: x.id });
@@ -83,6 +126,16 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
       setFacts((result.gpu?.gpus ?? []).map((x) => `${x.name} · ${x.usedMib}/${x.totalMib} MiB · ${x.utilizationPct}%`));
       setMessage(result.gpu?.available ? "已读取本机 GPU 观测；这不代表资源已分配。" : "Web Host 未报告可用 GPU；没有云端资源数据。");
     } else if (node.type === "training") {
+      if (workspaceBffEnabled) {
+        const draftId = z.string().uuid().parse(resourceId.trim());
+        const item = await client.draft(draftId, signal, selectedWorkspaceId); if (!active(signal)) return;
+        setDraft(item);
+        const params = item.configuration?.parameters;
+        const editable = params ? Object.fromEntries(Object.entries(params).filter(([key, value]) => key !== "maxSteps" && value != null)) : {};
+        apply({ ...editable, method: "LoRA" }, { kind: "training-draft", resourceId: item.id });
+        setMessage(item.configuration ? "已通过 Workspace BFF 读取草稿参数。参数写回尚未纳入当前投影。" : "已通过 Workspace BFF 读取草稿；该草稿没有已准备的基础模型配置。");
+        return;
+      }
       const items = await client.drafts(signal); if (!active(signal)) return;
       setChoices(items.map((x) => ({ id: x.id, label: `${x.name} · ${x.state}`, apply: () => {
         setDraft(x);
@@ -93,7 +146,7 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
       } })));
       setMessage(items.length ? "选择一份训练草稿以读取其参数。" : "Yield 尚无训练草稿。先从数据集创建草稿后再连接。");
     } else if (node.type === "evaluation") {
-      const item = await client.suite(z.string().uuid().parse(resourceId.trim()), signal); if (!active(signal)) return;
+      const item = await client.suite(z.string().uuid().parse(resourceId.trim()), signal, selectedWorkspaceId); if (!active(signal)) return;
       if (item.state !== "ACTIVE") throw new Error("评估配置已归档，未应用。");
       apply({ suite: item.name, evaluator: item.evaluator, expectedField: item.expectedField, actualField: item.actualField, threshold: item.threshold, judgeProfileId: item.judgeProfileId ?? "" }, { kind: "evaluation-suite", resourceId: item.id });
       setMessage("已读取评估配置。修改只保存在本地；可另存为新配置。");
@@ -113,6 +166,7 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
     }
   }
   async function saveTraining(signal: AbortSignal) {
+    if (workspaceBffEnabled) throw new Error("Workspace BFF 当前没有 Yield 草稿更新（PATCH）投影；未发送写请求。");
     const id = latest.current.settingsBinding?.resourceId;
     if (!id || latest.current.settingsBinding?.kind !== "training-draft") throw new Error("请先选择训练草稿。");
     if (latest.current.config.method !== "LoRA") throw new Error("当前 Yield 设置契约仅支持 SFT / LoRA，Full 参数未发送。");
@@ -131,19 +185,31 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
     const payload = { name: config.suite, evaluator: config.evaluator ?? "exact_match.v1", expectedField: config.expectedField ?? "expected", actualField: config.actualField ?? "actual", threshold: config.threshold ?? 0.8, ...(config.judgeProfileId ? { judgeProfileId: config.judgeProfileId } : {}) };
     const serialized = JSON.stringify(payload);
     if (suiteRequest.current?.payload !== serialized) suiteRequest.current = { payload: serialized, key: crypto.randomUUID() };
-    const item = await client.createSuite(payload, suiteRequest.current!.key);
+    const item = await client.createSuite(payload, suiteRequest.current!.key, selectedWorkspaceId);
     if (!active(signal)) return;
     apply({}, { kind: "evaluation-suite", resourceId: item.id }); setMessage(`Echo 已创建评估配置「${item.name}」；未发起评估。`);
   }
 
   return <section className="service-settings" aria-label="节点服务设置">
-    <div className="settings-heading"><strong>服务端设置</strong><span>{!status ? "未连接" : available ? "可请求" : "入口未开放"}</span></div>
+    <div className="settings-heading"><strong>服务端设置</strong><span>{workspaceBffEnabled ? "Workspace BFF" : !status ? "未连接" : available ? "可请求" : "入口未开放"}</span></div>
     <p>{description[node.type]}</p>
-    {!status && <p className="settings-hint">请先从页面右上角连接 Web Host。</p>}
-    {status && !available && <p className="settings-hint">Web Host 未开放 {service} 入口，此节点保留本地设置。</p>}
-    {(node.type === "dataset" || node.type === "evaluation") && <label className="field"><span>{node.type === "dataset" ? "数据版本 ID（留空读取数据集）" : "评估配置 ID"}</span><input value={resourceId} onChange={(e) => setResourceId(e.target.value)} disabled={disabled || busy} /></label>}
-    {node.type === "agent" && <label className="field"><span>Navigator 工作空间 ID</span><input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} disabled={disabled || busy} /></label>}
-    <div className="settings-actions"><button disabled={locked} onClick={() => void perform(load)}>{busy ? "请求中…" : "读取服务设置"}</button>{node.type === "training" && <button disabled={locked || !draft || draft.state === "STARTED" || !draft.configuration} onClick={() => void perform(saveTraining)}>保存参数到 Yield</button>}{node.type === "evaluation" && <button disabled={locked} onClick={() => void perform(createSuite)}>另存到 Echo</button>}</div>
+    {workspaceBffEnabled ? <div className="settings-hint" role="status">
+      {workspaceDiscovery === "loading" && "正在读取当前登录 session 与成员 Workspace 列表…"}
+      {workspaceDiscovery === "failed" && workspaceDiscoveryError}
+      {workspaceDiscovery === "ready" && workspaceChoices.length === 0 && "当前登录账号没有可用的成员 Workspace；服务请求保持不可用。"}
+      {workspaceDiscovery === "ready" && workspaceChoices.length === 1 && selectedWorkspace && `已从成员发现中选择：${selectedWorkspace.displayName}（${selectedWorkspace.workspaceId}）`}
+      {workspaceDiscovery === "ready" && workspaceChoices.length > 1 && <label className="field"><span>Workspace（来自当前登录账号的成员发现）</span><select value={selectedWorkspaceId} onChange={(event) => setSelectedWorkspaceId(event.target.value)} disabled={disabled || busy}><option value="">请选择 Workspace</option>{workspaceChoices.map((item) => <option key={item.workspaceId} value={item.workspaceId}>{item.displayName}（{item.workspaceId}）</option>)}</select></label>}
+      {workspaceBffEnabled && node.type === "training" && "BFF 合同只支持按 ID 读取 Yield 草稿；不包含草稿列表、参数写回或启动。"}
+      {workspaceBffEnabled && node.type === "dataset" && resourceId.trim() && "BFF 合同支持数据集列表，不支持按 ID 读取 DatasetVersion；请清空 ID 后读取列表。"}
+      {workspaceBffEnabled && node.type === "evaluation" && !resourceId.trim() && "按 ID 读取 Echo suite 需要填写配置 ID；当前也可创建一份新配置。"}
+      {workspaceBffEnabled && node.type === "deployment" && "当前 BFF 合同没有 Reactor serving bindings 投影；不会直接访问 Product。"}
+      {workspaceBffEnabled && node.type === "agent" && "当前 BFF 合同没有 Navigator session 列表投影；append events 也不允许浏览器调用。"}
+    </div> : null}
+    {!workspaceBffEnabled && !status && <p className="settings-hint">请先从页面右上角连接 Web Host。</p>}
+    {!workspaceBffEnabled && status && !available && <p className="settings-hint">Web Host 未开放 {service} 入口，此节点保留本地设置。</p>}
+    {(node.type === "dataset" || node.type === "evaluation" || (workspaceBffEnabled && node.type === "training")) && <label className="field"><span>{node.type === "dataset" ? "数据版本 ID（留空读取数据集）" : node.type === "evaluation" ? "评估配置 ID" : "Yield 训练草稿 ID"}</span><input value={resourceId} onChange={(e) => setResourceId(e.target.value)} disabled={disabled || busy} /></label>}
+    {node.type === "agent" && !workspaceBffEnabled && <label className="field"><span>Navigator 工作空间 ID</span><input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} disabled={disabled || busy} /></label>}
+    <div className="settings-actions"><button disabled={readLocked} onClick={() => void perform(load)}>{busy ? "请求中…" : "读取服务设置"}</button>{node.type === "training" && <button disabled={locked || workspaceBffEnabled || !draft || draft.state === "STARTED" || !draft.configuration} title={workspaceBffEnabled ? "当前 BFF 合同没有 Yield 草稿更新操作。" : undefined} onClick={() => void perform(saveTraining)}>保存参数到 Yield</button>}{node.type === "evaluation" && <button disabled={createLocked} onClick={() => void perform(createSuite)}>另存到 Echo</button>}</div>
     {choices.length > 0 && <div className="resource-choices">{choices.map((c) => <button key={c.id} disabled={locked} onClick={c.apply}>{c.label}<small>{c.id}</small></button>)}</div>}
     {!!facts.length && <ul className="resource-facts">{facts.map((f, i) => <li key={i}>{f}</li>)}</ul>}
     {message && <p role="status" className="settings-message">{message}</p>}
