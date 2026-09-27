@@ -5,6 +5,13 @@ import {
   navigatorSessionsSchema, pathId, sessionSchema, suiteInputSchema, suiteSchema, trainingConfigurationSchema, trainingDraftSchema,
   type HostSession,
 } from "../../../../packages/service-settings/contracts";
+import {
+  WORKSPACE_PRODUCT_OPERATIONS,
+  WorkspaceBffClient,
+  WorkspaceBffError,
+  type WorkspaceProductOperation,
+  type WorkspaceSummary,
+} from "./workspace-bff-client";
 
 export interface DiagnosticInfo {
   readonly traceId?: string;
@@ -104,8 +111,20 @@ const connectionSchema = z.object({ configured: z.boolean(), target: z.string().
 export class SettingsClient {
   private csrf: string | null = null;
   private refreshInFlight: Promise<HostSession> | null = null;
+  private readonly workspaceBff: WorkspaceBffClient;
   onExpired: (() => void) | undefined;
-  constructor(private readonly fetcher: Fetcher = globalThis.fetch.bind(globalThis), private readonly timeoutMs = 10000) {}
+  constructor(
+    private readonly fetcher: Fetcher = globalThis.fetch.bind(globalThis),
+    private readonly timeoutMs = 10000,
+    workspaceBff?: WorkspaceBffClient,
+  ) {
+    this.workspaceBff = workspaceBff ?? new WorkspaceBffClient({ fetcher, timeoutMs });
+  }
+
+  get workspaceBffEnabled(): boolean { return this.workspaceBff.enabled; }
+  discoverWorkspaceBffWorkspaces(signal?: AbortSignal): Promise<readonly WorkspaceSummary[]> {
+    return this.workspaceBff.discoverWorkspaces(signal);
+  }
 
   connection(signal?: AbortSignal) { return this.request("/studio-api/connection", connectionSchema, { signal }); }
   async session(signal?: AbortSignal) {
@@ -136,19 +155,47 @@ export class SettingsClient {
     return this.refreshInFlight;
   }
   status(signal?: AbortSignal) { return this.request("/api/v1/system/status", hostStatusSchema, { signal }); }
-  datasets(signal?: AbortSignal) { return this.read("/api/v1/catalyst/datasets", z.array(datasetSchema), signal); }
+  datasets(signal?: AbortSignal, workspaceId?: string) {
+    return this.workspaceBff.enabled
+      ? this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.listDatasets, z.array(datasetSchema), { signal })
+      : this.read("/api/v1/catalyst/datasets", z.array(datasetSchema), signal);
+  }
   datasetVersion(id: string, signal?: AbortSignal) { return this.read(`/api/v1/catalyst/dataset-versions/${pathId(id)}`, datasetVersionSchema, signal); }
-  models(signal?: AbortSignal) { return this.read("/api/v1/reactor/model-imports", z.array(modelImportSchema), signal); }
+  models(signal?: AbortSignal, workspaceId?: string) {
+    return this.workspaceBff.enabled
+      ? this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.listModelImports, z.array(modelImportSchema), { signal })
+      : this.read("/api/v1/reactor/model-imports", z.array(modelImportSchema), signal);
+  }
   bindings(signal?: AbortSignal) { return this.read("/api/v1/reactor/serving-bindings", z.array(bindingSchema), signal); }
   drafts(signal?: AbortSignal) { return this.read("/api/v1/yield/training-drafts", z.array(trainingDraftSchema), signal); }
-  draft(id: string, signal?: AbortSignal) { return this.read(`/api/v1/yield/training-drafts/${pathId(id)}`, trainingDraftSchema, signal); }
+  draft(id: string, signal?: AbortSignal, workspaceId?: string) {
+    if (this.workspaceBff.enabled) {
+      const resourceId = id.trim();
+      pathId(resourceId);
+      return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.getTrainingDraft, trainingDraftSchema, { resourceId, signal });
+    }
+    return this.read(`/api/v1/yield/training-drafts/${pathId(id)}`, trainingDraftSchema, signal);
+  }
   async prepareDraft(id: string, body: unknown) {
     const payload = trainingConfigurationSchema.parse(body);
     return this.request(`/api/v1/yield/training-drafts/${pathId(id)}`, trainingDraftSchema, { method: "PATCH", body: JSON.stringify(payload) });
   }
-  suite(id: string, signal?: AbortSignal) { return this.read(`/api/v1/echo/evaluation-suites/${pathId(id)}`, suiteSchema, signal); }
-  createSuite(body: unknown, idempotencyKey: string) {
+  suite(id: string, signal?: AbortSignal, workspaceId?: string) {
+    if (this.workspaceBff.enabled) {
+      const resourceId = id.trim();
+      pathId(resourceId);
+      return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.getEvaluationSuite, suiteSchema, { resourceId, signal });
+    }
+    return this.read(`/api/v1/echo/evaluation-suites/${pathId(id)}`, suiteSchema, signal);
+  }
+  createSuite(body: unknown, idempotencyKey: string, workspaceId?: string) {
     const payload = suiteInputSchema.parse(body);
+    if (this.workspaceBff.enabled) {
+      return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.createEvaluationSuite, suiteSchema, {
+        body: payload,
+        idempotencyKey,
+      });
+    }
     return this.request("/api/v1/echo/evaluation-suites", suiteSchema, { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) });
   }
   sessions(workspace: string, signal?: AbortSignal) {
@@ -176,7 +223,27 @@ export class SettingsClient {
       return this.request(path, schema, { signal }, traceId);
     }
   }
+  private async invokeWorkspaceProduct<T extends z.ZodTypeAny>(
+    workspaceId: string | undefined,
+    operation: WorkspaceProductOperation,
+    schema: T,
+    options: { resourceId?: string; body?: unknown; idempotencyKey?: string; signal?: AbortSignal },
+  ): Promise<z.infer<T>> {
+    if (!workspaceId) {
+      throw new WorkspaceBffError("workspace_selection_required", "请先从当前登录 session 的 Workspace 发现结果中选择 Workspace。", 0);
+    }
+    const payload = await this.workspaceBff.invoke(workspaceId, operation, options);
+    const parsed = schema.safeParse(payload);
+    if (!parsed.success) {
+      throw new WorkspaceBffError("invalid_upstream_response", "Product 响应与已核对的设置契约不符；本地配置未被替换。", 502);
+    }
+    return parsed.data;
+  }
+
   private async request<T extends z.ZodTypeAny>(path: string, schema: T, init: RequestInit, traceId?: string): Promise<z.infer<T>> {
+    if (this.workspaceBff.enabled && isDirectProductPath(path)) {
+      throw new WorkspaceBffError("unsupported_operation", "Workspace BFF 当前没有投影此 Product operation；已阻止直接 Product 请求。", 0);
+    }
     const headers = new Headers(init.headers); headers.set("Accept", "application/json");
     const method = init.method ?? "GET";
     if (init.body) headers.set("Content-Type", "application/json");
@@ -227,4 +294,17 @@ export class SettingsClient {
     if (!parsed.success) throw new ServiceError("CONTRACT", "服务响应与已核对的设置契约不符；本地配置未被替换。");
     return parsed.data;
   }
+}
+
+const DIRECT_PRODUCT_PATHS = [
+  "/api/v1/catalyst/",
+  "/api/v1/reactor/",
+  "/api/v1/yield/",
+  "/api/v1/echo/",
+  "/api/v1/exchange/",
+  "/api/v1/navigator/harness/",
+];
+
+function isDirectProductPath(path: string): boolean {
+  return DIRECT_PRODUCT_PATHS.some((prefix) => path.startsWith(prefix));
 }
