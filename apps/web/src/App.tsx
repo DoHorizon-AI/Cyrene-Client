@@ -229,10 +229,9 @@ function AppView() {
           <Menu label={t("工具")}>{productPages.map(page => <button key={page.id} onClick={() => openProduct(page.id)}>{locale === "zh-CN" ? page.zh : page.en}</button>)}<hr /><button onClick={() => showBottom("builds")}>{t("节点包管理")}</button><button onClick={() => left("servers")}>{t("服务器注册与连接诊断")}</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}>{t("事件日志")}</button><button onClick={() => { setEditorTab("source"); }}>{t("查看流程 JSON")}</button><button onClick={() => right("assistant")}>{tx("MCP 助手与工具调试", "MCP assistant and tools")}</button></Menu>
         </nav>
         <div className="ide-project-title">Cyrene Client <span> / </span> <b>Local Workspace</b></div>
-        <div className="ide-window-meta"><span className="ide-status-dot" /> {t("本地工作空间")}</div>
-        <LanguageSelect compact />
+        <div className="ide-document-meta"><div className="ide-document-name"><Icon name="nodes" /><input aria-label={t("流水线名称")} maxLength={100} value={pipeline.name} disabled={running} onChange={e => recordChange({ ...pipeline, name: e.target.value })} /><span className="ide-dirty" title={t(dirty ? "本地有未保存修改" : "草稿")}>{dirty ? "●" : ""}</span></div><span className="ide-version">{controls.status}</span></div>
+        <div className="ide-titlebar-controls"><div className="ide-toolbar-actions">{controls.toolbar}<button className="ide-run" onClick={preview} disabled={running}><Icon name="play" />{t("本地预演")}</button></div><ConnectionPanel client={settingsClient} status={hostStatus} onConnected={setHostStatus} /><LanguageSelect compact /></div>
       </header>
-      <div className="ide-main-toolbar"><div className="ide-document-name"><Icon name="nodes" /><input aria-label={t("流水线名称")} maxLength={100} value={pipeline.name} disabled={running} onChange={e => recordChange({ ...pipeline, name: e.target.value })} /><span className="ide-dirty" title={t(dirty ? "本地有未保存修改" : "草稿")}>{dirty ? "●" : ""}</span></div><span className="ide-version">{controls.status}</span><div className="ide-toolbar-actions">{controls.toolbar}<button className="ide-run" onClick={preview} disabled={running}><Icon name="play" />{t("本地预演")}</button><ConnectionPanel client={settingsClient} status={hostStatus} onConnected={setHostStatus} /></div></div>
       {controls.conflict}
     </>} />
 
@@ -270,7 +269,7 @@ function AppView() {
             <div className="canvas-toolbar"><span>{t("工作空间")} <span className="ide-breadcrumb-sep">›</span> {t("流水线")} <small>{locale === "zh-CN" ? `${pipeline.nodes.length} 节点 · ${pipeline.edges.length} 连接` : `${pipeline.nodes.length} nodes · ${pipeline.edges.length} connections`}</small></span><button onClick={() => withEditor(handle => handle.fit())}>{t("适应画布")}</button></div>
             <div className={`canvas-area ${running ? "locked" : ""}`}>
               <GraphCanvas ref={editor} initial={initial} interactive={visible && !running} onChange={changed} onSelect={focusNode} />
-              <div className="canvas-hint">{t("拖动平移")} <span>·</span> {t("滚轮缩放")} <span>·</span> {t("Delete 删除节点")}</div>{running && <div className="canvas-lock">{t("正在预演")} · {t("画布暂时锁定")}</div>}
+              {running && <div className="canvas-lock">{t("正在预演")} · {t("画布暂时锁定")}</div>}
             </div>
           </> },
           { id: "source", label: <><Icon name="files" />JSON</>, content: () => <div className="ide-source-view"><div>{pipeline.id}.json · {t("当前草稿")}<span>{t("只读预览")}</span></div><pre tabIndex={0} aria-label={t("文件内容预览")}>{JSON.stringify(pipeline, null, 2)}</pre></div> },
