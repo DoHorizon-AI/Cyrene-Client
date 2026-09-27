@@ -50,10 +50,12 @@ test("denial never requests a credential and the English view fits narrow panels
   await page.getByLabel("设备授权码").fill("TEST-CODE"); await page.getByRole("button", { name: "查看设备请求" }).click(); await page.getByRole("button", { name: "拒绝此设备" }).click();
   await expect(page.getByRole("status").filter({ hasText: "已拒绝" })).toBeVisible(); expect(f.bodies.some(r => String(r.path).endsWith("/complete"))).toBe(false);
   await page.getByLabel("语言", { exact: true }).selectOption("en-US");
-  await expect(page.getByRole("button", { name: "Account & security", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await page.setViewportSize({ width: 390, height: 844 });
   const toggle = page.getByRole("button", { name: "Account & security", exact: true });
-  if (await toggle.getAttribute("aria-pressed") !== "true") await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await toggle.click();
   await expect(page.getByRole("heading", { name: "Organization sign-in" })).toBeVisible();
   expect(await page.locator(".ide-left-dock .ide-dock-content").evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

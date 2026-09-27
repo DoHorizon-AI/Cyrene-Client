@@ -135,3 +135,8 @@
   .monitor-expanded .monitor-detail { border-left: 0; padding: 12px 2px; }
   .monitor-expanded .monitor-list { max-height: 38vh; }
 }
+
+@media (max-width: 640px) {
+  .ide-titlebar-controls { min-width: 0; flex-wrap: wrap; }
+  .ide-titlebar-controls .ide-toolbar-actions { min-width: 0; flex-wrap: wrap; }
+}
