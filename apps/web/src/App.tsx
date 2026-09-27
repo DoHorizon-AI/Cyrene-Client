@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type ReactNode, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { lazy, Suspense, useRef, Component, type ErrorInfo, type ReactNode, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { catalog, definitions, getDefinition } from "../../../packages/pipeline-model/catalog";
 import { examplePipeline, inspect, type PipelineNode } from "../../../packages/pipeline-model";
 import { GraphCanvas } from "./graph/GraphCanvas";
@@ -13,11 +13,16 @@ import { useRunControl } from "./runs/RunPanel";
 import { useBuildControl } from "./builds/useBuildControl";
 import { useNodeCatalog } from "./pipelines/useNodeCatalog";
 
+import { EditorWorkspace, type EditorWorkspaceHandle, type EditorId } from "./ide/EditorWorkspace";
 import { Icon, Menu, ResizeHandle, useIdeLayout } from "./ide/Chrome";
 import { FilePanel, AssistantPanel, PluginPanel } from "./ide/Panels";
 import { logError } from "./logger";
 import { LanguageSelect, useI18n } from "./i18n";
 
+import { MonitorWindow } from "./monitoring/MonitorWindow";
+import { productPages } from "./products/navigation";
+import { routeForPath, pathForRoute, type RouteId } from "../services/navigator/src/router";
+const ProductWorkspace = lazy(() => import("./products/ProductWorkspace"));
 type Tab = "checks" | "preview" | "log" | "runs" | "builds";
 
 interface ErrorBoundaryProps {
@@ -69,7 +74,31 @@ function AppView() {
   const catalogRevision = useNodeCatalog();
   const { layout, setLayout, left, right, reset } = useIdeLayout();
   const [serverVisited, setServerVisited] = useState(false);
-  const [editorTab, setEditorTab] = useState<"graph" | "source" | "file">("graph");
+  const [editorTab, setEditorTab] = useState<EditorId>(productPages.some(page => location.pathname === pathForRoute(page.id) && location.pathname !== "/") || (location.pathname.startsWith("/runs/") || location.pathname === "/overview") ? "product" : "graph");
+  const [productRoute, setProductRoute] = useState<RouteId>(() => routeForPath(location.pathname));
+  const [productVisited, setProductVisited] = useState(() => editorTab === "product");
+  const [monitorExpanded, setMonitorExpanded] = useState(true), [historyRequest, setHistoryRequest] = useState(0);
+  const editorWorkspace = useRef<EditorWorkspaceHandle>(null);
+  const [editorLayout, setEditorLayout] = useState<{ split: boolean; visible: EditorId[] }>({ split: false, visible: [editorTab] });
+  const monitorDock = useRef<HTMLDivElement>(null), monitorCenter = useRef<HTMLDivElement>(null);
+  const tx = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
+  const selectEditor = (id: EditorId) => {
+    setEditorTab(id);
+    if (id === "monitor") { setMonitorExpanded(true); setLayout(value => value.right === "monitor" ? { ...value, right: null } : value); }
+  };
+  const openMonitor = (history = false) => { if (history) setHistoryRequest(value => value + 1); selectEditor("monitor"); };
+  const toggleMonitor = () => {
+    if (monitorExpanded) {
+      editorWorkspace.current?.merge("graph"); setMonitorExpanded(false);
+      setLayout(value => ({ ...value, right: "monitor", ...(innerWidth < 1000 ? { left: null } : {}) }));
+    } else openMonitor();
+  };
+  const toggleEditorSplit = (id: EditorId = editorTab) => {
+    if (editorLayout.split) editorWorkspace.current?.merge(id);
+    else editorWorkspace.current?.split(id);
+  };
+  const openProduct = (route: RouteId) => { setProductVisited(true); setProductRoute(route); setEditorTab("product"); window.history.pushState({}, "", route === "overview" ? "/overview" : pathForRoute(route)); };
+  useEffect(() => { const navigate = () => { setProductVisited(true); setProductRoute(routeForPath(location.pathname)); setEditorTab("product"); }; window.addEventListener("popstate", navigate); return () => window.removeEventListener("popstate", navigate); }, []);
   const [filePreview, setFilePreview] = useState<{ name: string; text: string } | null>(null);
   const [events, setEvents] = useState<{ time: string; message: string }[]>([]);
   const [settingsClient] = useState(() => new SettingsClient());
@@ -101,6 +130,7 @@ function AppView() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
+      if (target?.closest(".product-workspace, .monitor-window") || editorTab === "product" || editorTab === "monitor") return;
       const editingText = target?.isContentEditable || !!target?.closest("input, textarea, select");
       if ((e.ctrlKey || e.metaKey) && !editingText && !running) {
         if (e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) redoLocal(); else undoLocal(); }
@@ -177,7 +207,7 @@ function AppView() {
   function showChecks() { setTab("checks"); setLayout(s => ({ ...s, bottom: true })); }
   function focusNode(id: string | null) { setSelectedId(id); if (id && !layout.right) setLayout(s => ({ ...s, right: "info", ...(innerWidth < 1000 ? { left: null } : {}) })); }
   const panelTitle = t(layout.left === "files" ? "项目文件" : layout.left === "servers" ? "服务器管理" : "节点库");
-  const rightTitle = t(layout.right === "assistant" ? "平台 MCP" : layout.right === "plugins" ? "页面插件" : "节点信息");
+  const rightTitle = layout.right === "monitor" ? "Navigator" : t(layout.right === "assistant" ? "平台 MCP" : layout.right === "plugins" ? "页面插件" : "节点信息");
   const css = { "--left-width": `${layout.leftWidth}px`, "--right-width": `${layout.rightWidth}px`, "--bottom-height": `${layout.bottomHeight}px` } as CSSProperties;
   return <div className={`studio ide-studio ${layout.left ? "has-left" : ""} ${layout.right ? "has-right" : ""}`} style={css}>
     <PipelineControls serverBase={serverBase} onServerBase={updateServerBase} document={pipeline} selectedId={selectedId} disabled={running} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} canRedo={redoCount > 0} onRedo={redoLocal} render={controls => <>
@@ -186,10 +216,10 @@ function AppView() {
         <nav className="ide-menubar" aria-label={locale === "zh-CN" ? "主菜单" : "Main menu"}>
           <Menu label={t("文件")}><button aria-label={t("保存草稿")} disabled={running} onClick={save}>{t("保存草稿")} <kbd>Ctrl S</kbd></button><button disabled={!savedDraft || running} onClick={restore}>{t("载入草稿")}</button><button disabled={running} onClick={() => fileInput.current?.click()}>{t("导入 JSON")}</button><button disabled={running} onClick={exportJson}>{t("导出 JSON")}</button><hr />{controls.file}<hr /><details><summary>{t("恢复未保存编辑")}</summary>{recoveries.length ? recoveries.slice(0, 20).map(record => <button key={record.id} disabled={running} onClick={() => recover(record.id)}>{record.document.name} · {new Date(record.savedAt).toLocaleString(locale)}</button>) : <span>{t("暂无恢复记录")}</span>}</details></Menu>
           <Menu label={t("编辑")}>{controls.edit}</Menu>
-          <Menu label={t("视图")}><button onClick={() => left("files")}>{t("项目文件")} <kbd>Alt 1</kbd></button><button onClick={() => left("nodes")}>{t("节点库")} <kbd>Alt 2</kbd></button><button onClick={() => left("servers")}>{t("服务器管理")} <kbd>Alt 3</kbd></button><hr /><button onClick={() => right("info")}>{t("节点信息")}</button><button onClick={() => right("plugins")}>{t("页面插件")}</button><button onClick={() => right("assistant")}>{t("平台 MCP")}</button><button onClick={() => showBottom("builds")}>{t("构建输出")}</button><button onClick={() => showBottom("runs")}>{t("运行详情与日志")}</button><button onClick={() => setLayout(s => ({ ...s, bottom: !s.bottom }))}>{t("切换底部工具窗口")} <kbd>Alt 9</kbd></button><hr /><button onClick={reset}>{t("恢复默认布局")}</button></Menu>
+          <Menu label={t("视图")}><button onClick={() => toggleEditorSplit()}>{editorLayout.split ? tx("合并编辑区", "Unsplit editor") : tx("左右分栏", "Split editor right")}</button><button onClick={() => openMonitor()}>{tx("Navigator 运行监控", "Navigator monitoring")}</button><button onClick={toggleMonitor}>{monitorExpanded ? tx("停靠 Navigator", "Dock Navigator") : tx("展开 Navigator", "Expand Navigator")}</button><button onClick={() => left("files")}>{t("项目文件")} <kbd>Alt 1</kbd></button><button onClick={() => left("nodes")}>{t("节点库")} <kbd>Alt 2</kbd></button><button onClick={() => left("servers")}>{t("服务器管理")} <kbd>Alt 3</kbd></button><hr /><button onClick={() => right("info")}>{t("节点信息")}</button><button onClick={() => right("plugins")}>{t("页面插件")}</button><button onClick={() => right("assistant")}>{t("平台 MCP")}</button><button onClick={() => showBottom("builds")}>{t("构建输出")}</button><button onClick={() => showBottom("runs")}>{t("运行详情与日志")}</button><button onClick={() => setLayout(s => ({ ...s, bottom: !s.bottom }))}>{t("切换底部工具窗口")} <kbd>Alt 9</kbd></button><hr /><button onClick={() => { reset(); setMonitorExpanded(true); editorWorkspace.current?.merge("graph"); }}>{t("恢复默认布局")}</button></Menu>
           <Menu label={t("构建")}><button disabled={running} onClick={() => { showChecks(); setNotice(validation.issues.length ? (locale === "zh-CN" ? `发现 ${validation.issues.length} 个问题。` : `${validation.issues.length} issue(s) found.`) : locale === "zh-CN" ? "结构校验通过；真实资源可用性与业务门禁尚未验证。" : "Structure validation passed; live resource availability and policy gates are not yet verified."); }}>{t("校验流程")}</button><button onClick={() => showBottom("builds")}>{t("节点镜像与版本管理")}</button><div onClick={() => showBottom("runs")}>{runControl.compileAction}</div><div onClick={() => showBottom("builds")}>{buildControl.menu}</div><hr /><button disabled={running} onClick={() => replace(examplePipeline(), locale === "zh-CN" ? "已载入训练示例。" : "Training example loaded.")}>{t("训练示例")}</button>{controls.history}</Menu>
-          <Menu label={t("运行")}><button onClick={() => showBottom("runs")}>{t("执行服务器与运行列表")}</button><div onClick={() => showBottom("runs")}>{runControl.menu}</div><hr /><button disabled={running} onClick={preview}>{t("本地预演")}</button></Menu>
-          <Menu label={t("工具")}><button onClick={() => showBottom("builds")}>{t("节点包管理")}</button><button onClick={() => left("servers")}>{t("服务器注册与连接诊断")}</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}>{t("事件日志")}</button><button onClick={() => { setEditorTab("source"); }}>{t("查看流程 JSON")}</button><button onClick={() => right("assistant")}>{t("MCP 工具与上下文")}</button></Menu>
+          <Menu label={t("运行")}><button onClick={() => right("assistant")}>{tx("MCP 调试与本地测试", "MCP debugging and local tests")}</button><button onClick={() => openMonitor()}>{tx("打开运行监控", "Open monitoring")}</button><button onClick={() => openMonitor(true)}>{tx("运行历史", "Run history")}</button><hr /><button onClick={() => showBottom("runs")}>{t("执行服务器与运行列表")}</button><div onClick={() => showBottom("runs")}>{runControl.menu}</div><hr /><button disabled={running} onClick={preview}>{t("本地预演")}</button></Menu>
+          <Menu label={t("工具")}>{productPages.map(page => <button key={page.id} onClick={() => openProduct(page.id)}>{locale === "zh-CN" ? page.zh : page.en}</button>)}<hr /><button onClick={() => showBottom("builds")}>{t("节点包管理")}</button><button onClick={() => left("servers")}>{t("服务器注册与连接诊断")}</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}>{t("事件日志")}</button><button onClick={() => { setEditorTab("source"); }}>{t("查看流程 JSON")}</button><button onClick={() => right("assistant")}>{tx("MCP 助手与工具调试", "MCP assistant and tools")}</button></Menu>
         </nav>
         <div className="ide-project-title">Cyrene Client <span> / </span> <b>Local Workspace</b></div>
         <div className="ide-window-meta"><span className="ide-status-dot" /> {t("本地工作空间")}</div>
@@ -226,13 +256,19 @@ function AppView() {
       </aside>
 
       <main className="ide-center editor-column" aria-label={t("流水线编辑器")}>
-        <div className="ide-editor-tabs" role="tablist" aria-label={t("编辑器页面")}><button role="tab" aria-selected={editorTab === "graph"} className={editorTab === "graph" ? "active" : ""} onClick={() => setEditorTab("graph")}><Icon name="nodes" />{pipeline.id}.pipeline <span>{dirty ? "●" : ""}</span></button><button role="tab" aria-selected={editorTab === "source"} className={editorTab === "source" ? "active" : ""} onClick={() => setEditorTab("source")}><Icon name="files" />JSON</button>{filePreview && <button role="tab" aria-selected={editorTab === "file"} className={editorTab === "file" ? "active" : ""} onClick={() => setEditorTab("file")}><Icon name="files" />{filePreview.name.split("/").at(-1)}</button>}</div>
-        <div className="canvas-toolbar"><span>{t("工作空间")} <span className="ide-breadcrumb-sep">›</span> {t("流水线")} <small>{locale === "zh-CN" ? `${pipeline.nodes.length} 节点 · ${pipeline.edges.length} 连接` : `${pipeline.nodes.length} nodes · ${pipeline.edges.length} connections`}</small></span><button onClick={() => withEditor(handle => handle.fit())}>{t("适应画布")}</button></div>
-        <div className={`canvas-area ${running ? "locked" : ""}`}>
-          <GraphCanvas ref={editor} initial={initial} interactive={editorTab === "graph" && !running} onChange={changed} onSelect={focusNode} />
-          {editorTab === "graph" && <><div className="canvas-hint">{t("拖动平移")} <span>·</span> {t("滚轮缩放")} <span>·</span> {t("Delete 删除节点")}</div>{running && <div className="canvas-lock">{t("正在预演")} · {t("画布暂时锁定")}</div>}</>}
-          {editorTab !== "graph" && <div className="ide-source-view"><div>{editorTab === "source" ? `${pipeline.id}.json · ${t("当前草稿")}` : filePreview?.name}<span>{t("只读预览")}</span></div><pre tabIndex={0} aria-label={t("文件内容预览")}>{editorTab === "source" ? JSON.stringify(pipeline, null, 2) : filePreview?.text}</pre></div>}
-        </div>
+        <EditorWorkspace ref={editorWorkspace} active={editorTab} ratio={layout.editorRatio} onSelect={selectEditor} onRatio={value => setLayout(state => ({ ...state, editorRatio: value }))} onLayout={setEditorLayout} tabs={[
+          { id: "graph", label: <><Icon name="nodes" />{pipeline.id}.pipeline <span>{dirty ? "●" : ""}</span></>, content: visible => <>
+            <div className="canvas-toolbar"><span>{t("工作空间")} <span className="ide-breadcrumb-sep">›</span> {t("流水线")} <small>{locale === "zh-CN" ? `${pipeline.nodes.length} 节点 · ${pipeline.edges.length} 连接` : `${pipeline.nodes.length} nodes · ${pipeline.edges.length} connections`}</small></span><button onClick={() => withEditor(handle => handle.fit())}>{t("适应画布")}</button></div>
+            <div className={`canvas-area ${running ? "locked" : ""}`}>
+              <GraphCanvas ref={editor} initial={initial} interactive={visible && !running} onChange={changed} onSelect={focusNode} />
+              <div className="canvas-hint">{t("拖动平移")} <span>·</span> {t("滚轮缩放")} <span>·</span> {t("Delete 删除节点")}</div>{running && <div className="canvas-lock">{t("正在预演")} · {t("画布暂时锁定")}</div>}
+            </div>
+          </> },
+          { id: "source", label: <><Icon name="files" />JSON</>, content: () => <div className="ide-source-view"><div>{pipeline.id}.json · {t("当前草稿")}<span>{t("只读预览")}</span></div><pre tabIndex={0} aria-label={t("文件内容预览")}>{JSON.stringify(pipeline, null, 2)}</pre></div> },
+          ...(filePreview ? [{ id: "file" as const, label: <><Icon name="files" />{filePreview.name.split("/").at(-1)}</>, content: () => <div className="ide-source-view"><div>{filePreview.name}<span>{t("只读预览")}</span></div><pre tabIndex={0} aria-label={t("文件内容预览")}>{filePreview.text}</pre></div> }] : []),
+          { id: "monitor", label: "Navigator", content: () => <div className="monitor-editor-host" ref={monitorCenter} /> },
+          ...(productVisited ? [{ id: "product" as const, label: productPages.find(page => page.id === productRoute)?.[locale === "zh-CN" ? "zh" : "en"], content: () => <div className="monitor-editor-host"><Suspense fallback={<p>{tx("正在打开页面…", "Opening page…")}</p>}><ProductWorkspace route={productRoute} /></Suspense></div> }] : []),
+        ]} />
         <section className="bottom-panel" hidden={!layout.bottom} aria-label={t("底部工具窗口")}>
           <ResizeHandle orientation="horizontal" value={layout.bottomHeight} min={100} max={400} sign={-1} label={t("调整底部窗口高度")} onChange={v => setLayout(s => ({ ...s, bottomHeight: v }))} />
           <div className="bottom-tabs"><button className={tab === "builds" ? "active" : ""} onClick={() => setTab("builds")}>{t("构建输出")}</button><button className={tab === "runs" ? "active" : ""} onClick={() => setTab("runs")}>{t("真实运行")}</button><button className={tab === "checks" ? "active" : ""} onClick={() => setTab("checks")}><Icon name="check" />{t("流程检查")} <span>{validation.issues.length}</span></button><button className={tab === "preview" ? "active" : ""} onClick={() => setTab("preview")}><Icon name="play" />{t("运行预演")}</button><button className={tab === "log" ? "active" : ""} onClick={() => setTab("log")}><Icon name="log" />{t("事件日志")}</button><button className="ide-bottom-close" aria-label={t("收起底部窗口")} onClick={() => setLayout(s => ({ ...s, bottom: false }))}><Icon name="close" /></button></div>
@@ -249,6 +285,7 @@ function AppView() {
         <ResizeHandle orientation="vertical" value={layout.rightWidth} min={260} max={520} sign={-1} label={t("调整右侧窗口宽度")} onChange={v => setLayout(s => ({ ...s, rightWidth: v }))} />
         <div className="ide-dock-heading"><strong>{rightTitle}</strong><span>{layout.right === "assistant" ? "✧" : ""}</span><button aria-label={t("收起右侧窗口")} onClick={() => setLayout(s => ({ ...s, right: null }))}><Icon name="close" /></button></div>
         <div className="ide-dock-content">
+          <div className="monitor-dock-host" ref={monitorDock} hidden={layout.right !== "monitor"} />
           <div className="inspector" hidden={layout.right !== "info"}>
         <div className="panel-heading"><strong>{t("节点配置")}</strong><span>{selectedDefinition?.owner ?? t("请选择节点")}</span></div>
         {selected && selectedDefinition ? <div className="inspector-content"><div className="inspector-icon" style={{ color: selectedDefinition.color }}>◇</div><h2>{selected.label}</h2><p className="description">{t(selectedDefinition.description)}</p><div className="divider" />
@@ -263,16 +300,17 @@ function AppView() {
 
           </div>
           <div hidden={layout.right !== "plugins"}><PluginPanel onSource={() => setEditorTab("source")} onChecks={showChecks} /></div>
-          <div hidden={layout.right !== "assistant"}><AssistantPanel document={pipeline} selectedId={selectedId} onNotice={setNotice} /></div>
+          <div hidden={layout.right !== "assistant"}><AssistantPanel document={pipeline} selectedId={selectedId} onNotice={setNotice} onMonitor={() => openMonitor()} /></div>
         </div>
       </aside>
-      <nav className="ide-rail ide-rail-right" aria-label={t("右侧工具栏")}>
+      <nav className="ide-rail ide-rail-right" aria-label={t("右侧工具栏")}><button aria-label={tx("Navigator 运行监控", "Navigator monitoring")} title="Navigator" aria-pressed={layout.right === "monitor" || editorLayout.visible.includes("monitor")} onClick={() => { if (layout.right === "monitor") right("monitor"); else openMonitor(); }}><Icon name="log" /></button>
         <button className={layout.right === "info" ? "active" : ""} aria-label={t("节点信息")} aria-pressed={layout.right === "info"} title={`${t("节点信息")} · Alt 0`} onClick={() => right("info")}><Icon name="info" /></button>
         <button className={layout.right === "plugins" ? "active" : ""} aria-label={t("页面插件")} aria-pressed={layout.right === "plugins"} title={t("页面插件")} onClick={() => right("plugins")}><Icon name="plugins" /></button>
         <button className={layout.right === "assistant" ? "active" : ""} aria-label={t("平台 MCP")} aria-pressed={layout.right === "assistant"} title={t("平台 MCP 助手")} onClick={() => right("assistant")}><Icon name="assistant" /></button>
       </nav>
     </div>
-    <div className="ide-bottom-bar"><button onClick={showChecks}><Icon name="check" />{t("问题")} {validation.issues.length ? `(${validation.issues.length})` : ""}</button><button onClick={() => { setTab("preview"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="play" />{t("运行")}</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="log" />{t("日志")}</button><span>{t(running ? "正在本地预演" : "远端任务监控尚未接入")}</span></div>
+    <MonitorWindow document={pipeline} dirty={dirty} selectedId={selectedId} visible={monitorExpanded ? editorLayout.visible.includes("monitor") : layout.right === "monitor"} expanded={monitorExpanded} historyRequest={historyRequest} dock={monitorDock} center={monitorCenter} splitRequested={editorLayout.split} onSplit={() => toggleEditorSplit("monitor")} onExpand={toggleMonitor} onLocate={id => { setEditorTab("graph"); withEditor(handle => handle.select(id)); }} />
+    <div className="ide-bottom-bar"><button onClick={showChecks}><Icon name="check" />{t("问题")} {validation.issues.length ? `(${validation.issues.length})` : ""}</button><button onClick={() => { setTab("preview"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="play" />{t("运行")}</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="log" />{t("日志")}</button><span>{running ? t("正在本地预演") : tx("Navigator · 运行监控", "Navigator · Run monitoring")}</span></div>
     <footer className="footer ide-statusbar"><p role="status" title={notice}>{notice}</p><div><span aria-label={t("编辑恢复状态")}>{recoveryStatus}</span><span>{t(hostStatus ? "Web Host 已连接" : "Web Host 未连接")}</span><span>UTF-8</span><span>JSON</span><span>Cyrene Client</span></div></footer>
     <input hidden ref={fileInput} type="file" accept=".json,application/json" aria-label={t("导入流程文件")} onChange={e => void importJson(e.target.files?.[0])} />
   </div>;

@@ -43,7 +43,7 @@ describe("pipeline application service", () => {
     const record = await control.execute({ name: "pipelines.get", input: target, requestId: "read" }, actor) as PipelineRecord;
     expect(record.document).toEqual(examplePipeline());
     const catalog = await call("nodes.list_types", { workspaceId: "local" });
-    expect(catalog.items).toHaveLength(7);
+    expect(catalog.items).toHaveLength(8);
     expect(catalog.items.find((n: any) => n.type === "training").configSchema.properties.epochs.maximum).toBe(10000);
   });
   it("migrates persisted databases created before redo state existed", async () => {
@@ -186,7 +186,7 @@ it("MCP tools expose real schemas and share edit/validate state with the UI serv
 
 it("real stdio MCP entrypoint negotiates and reads the same persisted document", async () => {
   const { directory } = await fixture();
-  const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", "tsx", resolve("apps/mcp/main.ts")], cwd: process.cwd(), env: { ...Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === "string")), STUDIO_CONTROL_DATA_DIR: directory, STUDIO_MCP_READ_ONLY: "1" }, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", "tsx", resolve("apps/mcp/main.ts")], cwd: process.cwd(), env: { ...Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === "string")), STUDIO_CONTROL_DATA_DIR: directory, STUDIO_MCP_LEGACY_FILES: "1", STUDIO_MCP_READ_ONLY: "1" }, stderr: "pipe" });
   const client = new Client({ name: "stdio-test", version: "1" });
   try {
     await client.connect(transport);

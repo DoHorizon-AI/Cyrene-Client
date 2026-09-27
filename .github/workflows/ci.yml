@@ -42,18 +42,17 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run check
-      - run: npm --prefix apps/web/services/navigator ci
-      - run: npm run check:web:navigator
       - name: Build Studio web and control images
         run: |
           docker build -f deploy/studio.Dockerfile --target web --tag cyrene-studio:web-development .
           docker build -f deploy/studio.Dockerfile --target control --tag cyrene-studio:control-development .
       - run: npm run test:containers
-      - name: Build Web Host image
+      - name: Build unified Client image
         run: docker build --tag cyrene-client-web:ci .
-      - name: Validate Web Host routing configuration
+      - name: Validate unified Client routing configuration
         run: |
           docker run --rm \
+            --add-host studio-control:127.0.0.1 \
             --add-host cyrene-catalyst:127.0.0.1 \
             --add-host cyrene-echo:127.0.0.1 \
             --add-host cyrene-reactor:127.0.0.1 \

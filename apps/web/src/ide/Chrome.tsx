@@ -54,16 +54,16 @@ export function ResizeHandle({ orientation, value, min, max, sign = 1, label, on
 }
 
 export type LeftTool = "files" | "nodes" | "servers";
-export type RightTool = "info" | "plugins" | "assistant";
-interface Layout { left: LeftTool | null; right: RightTool | null; bottom: boolean; leftWidth: number; rightWidth: number; bottomHeight: number }
+export type RightTool = "info" | "plugins" | "assistant" | "monitor";
+interface Layout { left: LeftTool | null; right: RightTool | null; bottom: boolean; leftWidth: number; rightWidth: number; bottomHeight: number; editorRatio: number }
 export function useIdeLayout() {
-  const defaults: Layout = { left: innerWidth < 1000 ? null : "nodes", right: innerWidth < 1000 ? null : "info", bottom: true, leftWidth: 240, rightWidth: 310, bottomHeight: 175 };
+  const defaults: Layout = { left: innerWidth < 1000 ? null : "nodes", right: innerWidth < 1000 ? null : "info", bottom: true, leftWidth: 240, rightWidth: 310, bottomHeight: 175, editorRatio: 0.55 };
   const [layout, setLayout] = useState<Layout>(() => {
     try {
       const s = JSON.parse(localStorage.getItem("cyrene.studio.layout.v1") ?? "null");
       if (!s) return defaults;
-      return { left: innerWidth < 1000 ? null : ["files", "nodes", "servers", null].includes(s.left) ? s.left : defaults.left, right: innerWidth < 1000 ? null : ["info", "plugins", "assistant", null].includes(s.right) ? s.right : defaults.right, bottom: typeof s.bottom === "boolean" ? s.bottom : true,
-        leftWidth: bounded(s.leftWidth, 210, 480, 240), rightWidth: bounded(s.rightWidth, 260, 520, 310), bottomHeight: bounded(s.bottomHeight, 100, 400, 175) };
+      return { left: innerWidth < 1000 ? null : ["files", "nodes", "servers", null].includes(s.left) ? s.left : defaults.left, right: innerWidth < 1000 ? null : ["info", "plugins", "assistant", "monitor", null].includes(s.right) ? s.right : defaults.right, bottom: typeof s.bottom === "boolean" ? s.bottom : true,
+        leftWidth: bounded(s.leftWidth, 210, 480, 240), rightWidth: bounded(s.rightWidth, 260, 520, 310), bottomHeight: bounded(s.bottomHeight, 100, 400, 175), editorRatio: bounded(s.editorRatio, 0.25, 0.75, 0.55) };
     } catch { return defaults; }
   });
   useEffect(() => { try { localStorage.setItem("cyrene.studio.layout.v1", JSON.stringify(layout)); } catch { /* Layout preferences are optional. 布局偏好设置为可选项。 */ } }, [layout]);

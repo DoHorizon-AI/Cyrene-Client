@@ -1,10 +1,10 @@
 # 流水线编辑、排版与本机 MCP
 
-状态：服务端草稿、原子批量编辑、ELK 排版、本地/服务端撤销和 stdio MCP 已实现。没有嵌入聊天模型、远端 MCP HTTP 服务或训练执行协调器。
+状态：服务端草稿、原子批量编辑、ELK 排版、撤销/重做与 stdio/HTTP MCP 已实现。新增模型助手、工具调试及本地诊断，配置与验收见 [MCP 工作台](mcp-workbench.md)。真实训练仍依赖 Product 执行适配器。
 
 ## 页面使用
 
-1. 启动 Client，在画布编辑流程。“文件 → 保存草稿”或 Ctrl/Cmd+S 保存浏览器副本；顶部“保存到服务端”写入 `.studio/pipelines.json`。
+1. 启动 Client，在画布编辑流程。“文件 → 保存草稿”或 Ctrl/Cmd+S 保存浏览器副本；顶部“保存到服务端”写入统一控制服务的 SQLite/PostgreSQL（显式旧模式才使用 JSON）。
 2. 在“文件”菜单中用“读取流程列表 → 选择流程 → 载入服务端流程”打开已有版本。创建时不覆盖同 ID 的已有流程。
 3. 点击顶部“自动排版”整理未锁定节点；“编辑 → 整理选中节点”只移动当前选中的一个节点。MCP 的 `nodeIds` 支持一次指定多个节点。
 4. “编辑 → 锁定节点位置”保留位置，解除锁定后可重新整理。排版只改变布局，不修改参数与连线语义。
@@ -13,37 +13,17 @@
 
 页面不会自动把每次输入提交到服务端。AI 看到的是最后保存的版本。浏览器本地草稿、导入导出和已有节点设置仍可使用。
 
-右侧“平台 MCP”可读取实际的 12 项工具目录、编写任务草稿并复制流程/节点引用。内置聊天模型尚未接入；该面板本身不会调用模型或执行 MCP 编辑。工具窗口布局见 [工作台界面](ide-workbench.md)。
+右侧“平台 MCP”提供模型对话、工具调试与接入测试；工具目录按实际权限动态读取，不固定数量。工具窗口布局见 [工作台界面](ide-workbench.md)。
 
 ## 连接 AI 客户端
 
-已安装依赖后，本地启动命令为 `npm run mcp`。**客户端配置应直接启动 Node，避免 npm 的脚本标题混入 stdio 协议输出。** 以下是常见 `mcpServers` 配置格式；具体放置位置由所用客户端决定，本轮没有修改任何客户端配置：
-
-```json
-{
-  "mcpServers": {
-    "cyrene-client": {
-      "command": "node",
-      "args": [
-        "C:/work/Cyrene-Client/node_modules/tsx/dist/cli.mjs",
-        "C:/work/Cyrene-Client/apps/mcp/main.ts"
-      ]
-    }
-  }
-}
-```
-
-将示例中的 `C:/work/Cyrene-Client` 替换为实际克隆目录。MCP 默认使用 Client 根目录的 `.studio`，与默认 Vite 入口共享文件。若给 Vite 配置了 `STUDIO_CONTROL_DATA_DIR`，MCP 也必须指向同一个绝对目录。
-
-本机 stdio 进程代表启动它的本地用户，工作空间固定为 `local`，写入来源记录为 `local-mcp`；它不接受调用方自报 actor。设置 `STUDIO_MCP_READ_ONLY=1` 可只暴露读取与布局预览工具。默认允许草稿编辑，连接客户端即授予这组本地编辑能力。
-
-使用精确依赖 `@modelcontextprotocol/sdk@1.30.0`。实际安装代码的最高协议版本是 **2025-11-25**；已通过该 SDK 的真实 stdio 握手验证，不宣称兼容 2026-07-28 协议或远端 OAuth。后续升级需单独验证客户端与 SDK 兼容性。[SDK 上游](https://github.com/modelcontextprotocol/typescript-sdk)
+优先使用同一工作台的 `/studio-mcp` HTTP 入口及专用 Bearer 凭据；完整设置、stdio 参数、协议版本与权限说明见 [MCP 工作台](mcp-workbench.md#http-与-stdio-接入)。stdio 必须配置 STUDIO_CONTROL_URL 和 STUDIO_API_TOKEN；历史 JSON 模式仅在显式 STUDIO_MCP_LEGACY_FILES=1 时启用。
 
 连接后可向 AI 提出：
 
 > 读取节点目录和我已保存的流程，增加第二个评估分支，连接训练输出与数据集。校验后整理新增分支，保留锁定节点，并说明修改了什么。不要执行训练。
 
-实际设计质量取决于模型与现有节点能力。目录只包含当前 7 类节点；没有条件门禁、循环、执行型子流程等节点时，AI 应报告缺口。
+实际设计质量取决于模型与现有节点能力。目录包含业务节点、本地诊断与已启用节点包；没有条件门禁、循环、执行型子流程等节点时，AI 应报告缺口。
 
 ## 工具与共同应用服务
 

@@ -1,3 +1,4 @@
+import { managementChinese, managementEnglish } from "./messages";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 export type AppLocale = "zh-CN" | "en-US";
@@ -230,7 +231,7 @@ interface I18nValue {
   t: (message: string) => string;
 }
 
-const fallbackI18n: I18nValue = { locale: "zh-CN", setLocale: () => undefined, t: (message) => chinese[message] ?? message };
+const fallbackI18n: I18nValue = { locale: "zh-CN", setLocale: () => undefined, t: (message) => translate(message, "zh-CN") };
 const I18nContext = createContext<I18nValue>(fallbackI18n);
 
 export function normalizeLocale(value: string | null | undefined): AppLocale {
@@ -242,7 +243,7 @@ export function resolveLocale(stored: string | null | undefined, preferred: stri
 }
 
 export function translate(message: string, locale: AppLocale): string {
-  return locale === "zh-CN" ? chinese[message] ?? message : message;
+  return locale === "zh-CN" ? managementChinese[message] ?? chinese[message] ?? message : managementEnglish[message] ?? message;
 }
 
 export function initialLocale(): AppLocale {
@@ -285,4 +286,9 @@ export function LanguageSelect({ compact = false }: { compact?: boolean }) {
       </select>
     </label>
   );
+}
+
+export function ControlledLocaleProvider({ children, locale, setLocale }: { children: ReactNode; locale: AppLocale; setLocale: (locale: AppLocale) => void }) {
+  const value = useMemo(() => ({ locale, setLocale, t: (message: string) => translate(message, locale) }), [locale, setLocale]);
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { Readable } from "node:stream";
+import { pipeline as pipe } from "node:stream/promises";
+import { productPermission } from "../../tooling/product-proxy";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { StoreFactory } from "../../packages/control-storage";
@@ -17,7 +20,13 @@ import { BuildControl } from "../../packages/build-control/service";
 import { buildCommands, buildDatabase, emptyBuildDatabase, type BuildProfile } from "../../packages/build-control/contracts";
 import type { BuildAdapter } from "../../packages/build-control/adapter";
 import { catalogCommands } from "../../packages/node-registry/commands";
+import { MonitoringControl } from "../../packages/monitoring/service";
+import { monitoringCommands } from "../../packages/monitoring/contracts";
 import { streamRun } from "./run-stream";
+import { createMcpServer } from "../mcp/server";
+import { serveMcp } from "../mcp/http";
+import { assistantTurn, type AssistantProvider } from "./assistant";
+import { LocalDiagnosticAdapter, diagnosticDatabase, emptyDiagnosticDatabase } from "../../packages/local-diagnostics/adapter";
 
 export interface ControlOptions {
   stores: StoreFactory;
@@ -32,8 +41,11 @@ export interface ControlOptions {
   serverObservers?: ReadonlyMap<string, ServerObserver>;
   buildProfiles?: BuildProfile[];
   buildAdapter?: BuildAdapter;
+  localDiagnostics?: boolean;
+  mcpReadOnly?: boolean;
+  assistantProvider?: AssistantProvider;
 }
-const localScopes = ["pipelines.read", "pipelines.write", "servers.read", "servers.write", "runs.read", "runs.write", "builds.read", "builds.write", "catalog.write"];
+const localScopes = ["products.read", "products.write", "products.operate", "products.admin", "pipelines.read", "pipelines.write", "servers.read", "servers.write", "runs.read", "runs.write", "builds.read", "builds.write", "catalog.write"];
 const cookieName = "studio_session";
 function cookie(req: IncomingMessage) { return (req.headers.cookie ?? "").split(";").map(p => p.trim()).find(p => p.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1) ?? ""; }
 function secretEqual(a: string, b: string) { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); }
@@ -62,8 +74,13 @@ export function createControlApplication(options: ControlOptions) {
   const registry = new NodeRegistry(options.stores.state("catalog", catalogDatabase, emptyCatalogDatabase), options.loadPackages ?? (async () => []), (id, workspace) => builds.verifiedResult(id, workspace));
   const ready = registry.restore();
   const runStore = options.stores.state("runs", runDatabase, emptyRunDatabase);
-  const runs = new RunControl(runStore, pipelines, options.adapters ?? new Map(), () => Date.now(), new RegisteredPlacementResolver(servers));
+  const adapters = new Map(options.adapters);
+  if (options.localDiagnostics) adapters.set("local-diagnostic", new LocalDiagnosticAdapter(options.stores.state("local-diagnostics", diagnosticDatabase, emptyDiagnosticDatabase)));
+  const runs = new RunControl(runStore, pipelines, adapters, () => Date.now(), new RegisteredPlacementResolver(servers));
+  const monitoring = new MonitoringControl(pipelineStore, runStore, new Set(adapters.keys()));
+  const mcp = (actor: Actor) => createMcpServer(pipelines, actor, runs, { monitoring, builds, catalog: registry, servers, readOnly: options.mcpReadOnly });
   const failures = new Map<string, { count: number; until: number }>();
+  const activeAssistantTurns = new Set<string>();
   function originBoundary(req: IncomingMessage) {
     // Do not trust Forwarded/X-Forwarded-* supplied by clients. The gateway
     // preserves Host and Origin, and only explicitly configured origins pass.
@@ -92,16 +109,39 @@ export function createControlApplication(options: ControlOptions) {
   const groups = new Map<string, { commands: Record<string, { readOnly: boolean; scope?: string; description?: string }>; execute(raw: unknown, actor: Actor): Promise<unknown> }>([
     ["/studio-pipelines", { commands: pipelineCommands, execute: (raw, actor) => pipelines.execute(raw, actor) }],
     ["/studio-control", { commands, execute: (raw, actor) => servers.execute(raw, actor) }],
+    ["/studio-monitoring", { commands: monitoringCommands, execute: (raw, actor) => monitoring.execute(raw, actor) }],
     ["/studio-runs", { commands: runCommands, execute: (raw, actor) => runs.execute(raw, actor) }],
     ["/studio-builds", { commands: buildCommands, execute: (raw, actor) => builds.execute(raw, actor) }],
     ["/studio-catalog", { commands: catalogCommands, execute: (raw, actor) => registry.execute(raw, actor) }],
   ]);
-  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([, command]) => actor.scopes.includes(command.scope ?? `${prefix === "/studio-runs" ? "runs" : "pipelines"}.${command.readOnly ? "read" : "write"}`)).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
+  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([name, command]) => (name !== "monitoring.snapshot" || actor.scopes.includes("pipelines.read")) && actor.scopes.includes(command.scope ?? `${prefix === "/studio-runs" ? "runs" : "pipelines"}.${command.readOnly ? "read" : "write"}`)).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const path = (req.url ?? "").split("?")[0];
       if (req.method === "GET" && path === "/health/live") return send(res, 200, { status: "alive" });
       await ready;
+      if (path === "/studio-mcp/v1/info" && req.method === "GET") {
+        const { actor } = await authorize(req, false);
+        return send(res, 200, { endpoint: "/studio-mcp", protocolVersion: "2025-11-25", transport: "streamable-http", readOnly: !!options.mcpReadOnly, diagnostics: !!options.localDiagnostics, assistant: { configured: !!options.assistantProvider, model: options.assistantProvider?.model }, actor });
+      }
+      if (path === "/studio-assistant/v1/turn" && req.method === "POST") {
+        const { actor } = await authorize(req, true);
+        if (activeAssistantTurns.has(actor.id) || activeAssistantTurns.size >= 16) throw new ControlError("ASSISTANT_BUSY", "助手仍在处理请求，请稍后重试。", 429);
+        const input = await readJson(req, 262144);
+        if (activeAssistantTurns.has(actor.id) || activeAssistantTurns.size >= 16) throw new ControlError("ASSISTANT_BUSY", "助手仍在处理请求，请稍后重试。", 429);
+        activeAssistantTurns.add(actor.id);
+        const abort = new AbortController(), closed = () => abort.abort();
+        res.once("close", closed);
+        try { return send(res, 200, await assistantTurn(input, actor, options.assistantProvider, mcp(actor), AbortSignal.any([abort.signal, AbortSignal.timeout(25000)]))); }
+        finally { activeAssistantTurns.delete(actor.id); res.off("close", closed); }
+      }
+      if (path === "/studio-mcp") {
+        // Validate Origin even with bearer credentials; browser POSTs need CSRF.
+        if (req.headers.origin && !origins.includes(req.headers.origin)) throw new ControlError("FORBIDDEN", "访问来源不受信任。", 403);
+        const { actor } = await authorize(req, req.method === "POST");
+        const body = req.method === "POST" ? await readJson(req) : undefined;
+        return await serveMcp(req, res, mcp(actor), body);
+      }
       if (req.method === "GET" && path === "/studio-commands/v1/session") {
         const context = await authorize(req, false);
         return send(res, 200, { token: context.csrf, actor: context.actor, workspaceId, mode: options.mode, commands: [...groups].flatMap(([prefix, group]) => permittedCommands(prefix, group.commands, context.actor)) });
@@ -163,6 +203,11 @@ export function createControlApplication(options: ControlOptions) {
           const input = z.object({ scopes: z.array(z.string()).max(20) }).strict().parse(await readJson(req, 4096));
           return send(res, 201, await team.issueApiToken(actor, input.scopes));
         }
+        if (path === "/studio-team/v1/tokens" && req.method === "GET") return send(res, 200, { items: await team.listApiTokens(actor) });
+        if (path === "/studio-team/v1/tokens/revoke" && req.method === "POST") {
+          const { id } = z.object({ id: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(await readJson(req, 4096));
+          return send(res, 200, await team.revokeApiToken(id, actor));
+        }
       }
       for (const [prefix, group] of groups) {
         if (req.url === `${prefix}/v1/session` && req.method === "GET") {
@@ -178,26 +223,46 @@ export function createControlApplication(options: ControlOptions) {
         await authorize(req, false); return send(res, 200, { configured: !!options.navigatorUrl, target: options.navigatorUrl ?? null });
       }
       if (path.startsWith("/api")) {
-        if (!allowedSettingsRequest(req.method ?? "GET", path)) throw new ControlError("STUDIO_SETTINGS_ONLY", "此代理只允许节点设置接口。", 403);
-        const { actor } = await authorize(req, false);
+        const permission = productPermission(req.method ?? "GET", path);
+        const legacy = allowedSettingsRequest(req.method ?? "GET", path);
+        if (!permission && !legacy) throw new ControlError("STUDIO_SETTINGS_ONLY", "此代理只允许节点设置接口。", 403);
+        const { actor } = await authorize(req, !!permission && !legacy && req.method !== "GET");
+        if (permission && !actor.scopes.includes(permission)) throw new ControlError("FORBIDDEN", "没有此产品操作权限。", 403);
         // Product settings already use Navigator's CSRF protocol. Team writes
         // additionally require Studio editor permission; browser Origin is checked.
-        if (req.method !== "GET" && !actor.scopes.includes("pipelines.write")) throw new ControlError("FORBIDDEN", "没有设置编辑权限。", 403);
+        if (!permission && !path.startsWith("/api/v1/auth/") && req.method !== "GET" && !actor.scopes.includes("pipelines.write")) throw new ControlError("FORBIDDEN", "没有设置编辑权限。", 403);
+        const productWorkspace = path.match(/^\/api\/v1\/navigator\/harness\/workspaces\/([^/]+)\/sessions$/)?.[1];
+        if (productWorkspace && !actor.workspaceIds.includes(productWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
         if (!options.navigatorUrl) throw new ControlError("STUDIO_HOST_NOT_CONFIGURED", "尚未配置 Navigator。", 503);
         const headers = new Headers();
-        for (const name of ["content-type", "x-csrf-token", "idempotency-key", "origin", "host"]) {
+        for (const name of ["content-type", "accept", "last-event-id", "x-csrf-token", "idempotency-key", "origin", "host"]) {
           const value = req.headers[name]; if (typeof value === "string") headers.set(name, value);
         }
         const upstreamCookies = (req.headers.cookie ?? "").split(";").filter(p => !p.trim().startsWith(`${cookieName}=`)).join(";");
         if (upstreamCookies) headers.set("cookie", upstreamCookies);
-        let body: string | undefined;
-        if (req.method !== "GET" && req.method !== "HEAD" && (req.headers["transfer-encoding"] || Number(req.headers["content-length"] ?? 0) > 0)) body = JSON.stringify(await readJson(req));
-        const upstream = await fetch(`${options.navigatorUrl}${req.url}`, { method: req.method, headers, body, redirect: "manual", signal: AbortSignal.timeout(10000) });
+        if (path === "/api/proxy/exchange-gateway/v1/chat/completions" && typeof req.headers["x-product-authorization"] === "string") headers.set("authorization", req.headers["x-product-authorization"]);
+        let body: Buffer | undefined;
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          const limit = /^\/api\/v1\/catalyst\/datasets\/[^/]+\/preparations$/.test(path) ? 32 * 1024 * 1024 : 1_048_576;
+          let bytes = 0; const chunks: Buffer[] = [];
+          for await (const chunk of req) { const part = Buffer.from(chunk); bytes += part.length; if (bytes > limit) throw new ControlError("TOO_LARGE", "请求超过大小限制。", 413); chunks.push(part); }
+          if (chunks.length) body = Buffer.concat(chunks);
+        }
+        const abort = new AbortController();
+        const closed = () => abort.abort(); res.once("close", closed);
+        const deadline = setTimeout(() => abort.abort(), 10000);
+        let upstream: Response;
+        try { upstream = await fetch(`${options.navigatorUrl}${req.url}`, { method: req.method, headers, body: body ? new Uint8Array(body) : undefined, redirect: "manual", signal: abort.signal }); }
+        catch (error) { res.off("close", closed); throw error; }
+        finally { clearTimeout(deadline); }
         res.statusCode = upstream.status;
         res.setHeader("cache-control", "no-store");
         res.setHeader("content-type", upstream.headers.get("content-type") ?? "application/json");
         const cookies = upstream.headers.getSetCookie(); if (cookies.length) res.setHeader("set-cookie", cookies);
-        res.end(Buffer.from(await upstream.arrayBuffer())); return;
+        if (upstream.headers.get("content-type")?.includes("text/event-stream")) res.setHeader("x-accel-buffering", "no");
+        try { if (upstream.body) await pipe(Readable.fromWeb(upstream.body as any), res); else res.end(); }
+        finally { res.off("close", closed); abort.abort(); }
+        return;
       }
       throw new ControlError("NOT_FOUND", "不存在此接口。", 404);
     } catch (error) {
@@ -208,5 +273,5 @@ export function createControlApplication(options: ControlOptions) {
   const server = createServer((req, res) => { void handler(req, res); });
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;
-  return { server, handler, team, pipelines, servers, registry, runs, builds, ready, groups, authorize, stores: options.stores };
+  return { server, handler, team, pipelines, servers, registry, runs, monitoring, builds, ready, groups, authorize, stores: options.stores };
 }

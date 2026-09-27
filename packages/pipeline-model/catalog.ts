@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { diagnosticDefinition } from "../local-diagnostics/definition";
 
 export type ArtifactKind = "dataset" | "model" | "compute" | "evaluation" | "endpoint" | "agent-report";
 export interface Port { name: string; label: string; kind: ArtifactKind }
@@ -13,6 +14,7 @@ export interface NodeDefinition {
 }
 const text = z.string().trim().min(1).max(300);
 export const catalog: NodeDefinition[] = [
+  diagnosticDefinition,
   {
     type: "dataset", version: "1", title: "数据集版本", owner: "Catalyst", category: "数据与模型", color: "#50bfaa",
     description: "从 Catalyst 读取已发布数据版本，或在本地填写数据集引用。",

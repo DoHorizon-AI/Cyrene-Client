@@ -110,3 +110,25 @@
 @media (max-width: 1250px) { .ide-version { display: none; }.ide-document-name input { width: 240px; }.ide-project-title { display: none; } }
 @media (max-width: 1000px) { .ide-left-dock, .ide-right-dock { position: absolute; top: 0; bottom: 0; z-index: 30; box-shadow: 0 8px 25px #0008; max-width: calc(100vw - 85px); }.ide-left-dock { left: 40px; }.ide-right-dock { right: 40px; }.ide-window-meta { display: none; }.ide-studio .footer p { max-width: calc(100% - 120px); }.ide-statusbar > div span:first-child, .ide-statusbar > div span:last-child { display: none; }.ide-toolbar-actions { gap: 2px; }.ide-toolbar-actions > button { padding: 5px; font-size: 10px; }.ide-document-name input { width: 205px; }.ide-main-toolbar { gap: 5px; }.ide-bottom-bar { padding: 0 15px; } }
 @media (max-width: 640px) { .ide-titlebar { gap: 6px; padding: 0 8px; }.ide-menu > button { padding: 5px 7px; }.ide-main-toolbar { flex-wrap: wrap; }.ide-toolbar-actions { width: 100%; justify-content: flex-end; }.ide-studio .canvas-toolbar small { display: none; }.ide-studio .bottom-tabs { gap: 9px; }.ide-bottom-bar > span { display: none; }.ide-menu-popup { position: fixed; top: 38px; left: 8px; right: 8px; max-width: none; }.ide-studio .pipeline-conflict { padding: 7px 10px; }.ide-document-name input { width: calc(100vw - 80px); }.ide-titlebar > .language-select select { min-width: 72px; width: 72px; } }
+
+/* Editor documents retain their portal containers when moving between groups. */
+.ide-editor-area { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.ide-editor-group { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; grid-row: 1; grid-column: 1; }
+.ide-editor-area.is-split [data-editor-group="1"] { grid-column: 3; }
+.ide-editor-area > .ide-resize { position: relative; inset: auto; width: 5px; background: #35373c; grid-column: 2; grid-row: 1; }
+.ide-editor-area > .ide-resize:hover, .ide-editor-area > .ide-resize:focus-visible { background: #548af7; }
+.ide-editor-group-body { position: relative; flex: 1; min-height: 0; overflow: hidden; container-type: inline-size; }
+.ide-editor-panel { position: absolute; inset: 0; }
+.ide-editor-panel-content { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.ide-editor-tabs [draggable] { cursor: grab; }
+.ide-editor-tabs [draggable]:active { cursor: grabbing; }
+.ide-editor-drop { position: absolute; top: 36px; bottom: 0; z-index: 40; pointer-events: none; display: grid; place-items: center; background: #548af726; border: 2px solid #548af7; }
+.ide-editor-drop.left, .ide-editor-drop.join-left { left: 0; width: 50%; }
+.ide-editor-drop.right, .ide-editor-drop.join-right { right: 0; width: 50%; }
+.ide-editor-area:not(.is-split) .ide-editor-drop.join-left { width: 100%; }
+.ide-editor-drop span { padding: 8px 12px; background: #2b2d30; color: #dfe1e5; font-size: 12px; }
+@container (max-width: 699px) {
+  .monitor-expanded .monitor-content { display: block; }
+  .monitor-expanded .monitor-detail { border-left: 0; padding: 12px 2px; }
+  .monitor-expanded .monitor-list { max-height: 38vh; }
+}

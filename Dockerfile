@@ -4,16 +4,16 @@ FROM node:24-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY apps/web/services/navigator apps/web/services/navigator
-RUN npm --prefix apps/web/services/navigator ci
-RUN npm run build:web:navigator
+COPY . .
+RUN npm run build
 
 FROM nginx:1.27-alpine AS runtime
 
 LABEL org.opencontainers.image.source="https://github.com/DoHorizon-AI/Cyrene-Client"
 
-COPY --from=builder /app/apps/web/services/navigator/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /app/dist /usr/share/nginx/html
+ENV STUDIO_CONTROL_ORIGIN=http://studio-control:5182
+COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY cyrene-proxy.conf /etc/nginx/cyrene-proxy.conf
 
 EXPOSE 80

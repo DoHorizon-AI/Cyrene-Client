@@ -9,11 +9,11 @@ export default defineConfig(({ mode }) => {
   const control = admittedTarget(process.env.STUDIO_CONTROL_URL);
   if (control) {
     const proxy = Object.fromEntries(["/studio-", "/api"].map(prefix => [prefix, { target: control, changeOrigin: false, timeout: 35000, proxyTimeout: 35000 }]));
-    return { root: "apps/web", plugins: [react()], server: { host: "127.0.0.1", port: 5180, strictPort: true, proxy }, preview: { host: "127.0.0.1", proxy }, build: { outDir: "../../dist", emptyOutDir: true } };
+    return { root: "apps/web", resolve: { dedupe: ["react", "react-dom"] }, plugins: [react()], server: { host: "127.0.0.1", port: 5180, strictPort: true, proxy }, preview: { host: "127.0.0.1", proxy }, build: { outDir: "../../dist", emptyOutDir: true } };
   }
   const proxy = settingsProxy(target);
   return {
-    root: "apps/web",
+    root: "apps/web", resolve: { dedupe: ["react", "react-dom"] },
     plugins: [react(), settingsBridge(target), serverControlBridge(process.env.STUDIO_CONTROL_DATA_DIR), pipelineControlBridge(process.env.STUDIO_CONTROL_DATA_DIR)],
     server: { host: "127.0.0.1", port: 5180, strictPort: true, proxy },
     preview: { host: "127.0.0.1", proxy },

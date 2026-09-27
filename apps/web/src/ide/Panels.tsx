@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { lazy, Suspense, useRef, useState } from "react";
 import type { Pipeline } from "../../../../packages/pipeline-model";
 import { Icon } from "./Chrome";
 import { useTeamIdentity } from "../team/TeamGate";
@@ -27,31 +27,10 @@ export function FilePanel({ document, disabled, onImport, onPreview, onSource, o
   </section>;
 }
 
-export function AssistantPanel({ document, selectedId, onNotice }: { document: Pipeline; selectedId: string | null; onNotice(message: string): void }) {
-  const { workspaceId } = useTeamIdentity();
-  const { locale, t } = useI18n();
-  const [prompt, setPrompt] = useState(""), [tools, setTools] = useState<{ name: string; readOnly: boolean }[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState("");
-  async function loadTools() {
-    setBusy(true); setError("");
-    try {
-      let response = await fetch("/studio-commands/v1/session", { signal: AbortSignal.timeout(10000) });
-      if (response.status === 404 || !response.headers.get("content-type")?.includes("application/json")) response = await fetch("/studio-pipelines/v1/session", { signal: AbortSignal.timeout(10000) });
-      if (!response.ok) throw new Error("控制服务不可用。"); const data = await response.json(); if (!Array.isArray(data.commands) || data.commands.some((t: any) => typeof t.name !== "string" || typeof t.readOnly !== "boolean")) throw new Error("工具目录格式不匹配。"); setTools(data.commands);
-    }
-    catch (e) { setError(e instanceof Error ? e.message : "无法读取工具目录。"); } finally { setBusy(false); }
-  }
-  async function copy() {
-    try { await navigator.clipboard.writeText(`请通过 Cyrene Client MCP 操作工作空间 ${workspaceId} 中的流程 ${document.id}。${selectedId ? `当前选中节点：${selectedId}。` : ""}\n先读取服务端最新版本并校验。\n\n${prompt}`); onNotice("任务与流程上下文已复制，可粘贴到已连接 Client MCP 的 AI 客户端。"); }
-    catch { onNotice("剪贴板不可用，可手动选择任务文字复制。"); }
-  }
-  return <section className="ide-assistant"><div className="ide-assistant-head"><Icon name="assistant" /><h3>{t("一起构建下一步")}</h3><p>{t("把想法变成可编辑的流水线。")}</p></div>
-    <div className="ide-context-chip"><Icon name="nodes" /><span>{document.id}</span></div>{selectedId && <div className="ide-context-node">{locale === "zh-CN" ? "节点上下文" : "Node context"} · {selectedId}</div>}
-    <div className="ide-assistant-note"><span className="ide-status-dot" /> {t("MCP 编辑工具已提供")}<p>{t("内置对话模型尚未配置。先将当前流程保存到服务端，再将任务复制到已连接 Client MCP 的 AI 客户端。没有本地冲突时，画布会同步服务端修改。")}</p></div>
-    <button className="ide-text-action" disabled={busy} onClick={() => void loadTools()}>{t(busy ? "读取中…" : "查看可用工具")}</button>
-    {!!tools.length && <div className="ide-tool-list">{tools.map(tool => <div key={tool.name}><code>{tool.name}</code><small>{t(tool.readOnly ? "读取" : "编辑")}</small></div>)}</div>}{error && <p className="ide-error">{error}</p>}
-    <div className="ide-prompt-box"><label htmlFor="assistant-task">{t("任务草稿")}</label><textarea id="assistant-task" value={prompt} maxLength={4000} onChange={e => setPrompt(e.target.value)} placeholder={t("例如：添加第二组训练参数对比，保留现有节点位置…")} /><div><span>{t("附带流程与节点引用")}</span><button disabled={!prompt.trim()} onClick={() => void copy()}>{t("复制任务与上下文 ↗")}</button></div></div>
-    <small className="ide-assistant-footer">{t("当前面板不会发送模型请求或执行训练。")}</small>
-  </section>;
+const McpPanel = lazy(() => import("../mcp/McpPanel"));
+export function AssistantPanel(props: { document: Pipeline; selectedId: string | null; onNotice(message: string): void; onMonitor(): void }) {
+  const { actorId, workspaceId } = useTeamIdentity();
+  return <Suspense fallback={<p>MCP…</p>}><McpPanel key={`${actorId}:${workspaceId}:${props.document.id}`} {...props} /></Suspense>;
 }
 
 export function PluginPanel({ onSource, onChecks }: { onSource(): void; onChecks(): void }) {

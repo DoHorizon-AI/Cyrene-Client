@@ -13,10 +13,10 @@ const memberInput = z.object({ username: z.string().trim().regex(/^[a-zA-Z0-9_.@
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const kdf = (password: string, salt: string): Promise<Buffer> => new Promise((resolve, reject) => scrypt(password, salt, 64, { N: 16384, r: 8, p: 1 }, (error, key) => error ? reject(error) : resolve(key)));
 const permissions: Record<z.infer<typeof role>, string[]> = {
-  viewer: ["pipelines.read", "servers.read", "runs.read", "builds.read"],
-  editor: ["pipelines.read", "pipelines.write", "servers.read", "runs.read", "builds.read", "builds.write"],
-  operator: ["pipelines.read", "servers.read", "runs.read", "runs.write", "builds.read"],
-  admin: ["pipelines.read", "pipelines.write", "servers.read", "servers.write", "runs.read", "runs.write", "team.admin", "catalog.write", "builds.read", "builds.write"],
+  viewer: ["products.read", "pipelines.read", "servers.read", "runs.read", "builds.read"],
+  editor: ["products.read", "products.write", "pipelines.read", "pipelines.write", "servers.read", "runs.read", "builds.read", "builds.write"],
+  operator: ["products.read", "products.operate", "pipelines.read", "servers.read", "runs.read", "runs.write", "builds.read"],
+  admin: ["products.read", "products.write", "products.operate", "products.admin", "pipelines.read", "pipelines.write", "servers.read", "servers.write", "runs.read", "runs.write", "team.admin", "catalog.write", "builds.read", "builds.write"],
 };
 function actorOf(m: z.infer<typeof member>): Actor { return { id: m.id, workspaceIds: m.workspaceIds, scopes: [...new Set(m.roles.flatMap(r => permissions[r]))] }; }
 function admin(actor: Actor) { if (!actor.scopes.includes("team.admin")) throw new ControlError("FORBIDDEN", "需要团队管理权限。", 403); }
@@ -66,6 +66,17 @@ export class TeamControl {
     return this.issue(actor.id, "api", 24 * 60 * 60 * 1000, scopes);
   }
   async logout(token: string) { await this.store.transact(db => { db.sessions = db.sessions.filter(s => s.digest !== digest(token)); }); }
+  async listApiTokens(actor: Actor) {
+    return (await this.store.read()).sessions.filter(s => s.kind === "api" && s.userId === actor.id && s.expiresAt > this.now()).map(s => ({ id: s.digest, expiresAt: s.expiresAt, scopes: s.scopes ?? [] }));
+  }
+  async revokeApiToken(id: string, actor: Actor) {
+    z.string().regex(/^[a-f0-9]{64}$/).parse(id);
+    return this.store.transact(db => {
+      const found = db.sessions.find(s => s.digest === id && s.kind === "api" && s.userId === actor.id);
+      if (found) { db.sessions = db.sessions.filter(s => s !== found); db.audit.push({ at: new Date(this.now()).toISOString(), actorId: actor.id, action: "tokens.revoke", subject: id }); }
+      return { revoked: !!found };
+    });
+  }
   private async prepare(input: z.infer<typeof memberInput>): Promise<z.infer<typeof member>> {
     const salt = randomBytes(16).toString("hex"), hash = (await kdf(input.password, salt)).toString("hex");
     return { id: crypto.randomUUID(), username: input.username, passwordHash: `${salt}:${hash}`, workspaceIds: input.workspaceIds, roles: input.roles, disabled: false };

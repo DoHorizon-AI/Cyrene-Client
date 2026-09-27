@@ -4,22 +4,22 @@ import type { Pipeline } from "../../../../packages/pipeline-model";
 import { pipelineClient } from "../pipelines/client";
 import { useTeamIdentity } from "../team/TeamGate";
 import "./runs.css";
+import { useI18n } from "../i18n";
 
-async function execute(name: keyof typeof runCommands, input: unknown, key?: string) {
-  const session = await fetch("/studio-runs/v1/session", { signal: AbortSignal.timeout(10000) });
-  if (!session.ok) throw new Error("运行控制服务不可用或未登录。");
-  const { token } = await session.json();
-  const response = await fetch("/studio-runs/v1/commands", { method: "POST", headers: { "content-type": "application/json", "x-studio-control-token": token }, body: JSON.stringify({ name, input, requestId: crypto.randomUUID(), ...(key ? { idempotencyKey: key } : {}) }), signal: AbortSignal.timeout(30000) });
-  const body = await response.json(); if (!response.ok) throw new Error(body.error?.message ?? "运行操作失败。"); return body.result;
-}
+import { executeRun as execute } from "./client";
+import { useRunObservation } from "./observation";
+
 export function useRunControl({ document, selectedId, onNotice }: { document: Pipeline; selectedId: string | null; onNotice(message: string): void }) {
   const { workspaceId, actorId, scopes } = useTeamIdentity();
   const canRead = scopes.includes("runs.read"), canWrite = scopes.includes("runs.write");
   const [items, setItems] = useState<Pick<Run, "id" | "state" | "pipelineId">[]>([]), [run, setRun] = useState<Run | null>(null);
   const [preflight, setPreflight] = useState<{ input: any; result: any; document: Pipeline } | null>(null), [preview, setPreview] = useState<{ input: any; result: any } | null>(null);
-  const [busy, setBusy] = useState(false), [logs, setLogs] = useState<{ sequence: number; message: string }[]>([]), [servers, setServers] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false), [servers, setServers] = useState<Record<string, string>>({});
   const [details, setDetails] = useState<{ title: string; result: unknown } | null>(null);
-  const [connection, setConnection] = useState("未订阅");
+  const observation = useRunObservation(actorId, workspaceId, run?.id ?? null, canRead);
+  const { locale } = useI18n();
+  const connectionNames = { idle: "未订阅", connecting: "正在连接", live: "实时订阅中", offline: "网络断开，等待重连", reconnecting: "订阅重连中，保留最近状态" };
+  const logs = observation.events, connection = locale === "zh-CN" ? connectionNames[observation.connection] : observation.connection;
   const alive = useRef(false), live = useRef({ document, selectedId, workspaceId, servers }); live.current = { document, selectedId, workspaceId, servers };
   const keys = useRef(new Map<string, string>());
   const keyFor = (name: string, input: unknown) => { const content = JSON.stringify([name, input]); if (!keys.current.has(content)) keys.current.set(content, crypto.randomUUID()); return keys.current.get(content)!; };
@@ -34,40 +34,9 @@ export function useRunControl({ document, selectedId, onNotice }: { document: Pi
     finally { operation.current = false; if (alive.current) setBusy(false); }
   }
   useEffect(() => {
-    if (!run || !canRead) return;
-    let active = true, pending = false, cursor = 0;
-    setLogs([]);
-    setConnection("正在连接");
-    const apply = (raw: unknown) => {
-      const value = runObservationSchema.parse(raw);
-      if (!active || value.run.id !== run.id || value.run.workspaceId !== workspaceId) return;
-      setRun(previous => previous?.id === value.run.id && previous.revision <= value.run.revision ? value.run : previous);
-      const fresh = value.items.filter(event => event.sequence > cursor);
-      cursor = Math.max(cursor, value.cursor);
-      setLogs(rows => [...rows, ...fresh].slice(-200));
-    };
-    let events: EventSource | undefined;
-    const connect = () => {
-      events?.close();
-      if (!navigator.onLine) { setConnection("网络断开，等待重连"); return; }
-      events = new EventSource(`/studio-runs/v1/stream?${new URLSearchParams({ workspaceId, runId: run.id, after: String(cursor) })}`);
-      events.addEventListener("observation", event => {
-        try { apply(JSON.parse((event as MessageEvent).data)); if (active) setConnection("实时订阅中"); }
-        catch { if (active) setConnection("事件读取异常，正在核对"); }
-      });
-      events.onerror = () => { if (active) setConnection("订阅重连中，保留最近状态"); };
-    };
-    const offline = () => { events?.close(); setConnection("网络断开，等待重连"); };
-    window.addEventListener("offline", offline); window.addEventListener("online", connect); connect();
-    const poll = async () => {
-      if (pending || !navigator.onLine) return; pending = true;
-      try {
-        apply(await execute("runs.observe", { workspaceId, runId: run.id, after: cursor }));
-      } catch { /* Keep last observation and local edits while disconnected. */ }
-      finally { pending = false; }
-    };
-    void poll(); const timer = setInterval(() => void poll(), 5000); return () => { active = false; clearInterval(timer); events?.close(); window.removeEventListener("offline", offline); window.removeEventListener("online", connect); };
-  }, [run?.id, workspaceId, actorId, canRead]);
+    const next = observation.run;
+    if (next) setRun(previous => previous?.id === next.id && previous.workspaceId === next.workspaceId && previous.revision <= next.revision ? next : previous);
+  }, [observation.run]);
   async function inspectRun() {
     const sent = structuredClone(live.current.document), sentServers = structuredClone(live.current.servers), sentWorkspace = live.current.workspaceId;
     const record = await pipelineClient.execute("pipelines.get", { workspaceId, pipelineId: sent.id });

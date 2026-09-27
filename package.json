@@ -8,7 +8,7 @@
   },
   "scripts": {
     "mcp": "tsx apps/mcp/main.ts",
-    "dev": "vite --host 127.0.0.1",
+    "dev": "node scripts/dev.mjs",
     "dev:services": "node scripts/dev.mjs",
     "control": "node --env-file-if-exists=.env.local --import tsx apps/control/main.ts",
     "team:bootstrap": "node --env-file-if-exists=.env.local --import tsx apps/control/main.ts --bootstrap-admin",
@@ -20,11 +20,12 @@
     "test:e2e:control": "playwright test --config playwright.control.config.ts",
     "test:containers": "tsx scripts/verify-containers.ts",
     "check": "npm test && npm run build && npm run test:e2e && npm run test:e2e:control",
-    "dev:web:navigator": "npm --prefix apps/web/services/navigator run dev",
-    "build:web:navigator": "npm --prefix apps/web/services/navigator run build",
-    "check:web:navigator": "npm --prefix apps/web/services/navigator run check",
+    "dev:web:navigator": "npm run dev:services",
+    "build:web:navigator": "npm run build",
+    "check:web:navigator": "vitest run apps/web/services/navigator/src",
     "build:win:installer": "cargo build --manifest-path apps/win/Cargo.toml --workspace",
-    "check:win:installer": "cargo check --manifest-path apps/win/Cargo.toml --workspace"
+    "check:win:installer": "cargo check --manifest-path apps/win/Cargo.toml --workspace",
+    "dev:legacy": "vite --host 127.0.0.1"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

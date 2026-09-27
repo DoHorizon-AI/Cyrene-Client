@@ -8,6 +8,7 @@ import { RemoteControl } from "../../packages/control-client";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const directory = process.env.STUDIO_CONTROL_DATA_DIR ? resolve(root, process.env.STUDIO_CONTROL_DATA_DIR) : resolve(root, ".studio");
 const write = process.env.STUDIO_MCP_READ_ONLY !== "1";
+if (!process.env.STUDIO_CONTROL_URL && process.env.STUDIO_MCP_LEGACY_FILES !== "1") throw new Error("Set STUDIO_CONTROL_URL and STUDIO_API_TOKEN to connect the shared workbench. Legacy JSON mode requires explicit STUDIO_MCP_LEGACY_FILES=1.");
 const control = process.env.STUDIO_CONTROL_URL
   ? new RemoteControl(process.env.STUDIO_CONTROL_URL, process.env.STUDIO_API_TOKEN ?? "")
   : createPipelineControl(directory);
@@ -16,5 +17,5 @@ const actor = control instanceof RemoteControl ? await control.session() : {
   id: "local-mcp", workspaceIds: ["local"], scopes: ["pipelines.read", "runs.read", ...(write ? ["pipelines.write", "runs.write"] : [])],
 };
 const remote = (prefix: string) => process.env.STUDIO_CONTROL_URL ? new RemoteControl(process.env.STUDIO_CONTROL_URL, process.env.STUDIO_API_TOKEN ?? "", prefix) : undefined;
-const server = createMcpServer(control, actor, remote("/studio-runs"), { builds: remote("/studio-builds"), catalog: remote("/studio-catalog"), servers: remote("/studio-control"), readOnly: !write });
+const server = createMcpServer(control, actor, remote("/studio-runs"), { monitoring: remote("/studio-monitoring"), builds: remote("/studio-builds"), catalog: remote("/studio-catalog"), servers: remote("/studio-control"), readOnly: !write });
 await server.connect(new StdioServerTransport());

@@ -23,7 +23,7 @@
 
 ## 本地开发与数据迁移
 
-需要 Node 24+。`npm run dev` 保留原文件存储模式；`npm run dev:services` 启动独立 control 与 Vite。后者读取 `.env.local`，默认 UI 5180、control 5280；独立 `npm run control` 默认 5182。端口冲突应选择新端口或正常停止已知进程。
+需要 Node 24+。`npm run dev` / `npm run dev:services` 启动独立 control 与 Vite；`npm run dev:legacy` 保留原文件存储模式。默认开发入口读取 `.env.local`，默认 UI 5180、control 5280；独立 `npm run control` 默认 5182。端口冲突应选择新端口或正常停止已知进程。
 
 从旧模式迁移：停止旧 Vite 和旧文件模式 MCP 的写入，备份 `.studio`，执行 `npm run control:migrate`，再启动 `npm run dev:services`。迁移器校验两个 JSON 源文件，复制到 `.studio/backups/migration-<id>`，一个事务导入 pipelines/servers，原文件保留。目标已有不同内容时拒绝导入；相同内容可重复执行。源文件损坏时保留原状并报错。
 
@@ -130,6 +130,6 @@ docker build -f deploy/studio.Dockerfile --target web -t cyrene-studio:web-devel
 npm run test:containers
 ```
 
-仓库根 `Dockerfile` 保留 Azure Container Apps 的 Navigator Web Host（80 端口及 Product 直连路由）；独立流水线工作台使用 `deploy/studio.Dockerfile` 的 `control`（5182）和 `web`（8080）目标。Compose 已指向后者。两个前端各有自己的依赖锁，Navigator 检查运行 `npm --prefix apps/web/services/navigator ci` 和 `npm run check:web:navigator`；流水线工作台根 TypeScript 构建不包含 Navigator 项目。
+根 `Dockerfile` 与 `deploy/studio.Dockerfile` 的 web 目标现在发布同一个 Studio 前端。根镜像端口为 80，通过 `STUDIO_CONTROL_ORIGIN` 连接独立 control；Compose 使用后者的 web/control 目标。Navigator 原有页面已迁入工作台，不再有独立 npm 锁或前端发布入口。根 TypeScript 和测试覆盖原模块。升级原独立 Navigator 部署必须同时配置 control，详见 [Navigator 迁移](navigator-monitoring.md)。
 
 Platform 在 Linux Docker 内使用仓库指定 Rust 1.96.1，`cargo test -p cy-execution-control -p cy-runtime-agent --locked` 的 53 项测试通过，包含真实 Kernel UDS/mTLS TCK；格式检查和严格 Clippy 通过。另显式执行 1 项默认忽略的真实 Docker 测试，验证启动器重开后容器 ID/启动时间不变、删除后不重建。真实 Runtime 基础镜像已本地构建，但容器测试使用测试 Lease 和不可达控制端点，未认证派发训练、使用 GPU 或发布镜像。这些证据不能替代双机工作流验收。LiteGraph eval 和前端 bundle 大小警告仍存在。未提交、未推送、未验证远端 CI 或部署到公司环境。

@@ -25,9 +25,13 @@ npm run dev
 
 打开 <http://127.0.0.1:5180>。开发服务器仅监听回环地址；端口占用时退出，不会终止已有进程。
 
-使用新增独立后端运行 `npm run dev:services`。切换前停止旧开发进程；需要继承原 `.studio/*.json` 时先执行 `npm run control:migrate`，原文件及备份保留。团队部署使用 PostgreSQL，详见上面的部署说明。
+`npm run dev` 默认启动独立控制服务与统一前端，`npm run dev:services` 为兼容别名；旧 JSON 桥接使用 `npm run dev:legacy`。切换前停止旧开发进程；需要继承原 `.studio/*.json` 时先执行 `npm run control:migrate`，原文件及备份保留。团队部署使用 PostgreSQL，详见上面的部署说明。
 
 团队 Compose 连接 Yield/Echo 时推荐挂载专用凭据文件：设置 `STUDIO_YIELD_EXECUTION_URL`、`STUDIO_YIELD_EXECUTION_TOKEN_FILE`、`STUDIO_ECHO_EXECUTION_URL` 和 `STUDIO_ECHO_EXECUTION_TOKEN_FILE`，再运行 `docker compose -f compose.yaml -f compose.executions.yaml up -d --build`。本地非容器运行也支持对应的 `STUDIO_*_EXECUTION_TOKEN_FILE`。同一 Product 不能同时配置 `TOKEN` 和 `TOKEN_FILE`，URL 与凭据必须成对出现。
+
+## Navigator 运行监控与业务页面
+
+右侧 Navigator 默认监控整个工作空间，支持当前流水线、按实际节点类型分类、运行历史、固定查看及展开到主区域。顶栏“运行”打开监控，“工具”打开迁入 Studio 的原有业务页面。新增只读 `monitoring.snapshot` HTTP/MCP 工具；详见 [监控、权限和部署迁移](docs/navigator-monitoring.md)。
 
 ## 可以尝试
 
@@ -102,7 +106,7 @@ npm run check
 | Path | Role |
 | --- | --- |
 | `apps/web/` | Primary browser client and shared web workbench |
-| `apps/web/services/<service>/` | Independently buildable web UI modules for Catalyst, Yield, Echo, Reactor, Exchange, and Navigator. Navigator is currently standalone; the other service screens remain in the shared workbench. |
+| `apps/web/services/<service>/` | Product-specific UI modules composed by Studio. Navigator management pages share the root build; other service directories retain their ownership boundaries. |
 | `apps/win/` | Secondary Windows native client and installer. MSIX packaging exists; the WinUI client and module downloader are not implemented. |
 | `apps/mac/` | Deferred native macOS client; no implementation is planned in the current phase. |
 | `apps/cli/` | Secondary command-line client; module commands are future work. |
@@ -111,7 +115,7 @@ npm run check
 
 The browser workbench is the current primary client. Shared web components live at the `apps/web/` layer, service-specific web applications live under `apps/web/services/`, and cross-platform client logic belongs in `packages/`. See [UI module and installer layout](docs/ui-module-layout.md) for the module boundaries, build commands, and planned download contract.
 
-Navigator can be checked independently with `npm run check:web:navigator`; the Windows installer crate has separate `npm run check:win:installer` and `npm run build:win:installer` commands. These are local package gates and are not part of the browser-only `npm run check` command.
+Navigator management pages and tests now belong to the unified Studio build. `npm run check:web:navigator` runs the former module tests only; `npm run check` includes them. Windows installer checks remain separate: `npm run check:win:installer` and `npm run build:win:installer`.
 
 ## 文件与边界
 
@@ -146,3 +150,5 @@ Client 是独立仓库，可单独打开 `../Cyrene-Client` 开发；Workspace �
 上游核心包的数字控件含 `eval`，构建会发出警告。本原型通过 React 表单编辑参数，不使用该数字控件，也关闭上游通用菜单、原生图导入与剪贴板入口。发布前仍需评估严格 CSP、无 eval 构建和依赖维护方案；当前构建通过不等于具备生产发布条件。
 
 上游及许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。原型契约版本为 `cyrene.pipeline.prototype.v1`，尚不是跨仓库冻结契约。
+
+MCP 接入、内置模型助手、工具调试及本地运行验收见 [MCP 工作台](docs/mcp-workbench.md)。

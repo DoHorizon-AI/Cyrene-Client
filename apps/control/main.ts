@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import { buildProfile } from "../../packages/build-control/contracts";
 import { GitHubBuildAdapter } from "../../packages/build-control/github";
 import { readConfiguredSecret } from "./secrets";
+import { validateProvider } from "./assistant";
 
 const mode = process.env.STUDIO_MODE === "team" ? "team" : "local";
 if (mode === "team" && !process.env.STUDIO_DATABASE_URL) throw new Error("Team mode requires STUDIO_DATABASE_URL (PostgreSQL)");
@@ -25,7 +26,10 @@ for (const name of ["yield", "echo"]) {
 }
 const buildProfiles = process.env.STUDIO_BUILD_PROFILES_FILE ? buildProfile.array().max(100).parse(JSON.parse(await readFile(process.env.STUDIO_BUILD_PROFILES_FILE, "utf8"))) : [];
 const githubToken = process.env.STUDIO_GITHUB_TOKEN_FILE ? (await readFile(process.env.STUDIO_GITHUB_TOKEN_FILE, "utf8")).trim() : process.env.STUDIO_GITHUB_TOKEN;
-const application = createControlApplication({ stores, mode, publicOrigins: (process.env.STUDIO_PUBLIC_ORIGINS ?? "http://127.0.0.1:5180").split(",").map(s => s.trim()), navigatorUrl: admittedTarget(process.env.STUDIO_NAVIGATOR_URL), localApiToken: process.env.STUDIO_LOCAL_API_TOKEN, loadPackages: () => loadNodePackages(process.env.STUDIO_NODE_PACKAGES_DIR), adapters, buildProfiles, buildAdapter: githubToken ? new GitHubBuildAdapter(() => githubToken) : undefined });
+const assistantUrl = process.env.STUDIO_ASSISTANT_URL?.trim(), assistantModel = process.env.STUDIO_ASSISTANT_MODEL?.trim();
+if (Boolean(assistantUrl) !== Boolean(assistantModel)) throw new Error("STUDIO_ASSISTANT_URL and STUDIO_ASSISTANT_MODEL are required together");
+const assistantProvider = assistantUrl && assistantModel ? validateProvider({ url: assistantUrl, model: assistantModel, apiKey: await readConfiguredSecret("STUDIO_ASSISTANT_API_KEY") }) : undefined;
+const application = createControlApplication({ stores, mode, assistantProvider, localDiagnostics: process.env.STUDIO_LOCAL_DIAGNOSTICS === "1", mcpReadOnly: process.env.STUDIO_MCP_READ_ONLY === "1", publicOrigins: (process.env.STUDIO_PUBLIC_ORIGINS ?? "http://127.0.0.1:5180").split(",").map(s => s.trim()), navigatorUrl: admittedTarget(process.env.STUDIO_NAVIGATOR_URL), localApiToken: process.env.STUDIO_LOCAL_API_TOKEN, loadPackages: () => loadNodePackages(process.env.STUDIO_NODE_PACKAGES_DIR), adapters, buildProfiles, buildAdapter: githubToken ? new GitHubBuildAdapter(() => githubToken) : undefined });
 await application.ready;
 if (process.argv.includes("--bootstrap-admin")) {
   if (!process.env.STUDIO_ADMIN_USER || !process.env.STUDIO_ADMIN_PASSWORD) throw new Error("Set STUDIO_ADMIN_USER and STUDIO_ADMIN_PASSWORD for this command only");
