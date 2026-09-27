@@ -12,4 +12,5 @@ Cyrene Client 文档索引与设计说明 / Documentation index and architecture
 | [`logging-and-errors.md`](logging-and-errors.md) | Cross-repository logging, error codes, and diagnostics specification / 跨仓日志、错误码与诊断规范 (草案 v0.1) |
 | [`client-architecture.md`](client-architecture.md) | Accepted unified client architecture, repository boundaries, native strategy, and implementation roadmap / 已接受的统一客户端架构、仓库边界、原生策略与实施路线 |
 | [`ui-module-layout.md`](ui-module-layout.md) | Platform and six-service UI module layout, independent build boundaries, and installer download contract / 平台与六服务 UI 模块目录、独立构建边界和安装器下载契约 |
+| [Workspace Azure deployment assets](../infrastructure/azure/README.md) | Client-owned review templates for Workspace Connector, Relay, data, Web BFF, and Web identity / Workspace Connector、Relay、数据、Web BFF 与 Web 身份的 Client review 模板 |
 | [`adr/`](adr/) | Architecture decision records / 架构决策记录 |
