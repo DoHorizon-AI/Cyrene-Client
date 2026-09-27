@@ -69,9 +69,10 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
     const width = Math.max(...nodes.map((n) => n.pos[0] + n.size[0])) - minX + 35;
     const height = Math.max(...nodes.map((n) => n.pos[1] + n.size[1])) - minY + 40;
     const c = current.canvas;
-    c.ds.scale = Math.min(1.15, c.canvas.width / width, c.canvas.height / height);
-    c.ds.offset[0] = -minX + (c.canvas.width / c.ds.scale - width) / 2;
-    c.ds.offset[1] = -minY + (c.canvas.height / c.ds.scale - height) / 2;
+    const bounds = c.canvas.getBoundingClientRect();
+    c.ds.scale = Math.min(1.15, bounds.width / width, bounds.height / height);
+    c.ds.offset[0] = -minX + (bounds.width / c.ds.scale - width) / 2;
+    c.ds.offset[1] = -minY + (bounds.height / c.ds.scale - height) / 2;
     c.setDirty(true, true);
   };
   useImperativeHandle(ref, () => ({
@@ -85,7 +86,8 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
     },
     add(type) {
       const c = live.current; if (!c || editorNodes(c.graph).length >= 200) return;
-      const n = appendNode(c.graph, createNode(type), { x: c.canvas.canvas.width / (2 * c.canvas.ds.scale) - c.canvas.ds.offset[0] - 120, y: c.canvas.canvas.height / (2 * c.canvas.ds.scale) - c.canvas.ds.offset[1] });
+      const bounds = c.canvas.canvas.getBoundingClientRect();
+      const n = appendNode(c.graph, createNode(type), { x: bounds.width / (2 * c.canvas.ds.scale) - c.canvas.ds.offset[0] - 120, y: bounds.height / (2 * c.canvas.ds.scale) - c.canvas.ds.offset[1] });
       c.canvas.selectNode(n); callbacks.current.onSelect(n.properties.document.id); emit.current();
     },
     update(node) {
@@ -118,6 +120,31 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
     canvas.allow_searchbox = false; canvas.show_info = false;
     canvas.title_text_font = "bold 14px sans-serif";
     canvas.inner_text_font = "12px sans-serif";
+    // LiteGraph treats zoom below 0.6 as a low-quality preview: it drops text
+    // and replaces circular ports with squares. Keep the detailed node drawing
+    // while leaving the actual view scale (and hit testing) unchanged.
+    const drawNode = canvas.drawNode.bind(canvas);
+    canvas.drawNode = (node, ctx) => {
+      const scale = canvas.ds.scale;
+      if (scale < 0.6) canvas.ds.scale = 0.6;
+      try { drawNode(node, ctx); }
+      finally { canvas.ds.scale = scale; }
+    };
+    canvas.centerOnNode = (node) => {
+      const bounds = canvas.canvas.getBoundingClientRect();
+      canvas.ds.offset[0] = -node.pos[0] - node.size[0] / 2 + bounds.width / (2 * canvas.ds.scale);
+      canvas.ds.offset[1] = -node.pos[1] - node.size[1] / 2 + bounds.height / (2 * canvas.ds.scale);
+      canvas.setDirty(true, true);
+    };
+    // Render at device resolution, but keep graph coordinates in CSS pixels.
+    // LiteGraph's canvas dimensions are otherwise used for both, so its
+    // drawing transform needs the backing-store ratio before the graph scale.
+    let pixelRatioX = 1, pixelRatioY = 1;
+    const toCanvasContext = canvas.ds.toCanvasContext.bind(canvas.ds);
+    canvas.ds.toCanvasContext = (ctx) => {
+      ctx.scale(pixelRatioX, pixelRatioY);
+      toCanvasContext(ctx);
+    };
     live.current = { graph, canvas };
     let disposed = false, queued = false;
     emit.current = () => {
@@ -143,11 +170,29 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
     canvas.onNodeMoved = emit.current;
     canvas.onSelectionChange = (selected) => callbacks.current.onSelect((Object.values(selected)[0] as ClientNode | undefined)?.properties.document.id ?? null);
     canvas.onShowNodePanel = (node) => callbacks.current.onSelect((node as ClientNode).properties.document.id);
-    const resize = () => { const box = container.current!.getBoundingClientRect(); canvas.resize(Math.floor(box.width), Math.floor(box.height)); };
+    const resize = () => {
+      const box = container.current!.getBoundingClientRect();
+      const ratio = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+      const width = Math.max(1, Math.round(box.width * ratio));
+      const height = Math.max(1, Math.round(box.height * ratio));
+      pixelRatioX = width / Math.max(1, box.width);
+      pixelRatioY = height / Math.max(1, box.height);
+      canvas.resize(width, height);
+    };
     const observer = new ResizeObserver(resize); observer.observe(container.current!);
+    let resolutionQuery: MediaQueryList;
+    const onResolutionChange = () => { resize(); watchResolution(); };
+    const watchResolution = () => {
+      resolutionQuery?.removeEventListener("change", onResolutionChange);
+      resolutionQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolutionQuery.addEventListener("change", onResolutionChange);
+    };
+    watchResolution();
+    window.addEventListener("resize", resize);
     resize(); fit();
     return () => {
-      disposed = true; observer.disconnect(); canvas.stopRendering(); canvas.unbindEvents();
+      disposed = true; observer.disconnect(); resolutionQuery.removeEventListener("change", onResolutionChange);
+      window.removeEventListener("resize", resize); canvas.stopRendering(); canvas.unbindEvents();
       graph.detachCanvas(canvas); graph.stop(); live.current = null;
       graph.onAfterChange = undefined; graph.onConnectionChange = undefined; graph.onNodeRemoved = undefined;
       graph.clear(); emit.current = () => {};
