@@ -13,4 +13,6 @@ Cyrene Client 文档索引与设计说明 / Documentation index and architecture
 | [`client-architecture.md`](client-architecture.md) | Accepted unified client architecture, repository boundaries, native strategy, and implementation roadmap / 已接受的统一客户端架构、仓库边界、原生策略与实施路线 |
 | [`ui-module-layout.md`](ui-module-layout.md) | Platform and six-service UI module layout, independent build boundaries, and installer download contract / 平台与六服务 UI 模块目录、独立构建边界和安装器下载契约 |
 | [Workspace Azure deployment assets](../infrastructure/azure/README.md) | Client-owned review templates for Workspace Connector, Relay, data, Web BFF, and Web identity / Workspace Connector、Relay、数据、Web BFF 与 Web 身份的 Client review 模板 |
+| [`workspace-bff-nginx.md`](workspace-bff-nginx.md) | Default-off, verified-HTTPS Nginx routing for same-origin Workspace BFF calls / 同源 Workspace BFF 的默认关闭与 HTTPS 校验 Nginx 路由 |
+| [`workspace-device-approval-web.md`](workspace-device-approval-web.md) | Independent root Web image, `/device-approval` deep-link hosting, and deployment dependencies / 独立根 Web 镜像、`/device-approval` 深层链接托管与部署依赖 |
 | [`adr/`](adr/) | Architecture decision records / 架构决策记录 |
