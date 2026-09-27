@@ -45,7 +45,9 @@ export function settingsBridge(target?: string): Plugin {
     const path = (req.url ?? "").split("?")[0];
     const respond = (status: number, payload: unknown) => { res.statusCode = status; res.setHeader("Content-Type", "application/json"); res.setHeader("Cache-Control", "no-store"); res.end(JSON.stringify(payload)); };
     if (path === "/studio-api/connection") { respond(200, { configured: !!target, target: target ?? null }); return; }
-    if (!path.startsWith("/api/")) { next(); return; }
+    // Match the proxy's entire raw prefix. Encoded separators such as /api%2f
+    // must reach the allowlist too, before an upstream decodes the path.
+    if (!path.startsWith("/api")) { next(); return; }
     if (!allowedSettingsRequest(req.method ?? "GET", path)) { respond(403, { code: "STUDIO_SETTINGS_ONLY" }); return; }
     if (!target) { respond(503, { code: "STUDIO_HOST_NOT_CONFIGURED" }); return; }
     next();

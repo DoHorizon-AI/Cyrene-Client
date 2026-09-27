@@ -8,11 +8,15 @@
 
 公司仓库：[DoHorizon-AI/Cyrene-Client](https://github.com/DoHorizon-AI/Cyrene-Client)。默认开发分支为 `develop`；GitHub Actions 负责测试和构建，目前不部署服务或发布 npm 包。
 
-**当前已接入节点设置客户端，流水线执行仍是本地预演。** 默认不配置服务地址；连接 Navigator Web Host 后，可读取节点资源设置，显式保存 Yield 草稿参数或另存 Echo 评估配置。不会申请 GPU、启动训练、部署模型或发送 Agent 消息。当前验证使用隔离接口测试，尚未完成真实运行环境联调。
+**已增加独立控制服务、团队存储、分容器部署、运行协调以及 Yield/Echo 私有执行提供方。完整的双服务器训练→评估链路仍需目标环境验收。** 默认仍可使用原有本地预演；真实运行会先通过 Product 适配器预检。Yield 还要求实际 Kernel 训练绑定，Echo 还要求受信的模型推理输入准备器；缺少任一依赖都会明确拒绝启动。节点设置继续通过 Navigator 提供的现有接口操作。部署、迁移、能力边界与剩余实施项见 [分布式控制服务](docs/distributed-control.md)。
+
+新增“构建 / 运行”菜单、持久化 GitHub Actions 构建任务、结果验证和显式节点版本启用；对应操作共享 HTTP/MCP 契约。需管理员配置真实构建仓库和凭据，使用方法见 [节点镜像构建](docs/node-builds.md)。
+
+“左侧栏 → 账号与安全”接入组织工作空间发现和设备接入审批，并可使用 Workspace BFF 读取节点设置。默认关闭组织身份功能；实际使用需要受信登录入口和已部署的后端提供方。接入范围、身份边界及配置见 [账号与安全](docs/workspace-security-integration.md)。
 
 ## 本地启动
 
-Node.js 22.12+，已在 Node.js 24 下验证。
+Node.js 24+；独立开发存储使用 Node 内置 SQLite。
 
 ```powershell
 git clone https://github.com/DoHorizon-AI/Cyrene-Client.git
@@ -22,6 +26,14 @@ npm run dev
 ```
 
 打开 <http://127.0.0.1:5180>。开发服务器仅监听回环地址；端口占用时退出，不会终止已有进程。
+
+`npm run dev` 默认启动独立控制服务与统一前端，`npm run dev:services` 为兼容别名；旧 JSON 桥接使用 `npm run dev:legacy`。切换前停止旧开发进程；需要继承原 `.studio/*.json` 时先执行 `npm run control:migrate`，原文件及备份保留。团队部署使用 PostgreSQL，详见上面的部署说明。
+
+团队 Compose 连接 Yield/Echo 时推荐挂载专用凭据文件：设置 `STUDIO_YIELD_EXECUTION_URL`、`STUDIO_YIELD_EXECUTION_TOKEN_FILE`、`STUDIO_ECHO_EXECUTION_URL` 和 `STUDIO_ECHO_EXECUTION_TOKEN_FILE`，再运行 `docker compose -f compose.yaml -f compose.executions.yaml up -d --build`。本地非容器运行也支持对应的 `STUDIO_*_EXECUTION_TOKEN_FILE`。同一 Product 不能同时配置 `TOKEN` 和 `TOKEN_FILE`，URL 与凭据必须成对出现。
+
+## Navigator 运行监控与业务页面
+
+右侧 Navigator 默认监控整个工作空间，支持当前流水线、按实际节点类型分类、运行历史、固定查看及展开到主区域。顶栏“运行”打开监控，“工具”打开迁入 Studio 的原有业务页面。新增只读 `monitoring.snapshot` HTTP/MCP 工具；详见 [监控、权限和部署迁移](docs/navigator-monitoring.md)。
 
 ## 可以尝试
 
@@ -96,7 +108,7 @@ npm run check
 | Path | Role |
 | --- | --- |
 | `apps/web/` | Primary browser client and shared web workbench |
-| `apps/web/services/<service>/` | Independently buildable web UI modules for Catalyst, Yield, Echo, Reactor, Exchange, and Navigator. Navigator is currently standalone; the other service screens remain in the shared workbench. |
+| `apps/web/services/<service>/` | Product-specific UI modules composed by Studio. Navigator management pages share the root build; other service directories retain their ownership boundaries. |
 | `apps/win/` | Secondary Windows native client and installer. MSIX packaging exists; the WinUI client and module downloader are not implemented. |
 | `apps/mac/` | Deferred native macOS client; no implementation is planned in the current phase. |
 | `apps/cli/` | Secondary command-line client; module commands are future work. |
@@ -105,14 +117,15 @@ npm run check
 
 The browser workbench is the current primary client. Shared web components live at the `apps/web/` layer, service-specific web applications live under `apps/web/services/`, and cross-platform client logic belongs in `packages/`. See [UI module and installer layout](docs/ui-module-layout.md) for the module boundaries, build commands, and planned download contract.
 
-Navigator can be checked independently with `npm run check:web:navigator`; the Windows installer crate has separate `npm run check:win:installer` and `npm run build:win:installer` commands. These are local package gates and are not part of the browser-only `npm run check` command.
+Navigator management pages and tests now belong to the unified Studio build. `npm run check:web:navigator` runs the former module tests only; `npm run check` includes them. Windows installer checks remain separate: `npm run check:win:installer` and `npm run build:win:installer`.
 
 ## 文件与边界
 
 | 路径 | 职责 |
 | --- | --- |
 | `apps/web/src/graph/` | LiteGraph 的渲染、交互及文档转换适配层 |
-| `apps/web/src/App.tsx` | 节点库、参数面板、草稿及预演界面 |
+| `apps/web/src/App.tsx` | 工作台界面组合、节点面板及本地预演 |
+| `apps/web/src/pipelines/usePipelineDocument.ts` | 文档状态、撤销、草稿持久化、导入导出及画布就绪检查 |
 | `apps/web/src/ide/` | 工具窗口、菜单、布局偏好、文件预览、页面入口与 MCP 上下文面板 |
 | `packages/pipeline-model/` | 原型文档模型、节点定义和独立于画布的校验 |
 | `packages/service-settings/` | 根据实际服务源码核对的设置响应与请求投影 |
@@ -132,10 +145,12 @@ Client 是独立仓库，可单独打开 `../Cyrene-Client` 开发；Workspace �
 
 ## 下一阶段
 
-先使用实际 Web Host 地址完成节点联调，并接入第一台运行 Platform Agent 的目标服务器。在已有草稿持久化、版本与 MCP 编辑入口之上建立执行计划和运行协调器，再逐个接入真实训练、评估、部署、云管理与 Agent 执行。
+执行计划、构建控制、运行协调器和 Yield/Echo 私有执行契约已经加入。下一阶段是生产装配：让 Product supervisor 调用 Platform 容器启动器、接通跨机制品传输和实际目标服务器，再验收双服务器训练→评估。
 
-本轮不包含运行编排、远端执行、云供应商管理、真实制品血缘、审批、任务重试、CRDT 协作与子图。草稿持久化、撤销与重做已实现；服务端重做栈可跨进程恢复，并会在新的普通写入后清空。示例的同一数据集连接用于展示端口，真实训练与评估需明确数据切分；评估完成不等于评估门禁通过，正式部署必须增加服务端检查。
+现有运行协调包括意图持久化、终态确认和有限重试；Yield/Echo 提供方测试不等于 GPU 或模型推理验收。云供应商管理、跨机制品平面、CRDT 与子图仍未实现；草稿撤销与重做按操作者隔离，保留其他人的独立修改。示例的同一数据集连接用于展示端口，真实训练与评估需明确数据切分；评估完成不等于评估门禁通过，正式部署必须增加服务端检查。
 
 上游核心包的数字控件含 `eval`，构建会发出警告。本原型通过 React 表单编辑参数，不使用该数字控件，也关闭上游通用菜单、原生图导入与剪贴板入口。发布前仍需评估严格 CSP、无 eval 构建和依赖维护方案；当前构建通过不等于具备生产发布条件。
 
 上游及许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。原型契约版本为 `cyrene.pipeline.prototype.v1`，尚不是跨仓库冻结契约。
+
+MCP 接入、内置模型助手、工具调试及本地运行验收见 [MCP 工作台](docs/mcp-workbench.md)。

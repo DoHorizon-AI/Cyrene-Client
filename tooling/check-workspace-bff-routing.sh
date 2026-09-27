@@ -20,6 +20,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 rendered_config=$(docker run --rm \
+    --add-host studio-control:127.0.0.1 \
     --add-host cyrene-catalyst:127.0.0.1 \
     --add-host cyrene-echo:127.0.0.1 \
     --add-host cyrene-reactor:127.0.0.1 \
@@ -46,6 +47,7 @@ start_container() {
     shift
     docker run --rm --detach \
         --name "$name" \
+        --add-host studio-control:127.0.0.1 \
         --add-host cyrene-catalyst:127.0.0.1 \
         --add-host cyrene-echo:127.0.0.1 \
         --add-host cyrene-reactor:127.0.0.1 \

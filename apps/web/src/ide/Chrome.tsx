@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-export type IconName = "files" | "nodes" | "servers" | "info" | "plugins" | "assistant" | "check" | "play" | "log" | "close" | "chevron" | "folder";
+export type IconName = "files" | "nodes" | "servers" | "account" | "info" | "plugins" | "assistant" | "check" | "play" | "log" | "close" | "chevron" | "folder";
 const paths: Record<IconName, ReactNode> = {
+  account: <><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a8 8 0 0 1 16 0v2" /></>,
   files: <><path d="M5 3h8l4 4v14H5z" /><path d="M13 3v5h4M8 12h6M8 16h6" /></>,
   nodes: <><rect x="3" y="3" width="6" height="6" rx="1" /><rect x="15" y="15" width="6" height="6" rx="1" /><path d="M9 6h9v9M6 9v9h9" /></>,
   servers: <><rect x="3" y="3" width="18" height="7" rx="2" /><rect x="3" y="14" width="18" height="7" rx="2" /><path d="M7 6.5h.01M7 17.5h.01M12 6.5h5M12 17.5h5" /></>,
@@ -53,23 +54,23 @@ export function ResizeHandle({ orientation, value, min, max, sign = 1, label, on
     onKeyDown={e => { const direction = ["ArrowRight", "ArrowDown"].includes(e.key) ? 1 : ["ArrowLeft", "ArrowUp"].includes(e.key) ? -1 : 0; if (direction) { e.preventDefault(); onChange(clamp(value + direction * sign * (e.shiftKey ? 40 : 16))); } }} />;
 }
 
-export type LeftTool = "files" | "nodes" | "servers";
-export type RightTool = "info" | "plugins" | "assistant";
-interface Layout { left: LeftTool | null; right: RightTool | null; bottom: boolean; leftWidth: number; rightWidth: number; bottomHeight: number }
+export type LeftTool = "files" | "nodes" | "servers" | "security";
+export type RightTool = "info" | "plugins" | "assistant" | "monitor";
+interface Layout { left: LeftTool | null; right: RightTool | null; bottom: boolean; leftWidth: number; rightWidth: number; bottomHeight: number; editorRatio: number }
 export function useIdeLayout() {
-  const defaults: Layout = { left: innerWidth < 1000 ? null : "nodes", right: innerWidth < 1000 ? null : "info", bottom: true, leftWidth: 240, rightWidth: 310, bottomHeight: 175 };
+  const defaults: Layout = { left: innerWidth < 1000 ? null : "nodes", right: innerWidth < 1000 ? null : "info", bottom: true, leftWidth: 240, rightWidth: 310, bottomHeight: 175, editorRatio: 0.55 };
   const [layout, setLayout] = useState<Layout>(() => {
     try {
       const s = JSON.parse(localStorage.getItem("cyrene.studio.layout.v1") ?? "null");
       if (!s) return defaults;
-      return { left: innerWidth < 1000 ? null : ["files", "nodes", "servers", null].includes(s.left) ? s.left : defaults.left, right: innerWidth < 1000 ? null : ["info", "plugins", "assistant", null].includes(s.right) ? s.right : defaults.right, bottom: typeof s.bottom === "boolean" ? s.bottom : true,
-        leftWidth: bounded(s.leftWidth, 210, 480, 240), rightWidth: bounded(s.rightWidth, 260, 520, 310), bottomHeight: bounded(s.bottomHeight, 100, 400, 175) };
+      return { left: innerWidth < 1000 ? null : ["files", "nodes", "servers", "security", null].includes(s.left) ? s.left : defaults.left, right: innerWidth < 1000 ? null : ["info", "plugins", "assistant", "monitor", null].includes(s.right) ? s.right : defaults.right, bottom: typeof s.bottom === "boolean" ? s.bottom : true,
+        leftWidth: bounded(s.leftWidth, 210, 480, 240), rightWidth: bounded(s.rightWidth, 260, 520, 310), bottomHeight: bounded(s.bottomHeight, 100, 400, 175), editorRatio: bounded(s.editorRatio, 0.25, 0.75, 0.55) };
     } catch { return defaults; }
   });
   useEffect(() => { try { localStorage.setItem("cyrene.studio.layout.v1", JSON.stringify(layout)); } catch { /* Layout preferences are optional. 布局偏好设置为可选项。 */ } }, [layout]);
   useEffect(() => {
     const resize = () => { if (innerWidth < 1000) setLayout(s => s.left && s.right ? { ...s, left: null } : s); };
-    window.addEventListener("resize", resize); return () => window.removeEventListener("resize", resize);
+    window.addEventListener("resize", resize); resize(); return () => window.removeEventListener("resize", resize);
   }, []);
   const left = (tool: LeftTool) => setLayout(s => ({ ...s, left: s.left === tool ? null : tool, ...(innerWidth < 1000 ? { right: null } : {}) }));
   const right = (tool: RightTool) => setLayout(s => ({ ...s, right: s.right === tool ? null : tool, ...(innerWidth < 1000 ? { left: null } : {}) }));

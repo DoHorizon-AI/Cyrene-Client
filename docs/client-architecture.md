@@ -27,11 +27,11 @@ The accepted direction consolidates user-facing service modules in Client while 
 | Path | Responsibility and status / 职责与状态 |
 | --- | --- |
 | `apps/web/` | Primary browser client. The web root owns shared browser UI and the current Pipeline IDE workbench; it is not yet the complete six-service client. / 浏览器端主客户端。Web 根目录承载共享浏览器 UI 和当前 Pipeline IDE 工作台；尚未覆盖完整的六服务客户端。 |
-| `apps/web/services/<service>/` | Independent web UI packages for Catalyst, Yield, Echo, Reactor, Exchange, and Navigator. Navigator is currently a standalone React + Vite package; the other service screens remain in the shared workbench and have not yet been split into installable modules. / Catalyst、Yield、Echo、Reactor、Exchange、Navigator 的独立 Web UI 包。Navigator 已是独立 React + Vite 包；其他服务界面仍在共享工作台内，尚未拆成可单独安装的模块。 |
+| `apps/web/services/<service>/` | Product-specific browser modules for Catalyst, Yield, Echo, Reactor, Exchange, and Navigator. Navigator management pages now share the Studio entrypoint and root build; service ownership remains separate from browser packaging. / Catalyst、Yield、Echo、Reactor、Exchange、Navigator 的业务界面模块。Navigator 管理页面现已统一为 Studio 入口和根构建；服务模块归属与前端发布边界分开。 |
 | `apps/win/` | Secondary Windows native client root. It currently contains the Rust installer crate, MSIX assets, and packaging script, but no WinUI application or service-module downloader. / Windows 原生客户端次优先级根目录。目前包含 Rust 安装器 crate、MSIX 资源和打包脚本，但没有 WinUI 应用或服务模块下载器。 |
 | `apps/mac/` | Deferred native macOS client root; implementation is outside the current phase. / 延后建设的 macOS 原生客户端根目录；当前阶段不实现。 |
 | `apps/cli/` | Secondary command-line client root for future service-oriented commands. / 后续按服务组织命令行客户端的次优先级根目录。 |
-| `apps/mcp/` | Local MCP stdio entry. The current entry exposes pipeline-editing tools; broader service and client capabilities remain future work. / 本机 MCP stdio 入口。当前入口提供流水线编辑工具；更广泛的服务和客户端能力仍属后续工作。 |
+| `apps/mcp/` | Shared stdio/HTTP MCP tools, context resources and prompts. / 共享 stdio/HTTP MCP 工具、上下文资源与提示，复用控制服务。 |
 | `packages/` | Cross-platform Client packages. Keep platform-neutral contracts and logic here; web-only shared UI belongs at the `apps/web/` layer. The planned native business library is `cyrene-client-core`. / 跨平台 Client 包。平台无关契约和逻辑放在此处；仅 Web 共用的 UI 放在 `apps/web/` 层。计划中的原生共享业务库为 `cyrene-client-core`。 |
 
 ### Cyrene-Navigator — harness and session authority / Harness 与会话权威
@@ -137,7 +137,7 @@ The following items are future work and are not claimed as implemented by this d
 以下事项属于未来工作，本文不声称它们已经实现：
 
 1. Promote the local Navigator console and Plugins provenance commits, then verify canonical remote read-back while preserving provenance and a single active development home. / 推送本地 Navigator 控制台与 Plugins 来源记录提交，并核验远端权威分支读回，同时保留来源信息并维持单一开发位置。
-2. Split the five service areas still integrated in the workbench into independent UI packages under `apps/web/services/`, keeping Navigator as a separate package. / 将仍集成在工作台中的五个服务界面拆为 `apps/web/services/` 下的独立 UI 包，并保留 Navigator 独立包。
+2. Browser integration now follows [Navigator monitoring](navigator-monitoring.md): one Studio shell and build, with lazily loaded management pages. Independently downloadable UI plugins remain future work. / 浏览器按已批准方案采用统一 Studio 外壳及构建，管理页面按需加载；独立下载的页面插件仍是后续工作。
 3. Specify and implement `cyrene-client-core`, its C ABI, Windows and macOS bindings, and contract-aligned API clients, session handling, state models, polling, and SSE distribution. / 设计并实现 `cyrene-client-core`、C ABI、Windows 与 macOS 绑定，以及契约对齐的 API client、session 处理、状态模型、轮询和 SSE 分发。
 4. Implement the Windows client and module downloader, then establish its stability gate before beginning the deferred SwiftUI client. / 实现 Windows 客户端和模块下载器，再建立稳定性验收门槛，之后才开始延后的 SwiftUI 客户端。
 5. Define and build the release manifest, version-compatibility checks, service UI bundles, and installer selection flow. / 定义并构建 release manifest、版本兼容检查、服务 UI bundle 和安装器选择流程。

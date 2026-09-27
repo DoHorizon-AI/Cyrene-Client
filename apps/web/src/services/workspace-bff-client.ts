@@ -8,6 +8,7 @@
 // │  · 默认关闭，校验可信发现结果、CSRF 与有界 JSON 响应                    │
 // └─────────────────────────────────────────────────────────────────────┘
 import { z } from "zod";
+import { approvalSchema, completionSchema, denialSchema, type DeviceApproval } from "./workspace-security-contracts";
 
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const SESSION_PATH = "/api/workspace/v1/session";
@@ -23,7 +24,7 @@ const problemSchema = z.object({
     "unauthenticated", "invalid_principal", "forbidden", "workspace_not_found",
     "invalid_request", "unsupported_media_type", "payload_too_large",
     "unsupported_operation", "internal_error", "csrf_failed", "rate_limited",
-    "invalid_upstream_response", "upstream_unavailable", "upstream_timeout",
+    "invalid_upstream_response", "upstream_unavailable", "upstream_timeout", "state_conflict",
   ]),
   traceId: z.string().regex(/^[0-9a-f]{32}$/).optional(),
 }).strict();
@@ -36,7 +37,7 @@ const sessionSchema = z.object({
   csrfToken: z.string().min(32).max(256).regex(/^v1\.[0-9]+\.[A-Za-z0-9_-]+$/),
 }).strict();
 
-type WorkspaceSession = z.infer<typeof sessionSchema>;
+export type WorkspaceSession = z.infer<typeof sessionSchema>;
 
 const workspaceListSchema = z.object({
   workspaces: z.array(z.object({
@@ -180,7 +181,12 @@ export class WorkspaceBffClient {
   // 配套 cookie 为 HttpOnly 并由浏览器管理；JSON token 仅保存在内存中。
   private csrfToken: string | null = null;
   private sessionScope: Pick<WorkspaceSession, "issuer" | "subject" | "organizationId"> | null = null;
+  private generation = 0;
+  private session: WorkspaceSession | null = null;
   readonly enabled: boolean;
+
+  get identity() { const s = this.session; return s ? { issuer: s.issuer, subject: s.subject, organizationId: s.organizationId, expiresAt: s.expiresAt } : null; }
+  reset() { this.clearSessionState(); }
 
   constructor(options: ClientOptions = {}) {
     this.enabled = options.enabled ?? envGateEnabled();
@@ -195,11 +201,13 @@ export class WorkspaceBffClient {
   async discoverWorkspaces(signal?: AbortSignal): Promise<readonly WorkspaceSummary[]> {
     this.requireEnabled();
     this.clearSessionState();
+    const generation = this.generation;
     try {
       const session = await this.readSession(signal);
       const discoveryResult = workspaceListSchema.safeParse(await this.getJson(WORKSPACES_PATH, signal));
       if (!discoveryResult.success) throw new WorkspaceBffError("invalid_response", "Workspace BFF 发现响应不符合契约。", 502);
       const discovery = discoveryResult.data;
+      if (generation !== this.generation || signal?.aborted) throw new WorkspaceBffError("session_changed", "Workspace discovery was superseded.");
       if (discovery.workspaces.some((workspace) => workspace.organizationId !== session.organizationId)) {
         throw new WorkspaceBffError("workspace_discovery_invalid", "Workspace 发现结果与已验证 session 的组织范围不符。", 502);
       }
@@ -214,9 +222,10 @@ export class WorkspaceBffClient {
         organizationId: session.organizationId,
       };
       this.csrfToken = session.csrfToken;
+      this.session = session;
       return discovery.workspaces;
     } catch (error) {
-      this.clearSessionState();
+      if (generation === this.generation) this.clearSessionState();
       throw error;
     }
   }
@@ -264,8 +273,8 @@ export class WorkspaceBffClient {
     const headers = new Headers({ Accept: "application/json, application/problem+json", "traceparent": traceparent() });
     if (body !== undefined) headers.set("Content-Type", "application/json");
     if (options.idempotencyKey !== undefined) headers.set("Idempotency-Key", options.idempotencyKey);
+    await this.refreshCsrfToken(options.signal);
     if (commandOperations.has(operation)) {
-      await this.refreshCsrfToken(options.signal);
       if (!this.csrfToken) throw new WorkspaceBffError("csrf_failed", "Workspace BFF 未提供有效 CSRF token；命令未发送。", 403);
       headers.set("X-CSRF-Token", this.csrfToken);
     }
@@ -285,9 +294,12 @@ export class WorkspaceBffClient {
     };
     // The browser supplies Origin on same-origin POST; JavaScript cannot set this forbidden header.
     // 同源 POST 的 Origin 由浏览器自动附加；JavaScript 不能手动设置此受限 header。
+    const generation = this.generation;
     const response = await this.send(path, init, options.signal);
     const payload = await readBoundedJson(response);
+    if (generation !== this.generation || options.signal?.aborted || !this.discoveredWorkspaceIds.has(workspace)) throw new WorkspaceBffError("session_changed", "Workspace session changed.");
     if (!response.ok) {
+      if (response.status === 401) this.clearSessionState();
       const problem = problemSchema.safeParse(payload);
       if (problem.success && problem.data.status === response.status) {
         throw new WorkspaceBffError(problem.data.code, problem.data.detail ?? problem.data.title, response.status, problem.data.traceId);
@@ -337,10 +349,12 @@ export class WorkspaceBffClient {
   private async readSession(signal?: AbortSignal): Promise<WorkspaceSession> {
     const result = sessionSchema.safeParse(await this.getJson(SESSION_PATH, signal));
     if (!result.success) throw new WorkspaceBffError("invalid_response", "Workspace BFF session 响应不符合契约。", 502);
+    if (Date.parse(result.data.expiresAt) <= Date.now()) throw new WorkspaceBffError("unauthenticated", "Workspace session expired.", 401);
     return result.data;
   }
 
   private async refreshCsrfToken(signal?: AbortSignal): Promise<void> {
+    const generation = this.generation;
     const discoveredScope = this.sessionScope;
     if (!discoveredScope) {
       this.clearSessionState();
@@ -349,22 +363,78 @@ export class WorkspaceBffClient {
 
     try {
       const session = await this.readSession(signal);
+      if (generation !== this.generation || signal?.aborted) throw new WorkspaceBffError("session_changed", "Workspace session changed.");
       if (session.issuer !== discoveredScope.issuer
         || session.subject !== discoveredScope.subject
         || session.organizationId !== discoveredScope.organizationId) {
         throw new WorkspaceBffError("session_changed", "登录身份或组织范围已变化；请重新发现并选择 Workspace。", 0);
       }
       this.csrfToken = session.csrfToken;
+      this.session = session;
     } catch (error) {
-      this.clearSessionState();
+      if (generation === this.generation) this.clearSessionState();
       throw error;
     }
   }
 
   private clearSessionState(): void {
+    this.generation++;
     this.discoveredWorkspaceIds.clear();
+    this.session = null;
     this.csrfToken = null;
     this.sessionScope = null;
+  }
+
+  private scope(workspaceId: string) {
+    this.requireEnabled();
+    if (!this.sessionScope || !this.discoveredWorkspaceIds.has(workspaceId)) throw new WorkspaceBffError("workspace_not_discovered", "Select a discovered Workspace.");
+    return { organizationId: this.sessionScope.organizationId, workspaceId };
+  }
+  private async securityPost<T>(path: string, body: unknown, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
+    await this.refreshCsrfToken(signal);
+    const generation = this.generation;
+    const response = await this.send(path, { method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error",
+      headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": this.csrfToken!, traceparent: traceparent() }, body: JSON.stringify(body),
+    }, signal);
+    const payload = await readBoundedJson(response);
+    if (generation !== this.generation || signal?.aborted) throw new WorkspaceBffError("session_changed", "Workspace session changed.");
+    if (!response.ok) {
+      const problem = problemSchema.safeParse(payload);
+      if (response.status === 401) this.clearSessionState();
+      throw new WorkspaceBffError(problem.success ? problem.data.code : "product_error", `Workspace request failed (HTTP ${response.status}).`, response.status, problem.success ? problem.data.traceId : undefined);
+    }
+    const parsed = schema.safeParse(payload);
+    if (!parsed.success) throw new WorkspaceBffError("invalid_response", "Workspace security response does not match its contract.", 502);
+    return parsed.data;
+  }
+  async beginDeviceApproval(workspaceId: string, userCode: string, signal?: AbortSignal) {
+    const scope = this.scope(workspaceId);
+    const user_code = z.string().trim().min(1).max(128).regex(/^[^\u0000-\u001f\u007f]+$/).parse(userCode);
+    const result = await this.securityPost("/api/workspace/v1/device-authorizations/approval-challenges", { userCode: user_code, scope }, approvalSchema, signal);
+    this.assertScope(result.authorization.scope, scope);
+    const expiry = Date.parse(result.challengeExpiresAt);
+    if (expiry <= Date.now() || expiry > Date.parse(result.authorization.expiresAt) || expiry > Date.parse(this.session!.expiresAt)) throw new WorkspaceBffError("invalid_response", "Device challenge expiry is invalid.", 502);
+    return result;
+  }
+  async completeDeviceApproval(approval: DeviceApproval, webauthnAssertion?: unknown, signal?: AbortSignal) {
+    approvalSchema.parse(approval);
+    const scope = this.scope(approval.authorization.scope.workspaceId);
+    this.assertScope(approval.authorization.scope, scope);
+    const result = await this.securityPost(`/api/workspace/v1/device-authorizations/approval-challenges/${encodeURIComponent(approval.approvalId)}/complete`, webauthnAssertion === undefined ? {} : { webauthnAssertion }, completionSchema, signal);
+    this.assertScope(result.authorization.scope, scope);
+    if (JSON.stringify(result.authorization) !== JSON.stringify(approval.authorization) || result.approvedBy.issuer !== this.session!.issuer || result.approvedBy.subject !== this.session!.subject) throw new WorkspaceBffError("invalid_response", "Approval identity changed.", 502);
+    return result;
+  }
+  async denyDeviceAuthorization(workspaceId: string, userCode: string, signal?: AbortSignal) {
+    const scope = this.scope(workspaceId);
+    const code = z.string().trim().min(1).max(128).regex(/^[^\u0000-\u001f\u007f]+$/).parse(userCode);
+    const result = await this.securityPost("/api/workspace/v1/device-authorizations/denials", { userCode: code, scope }, denialSchema, signal);
+    this.assertScope(result.authorization.scope, scope);
+    if (result.deniedBy.issuer !== this.session!.issuer || result.deniedBy.subject !== this.session!.subject) throw new WorkspaceBffError("invalid_response", "Denial identity changed.", 502);
+    return result;
+  }
+  private assertScope(actual: { organizationId: string; workspaceId: string }, expected: { organizationId: string; workspaceId: string }) {
+    if (actual.organizationId !== expected.organizationId || actual.workspaceId !== expected.workspaceId) throw new WorkspaceBffError("invalid_response", "Device authorization scope changed.", 502);
   }
 
   private async send(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {

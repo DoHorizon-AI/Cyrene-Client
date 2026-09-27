@@ -1,0 +1,11 @@
+.git
+.studio
+node_modules
+**/node_modules
+**/dist
+**/target
+dist
+test-results
+.env
+.env.*
+!.env.example

@@ -1,0 +1,18 @@
+# Optional GitHub build integration. The base stack works without these secrets.
+services:
+  studio-control:
+    environment:
+      STUDIO_BUILD_PROFILES_FILE: /run/studio/build-profiles.json
+      STUDIO_GITHUB_TOKEN_FILE: /run/secrets/studio_github_token
+    volumes:
+      - type: bind
+        source: ${STUDIO_BUILD_PROFILES_FILE:?Set the host build profile JSON path}
+        target: /run/studio/build-profiles.json
+        read_only: true
+        bind:
+          create_host_path: false
+    secrets:
+      - studio_github_token
+secrets:
+  studio_github_token:
+    file: ${STUDIO_GITHUB_TOKEN_FILE:?Set a private GitHub token file path}

@@ -26,6 +26,11 @@ it("forwards settings over a real HTTP bridge, retains auth headers/cookies, and
     expect(received).toEqual([{ method: "PATCH", url: "/api/v1/yield/training-drafts/example", cookie: "cyrene_session=fixture", csrf: "fixture-token", body: '{"parameters":{"epochs":4}}' }]);
     const denied = await fetch(`${origin}/api/v1/yield/training-drafts/example/actions/start`, { method: "POST" });
     expect(denied.status).toBe(403); expect(received).toHaveLength(1);
+    for (const prefix of ["/api%2f", "/api%2F", "/api%252f", "/api%5c", "/api-extra/"]) {
+      const bypass = await fetch(`${origin}${prefix}v1/yield/training-drafts/example/actions/start`, { method: "POST" });
+      expect(bypass.status, prefix).toBe(403);
+      expect(received).toHaveLength(1);
+    }
     await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
     const offline = await fetch(`${origin}/api/v1/yield/training-drafts`);
     expect(offline.status).toBe(502); expect(await offline.json()).toEqual({ code: "STUDIO_HOST_UNAVAILABLE" });

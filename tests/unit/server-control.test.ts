@@ -22,6 +22,24 @@ function request(name: string, input: object, key?: string) { return { name, inp
 const register = (control: ServerControl, key = "registration-1") => control.execute(request("servers.register", { workspaceId: "local", spec }, key), actor) as Promise<ServerRecord>;
 
 describe("transport-independent server control", () => {
+  it("resolves only fresh, same-workspace Node identities and rejects registration races", async () => {
+    let afterRead: (() => Promise<void>) | undefined;
+    const { control } = await fixture(new Map([["office-01", { read: async server => {
+      await afterRead?.();
+      return { serverId: server.id, state: "ONLINE", observedAt: new Date().toISOString(), nodeRef: { nodeId: "node-01", epoch: "9007199254740993" }, capabilities: [], message: "connected" };
+    } }]]));
+    const first = await register(control);
+    const input = { workspaceId: "local", serverId: first.id };
+    expect(await control.execute(request("servers.resolve", input), actor)).toEqual({ serverId: first.id, revision: 1, nodeRef: { nodeId: "node-01", epoch: "9007199254740993" } });
+    await expect(control.execute(request("servers.resolve", { ...input, workspaceId: "other" }), { ...actor, workspaceIds: ["other"] })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    afterRead = async () => { await control.execute(request("servers.archive", { ...input, expectedRevision: 1 }, "archive-during-observation"), actor); };
+    await expect(control.execute(request("servers.resolve", input), actor)).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    await expect(control.execute(request("servers.resolve", input), actor)).rejects.toMatchObject({ code: "ARCHIVED" });
+  });
+  it("refuses execution resolution for an unconnected registration", async () => {
+    const { control } = await fixture(); const server = await register(control);
+    await expect(control.execute(request("servers.resolve", { workspaceId: "local", serverId: server.id }), actor)).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+  });
   it("persists registration and idempotency receipts across service recreation", async () => {
     const { path, control, store } = await fixture();
     const first = await register(control);
@@ -84,6 +102,13 @@ describe("transport-independent server control", () => {
     const { control } = await fixture(); const first = await register(control);
     await control.execute(request("servers.archive", { workspaceId: "local", serverId: first.id, expectedRevision: 1 }, "archive"), actor);
     expect(await control.execute(request("servers.events", { workspaceId: "local", after: 1 }), actor)).toMatchObject({ items: [{ sequence: 2, command: "servers.archive" }], nextCursor: 2 });
+  });
+  it("serializes concurrent writes made through one local store", async () => {
+    const { control } = await fixture();
+    const records = await Promise.all([register(control, "concurrent-1"), register(control, "concurrent-2")]);
+    expect(new Set(records.map(record => record.id)).size).toBe(2);
+    const listed = await control.execute(request("servers.list", { workspaceId: "local" }), actor) as { items: ServerRecord[] };
+    expect(listed.items).toHaveLength(2);
   });
   it("roundtrips compute target refs without leaking connection details", async () => {
     const p = examplePipeline(); p.nodes.find(n => n.type === "compute")!.settingsBinding = { kind: "server-registration", resourceId: "registration-id", workspaceId: "local" };

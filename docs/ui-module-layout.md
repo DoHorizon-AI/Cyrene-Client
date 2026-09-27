@@ -6,14 +6,14 @@
 apps/
 ├── web/                 # Primary browser client; shared shell and browser-only components
 │   ├── src/             # Current shared Pipeline IDE/workbench
-│   └── services/        # One independently buildable UI package per service
+│   └── services/        # Product-specific browser modules, composed by Studio
 ├── win/                 # Secondary Windows native client and its installer/downloader
 │   ├── crates/          # Rust native installer components
 │   ├── installer/       # MSIX manifest, assets, and packaging script
 │   └── services/        # Reserved Windows service UI module roots
 ├── mac/                 # Deferred native macOS client (services/ roots reserved)
 ├── cli/                 # Secondary command-line client (services/ roots reserved)
-└── mcp/                 # Local MCP stdio adapter
+└── mcp/                 # Shared stdio/HTTP MCP adapter
 
 packages/                # Shared Client packages and platform-neutral logic
 ```
@@ -31,27 +31,17 @@ packages/                # Shared Client packages and platform-neutral logic
 | Echo | `apps/web/services/echo/` | No standalone package yet; current workbench contains the integrated evaluation configuration workflow. |
 | Reactor | `apps/web/services/reactor/` | No standalone package yet; current workbench contains the integrated model and deployment settings. |
 | Exchange | `apps/web/services/exchange/` | No standalone package yet; gateway surfaces remain part of the broader client workflow. |
-| Navigator | `apps/web/services/navigator/` | Standalone React + TypeScript + Vite package, served through the Navigator same-origin Web Host. |
+| Navigator | `apps/web/services/navigator/` | Management pages composed by Studio; no independent browser shell or bundle. |
 
-The first five paths currently contain status READMEs to reserve clear module ownership without implying that a package or bundle already exists. Navigator is the only service with an independently buildable browser package today.
+The first five paths reserve module ownership. Navigator's management components remain under `services/navigator/src`, while `src/products` provides the Studio session wrapper and scoped style. The workflow monitor lives in `src/monitoring`; shared monitoring contracts and aggregation live in `packages/monitoring`.
 
-前五个路径目前只放状态说明，用于明确模块归属，不代表已经有独立 package 或 bundle。Navigator 是目前唯一可独立构建的浏览器服务包。
+前五个路径保留模块归属。Navigator 原有管理组件仍在 `services/navigator/src`，`src/products` 提供 Studio 页面会话与作用域样式；流程监控位于 `src/monitoring`，聚合及契约位于 `packages/monitoring`。
 
 ## Build boundaries / 构建边界
 
-The root `npm run check` validates the shared browser workbench. Navigator has its own package and lockfile, with root shortcuts:
+The browser has one lockfile, one entrypoint and one `dist/` output. Product pages are loaded on demand. `npm run dev` starts both Studio control and the browser shell; `dev:legacy` retains the limited JSON bridge. `npm run check` includes the former Navigator tests. The compatibility command `build:web:navigator` builds Studio; `check:web:navigator` runs only the former module's tests.
 
-根目录 `npm run check` 验证共享浏览器工作台。Navigator 有独立 package 和 lockfile，根目录提供快捷命令：
-
-```bash
-npm run dev:web:navigator
-npm run build:web:navigator
-npm run check:web:navigator
-```
-
-As each service UI is extracted, it should keep its own dependency manifest and build output, while consuming shared web components and packages through explicit package dependencies. Building one service module must not require packaging the other five. The shared web shell can compose selected modules at runtime or load their generated bundles according to the release manifest.
-
-各服务 UI 拆分后，应保留独立依赖清单和构建产物，并通过显式 package 依赖使用共享 Web 组件和共享包。构建一个服务模块不应要求同时打包其他五个模块。共享 Web 外壳可在运行时组合选定模块，或依据 release manifest 加载各模块构建产物。
+浏览器采用统一锁文件、入口和构建产物，业务页面按需加载。统一浏览器不改变后端服务的独立部署，也不意味着当前已支持下载执行第三方页面插件。旧 Navigator 地址、认证和容器迁移见 [Navigator monitoring](navigator-monitoring.md)。
 
 Windows installer crate checks can run with `npm run check:win:installer`; `npm run build:win:installer` builds the current Rust workspace. The existing MSIX workflow builds release binaries and packages them using `apps/win/installer/package-msix.ps1`. This package currently provides installer infrastructure only: it does not yet download or install independently versioned service UI bundles.
 
@@ -59,9 +49,9 @@ Windows 安装器 crate 可使用 `npm run check:win:installer` 检查，`npm ru
 
 ## Download and update contract / 下载与更新契约
 
-The target release flow is:
+The future native/service-module release flow is (separate from the current unified browser build):
 
-目标发布流程：
+未来原生/服务模块发布流程（不替代当前统一浏览器构建）：
 
 1. Build and publish one immutable artifact per service, platform, and version; publish common platform assets separately.
 2. Publish a signed release manifest that identifies each artifact, its platform/architecture, service version, supported API contract versions, byte length, SHA-256 digest, and download location.

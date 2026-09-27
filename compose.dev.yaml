@@ -1,0 +1,14 @@
+services:
+  studio-web:
+    build:
+      context: .
+      target: build
+    working_dir: /app
+    command: [node, node_modules/vite/bin/vite.js, --host, 0.0.0.0, --port, "8080"]
+    environment:
+      STUDIO_CONTROL_URL: http://studio-control:5182
+    volumes:
+      - .:/app
+      - studio-node-modules:/app/node_modules
+volumes:
+  studio-node-modules:

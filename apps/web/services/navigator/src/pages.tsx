@@ -36,7 +36,9 @@ import {
   type SystemStatus,
   type TrainingParametersInput,
 } from "./api";
+import { studioProductFetch } from "../../../src/products/transport";
 import { pushRoute } from "./router";
+import { useI18n } from "./i18n";
 
 export interface PageProps {
   api: NavigatorApi;
@@ -51,6 +53,7 @@ interface SettingsPageProps extends PageProps {
  * 展示 Workspace 级状态卡片和分别刷新的服务观测信息。
  */
 export function OverviewPage({ api }: PageProps) {
+  const { t } = useI18n();
   const [reloadKey, setReloadKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [system, setSystem] = useState<SystemStatus | null>(null);
@@ -95,14 +98,14 @@ export function OverviewPage({ api }: PageProps) {
   const refresh = () => setReloadKey((value) => value + 1);
 
   return (
-    <div className="page-stack">
+    <div className="page-stack overview-page">
       <PageHeader
-        eyebrow="Workspace observatory / 00"
-        title="The state of the stack."
-        description="Navigator reads each owning Product directly. This surface is a pulse, not a second source of truth."
+        eyebrow="System / Overview"
+        title={t("Workspace status")}
+        description="Current service availability and host resources reported by the configured Product endpoints."
         action={
-          <Button onClick={refresh} disabled={loading} aria-label="Refresh overview">
-            {loading ? "Reading..." : "Refresh pulse"}
+          <Button onClick={refresh} disabled={loading} aria-label={t("Refresh overview")}>
+            {loading ? t("Refreshing...") : t("Refresh")}
           </Button>
         }
       />
@@ -111,35 +114,35 @@ export function OverviewPage({ api }: PageProps) {
         <MetricCard
           label="Model imports"
           value={loading ? "..." : count(models?.length ?? null)}
-          detail={models === null ? "Reactor unavailable" : "Reactor-owned"}
+          detail={models === null ? "Reactor unavailable" : "Reactor"}
           accent="lime"
         />
         <MetricCard
           label="Dataset containers"
           value={loading ? "..." : count(datasets?.length ?? null)}
-          detail={datasets === null ? "Catalyst unavailable" : "Catalyst-owned"}
+          detail={datasets === null ? "Catalyst unavailable" : "Catalyst"}
           accent="blue"
         />
         <MetricCard
           label="Training drafts"
           value={loading ? "..." : count(drafts?.length ?? null)}
-          detail={drafts === null ? "Yield unavailable" : "Yield-owned"}
+          detail={drafts === null ? "Yield unavailable" : "Yield"}
           accent="orange"
         />
         <MetricCard
           label="Deployments"
           value={loading ? "..." : count(deployments?.length ?? null)}
-          detail={deployments === null ? "Reactor unavailable" : "Reactor-owned"}
+          detail={deployments === null ? "Reactor unavailable" : "Reactor"}
           accent="gray"
         />
       </div>
 
       {loading ? (
-        <StateBlock kind="loading" title="Reading Product surfaces" detail="Navigator is asking each configured owner for a fresh projection." />
+        <StateBlock kind="loading" title={t("Refreshing status")} detail="Reading the host and configured Product endpoints." />
       ) : (
         <div className="overview-grid">
           <Panel
-            title="Service reachability"
+            title={t("Services")}
             meta={<StatusPill value={system?.status ?? "UNKNOWN"} />}
           >
             <div className="service-list">
@@ -151,24 +154,24 @@ export function OverviewPage({ api }: PageProps) {
               ].map(([label, available]) => (
                 <div className="service-row" key={String(label)}>
                   <span className={`service-dot ${available ? "service-dot--good" : "service-dot--bad"}`} aria-hidden="true" />
-                  <span>{label}</span>
-                  <strong>{available ? "Available" : "Needs attention"}</strong>
+                  <span>{t(String(label))}</span>
+                  <strong>{t(available ? "Available" : "Unavailable")}</strong>
                 </div>
               ))}
             </div>
             <div className="panel-footnote">
               {system
-                ? `${system.proxyPrefixes.length} proxy paths configured | observed ${formatDate(system.observedAt)}`
-                : "The Web Host status endpoint did not return a projection."}
+                ? `${system.proxyPrefixes.length} routes · Updated ${formatDate(system.observedAt)}`
+                : "Host status is unavailable."}
             </div>
           </Panel>
 
-          <Panel title="Attention queue" meta={<span className="mono-label">LIVE READS</span>}>
+          <Panel title={t("Issues")} meta={<span className="mono-label">{failures.length}{t("FAILED")}</span>}>
             {failures.length === 0 ? (
               <StateBlock
                 kind="empty"
-                title="No blocked reads"
-                detail="Every configured overview read answered. Resource state still belongs to its owning Product."
+                title={t("No reported issues")}
+                detail="All configured status requests completed successfully."
               />
             ) : (
               <div className="attention-list">
@@ -177,7 +180,7 @@ export function OverviewPage({ api }: PageProps) {
                     <span className="attention-item__icon" aria-hidden="true">!</span>
                     <div>
                       <strong>{failure}</strong>
-                      <p>Open the owning page and retry after checking its Product binding.</p>
+                      <p>{t("Check the service endpoint and its current binding, then refresh.")}</p>
                     </div>
                   </div>
                 ))}
@@ -186,7 +189,7 @@ export function OverviewPage({ api }: PageProps) {
           </Panel>
 
           <Panel
-            title="GPU & Accelerators"
+            title={t("Accelerators")}
             meta={<StatusPill value={system?.gpu?.available ? "AVAILABLE" : "UNAVAILABLE"} />}
           >
             {system?.gpu?.available && system.gpu.gpus && system.gpu.gpus.length > 0 ? (
@@ -195,21 +198,21 @@ export function OverviewPage({ api }: PageProps) {
                   <div className="service-row" key={idx}>
                     <span className="service-dot service-dot--good" aria-hidden="true" />
                     <span><strong>{gpu.name}</strong></span>
-                    <span>{gpu.usedMib} / {gpu.totalMib} MiB ({gpu.utilizationPct}% util)</span>
+                    <span>{gpu.usedMib} / {gpu.totalMib}{t("MiB (")}{gpu.utilizationPct}{t("% util)")}</span>
                   </div>
                 ))}
               </div>
             ) : (
               <StateBlock
                 kind="empty"
-                title="No GPU detected"
-                detail={system?.gpu?.available === false ? "nvidia-smi unavailable or no supported GPU found." : "Hardware information not reported."}
+                title={t("No accelerator data")}
+                detail={system?.gpu?.available === false ? "nvidia-smi is unavailable or no supported GPU was found." : "The host did not report hardware information."}
               />
             )}
           </Panel>
 
           <Panel
-            title="Storage & Disk"
+            title={t("Storage")}
             meta={<StatusPill value={system?.disk?.available !== false ? "MOUNTED" : "UNAVAILABLE"} />}
           >
             {system?.disk?.totalGib ? (
@@ -220,12 +223,12 @@ export function OverviewPage({ api }: PageProps) {
                 <Detail label="Utilization" value={`${system.disk.usedPct ?? "-"}%`} />
               </dl>
             ) : (
-              <StateBlock kind="empty" title="Storage usage unavailable" detail="Filesystem statistics not reported by host." />
+              <StateBlock kind="empty" title={t("Storage usage unavailable")} detail="Filesystem statistics not reported by host." />
             )}
           </Panel>
 
           <Panel
-            title="Workspace blockers"
+            title={t("Readiness")}
             meta={
               system?.blockers && system.blockers.length > 0 ? (
                 <StatusPill value="BLOCKED" />
@@ -249,15 +252,15 @@ export function OverviewPage({ api }: PageProps) {
             ) : (
               <StateBlock
                 kind="empty"
-                title="No blockers detected"
-                detail="All system requirements, GPU resources, disk space, and service dependencies are ready."
+                title={t("No reported blockers")}
+                detail="The host status endpoint did not report any readiness blockers."
               />
             )}
           </Panel>
 
           <Panel
-            title="Installed plugins"
-            meta={<span className="mono-label">RUNTIME ENGINES</span>}
+            title={t("Installed plugins")}
+            meta={<span className="mono-label">{t("RUNTIME")}</span>}
           >
             {system?.plugins && system.plugins.length > 0 ? (
               <div className="service-list">
@@ -278,7 +281,7 @@ export function OverviewPage({ api }: PageProps) {
             ) : (
               <StateBlock
                 kind="empty"
-                title="No plugins detected"
+                title={t("No plugins detected")}
                 detail="No runtime plugins currently registered or reported by host."
               />
             )}
@@ -294,6 +297,7 @@ export function OverviewPage({ api }: PageProps) {
  * 提供 Reactor 模型导入、binding 选择、校验依据和导入表单。
  */
 export function ModelsPage({ api }: PageProps) {
+  const { t } = useI18n();
   const [reloadKey, setReloadKey] = useState(0);
   const [models, setModels] = useState<JsonRecord[] | null>(null);
   const [bindings, setBindings] = useState<JsonRecord[]>([]);
@@ -318,7 +322,7 @@ export function ModelsPage({ api }: PageProps) {
     void Promise.allSettled([
       api.getModelImports(),
       api.getServingBindings(),
-      api.getCredentials(),
+      api.getCredentials().catch(() => []),
     ]).then(([modelResult, bindingResult, credentialResult]) => {
       if (!active) {
         return;
@@ -397,22 +401,22 @@ export function ModelsPage({ api }: PageProps) {
     <div className="page-stack">
       <PageHeader
         eyebrow="Reactor / 01"
-        title="Models with receipts."
+        title={t("Models with receipts.")}
         description="Import a pinned source, then read Reactor's validation evidence before handing the artifact onward."
-        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>Refresh models</Button>}
+        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>{t("Refresh models")}</Button>}
       />
 
-      <Panel title="Import a model" meta={<span className="mono-label">TRUST REMOTE CODE: OFF</span>}>
+      <Panel title={t("Import a model")} meta={<span className="mono-label">{t("TRUST REMOTE CODE: OFF")}</span>}>
         <form className="form-grid" onSubmit={submitImport}>
           <Field label="Display name">
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Qwen 2.5 1.5B Instruct" />
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("Qwen 2.5 1.5B Instruct")} />
           </Field>
           <Field label="Serving binding" hint={bindingError ?? "The binding is selected from Reactor's live list."}>
             <input
               value={servingBindingId}
               onChange={(event) => setServingBindingId(event.target.value)}
               list="serving-bindings"
-              placeholder="llama-factory-serving-v1"
+              placeholder={t("llama-factory-serving-v1")}
             />
             <datalist id="serving-bindings">
               {bindings.map((binding, index) => (
@@ -422,22 +426,22 @@ export function ModelsPage({ api }: PageProps) {
           </Field>
           <Field label="Source kind">
             <select value={sourceKind} onChange={(event) => setSourceKind(event.target.value as CreateModelImportInput["source"]["kind"])}>
-              <option value="HUGGING_FACE">Hugging Face repository</option>
-              <option value="LOCAL_PATH">Local absolute path</option>
+              <option value="HUGGING_FACE">{t("Hugging Face repository")}</option>
+              <option value="LOCAL_PATH">{t("Local absolute path")}</option>
             </select>
           </Field>
           {sourceKind === "HUGGING_FACE" ? (
             <>
               <Field label="Repository" hint="owner/name">
-                <input value={repository} onChange={(event) => setRepository(event.target.value)} placeholder="Qwen/Qwen2.5-1.5B-Instruct" />
+                <input value={repository} onChange={(event) => setRepository(event.target.value)} placeholder={t("Qwen/Qwen2.5-1.5B-Instruct")} />
               </Field>
               <Field label="Pinned revision" hint="40 hexadecimal characters">
-                <input className="input-mono" value={revision} onChange={(event) => setRevision(event.target.value)} placeholder="5fee7c4e..." />
+                <input className="input-mono" value={revision} onChange={(event) => setRevision(event.target.value)} placeholder={t("5fee7c4e...")} />
               </Field>
             </>
           ) : (
             <Field label="Absolute path" hint="Reactor validates access on the configured host.">
-              <input className="input-mono" value={localPath} onChange={(event) => setLocalPath(event.target.value)} placeholder="/models/weights" />
+              <input className="input-mono" value={localPath} onChange={(event) => setLocalPath(event.target.value)} placeholder={t("/models/weights")} />
             </Field>
           )}
           <Field
@@ -449,7 +453,7 @@ export function ModelsPage({ api }: PageProps) {
               value={credentialRef}
               onChange={(event) => setCredentialRef(event.target.value)}
             >
-              <option value="">No credential (public repository)</option>
+              <option value="">{t("No credential (public repository)")}</option>
               {credentials?.map((credential) => (
                 <option key={credential.id} value={credential.credentialRef}>
                   {credential.name} ({credential.provider})
@@ -457,9 +461,7 @@ export function ModelsPage({ api }: PageProps) {
               ))}
             </select>
             {credentials === null ? (
-              <span className="field__hint">
-                Credentials could not be loaded — add one on the Settings page first.
-              </span>
+              <span className="field__hint">{t("Credentials could not be loaded — add one on the Settings page first.")}</span>
             ) : null}
           </Field>
           <div className="form-actions">
@@ -470,11 +472,11 @@ export function ModelsPage({ api }: PageProps) {
         </form>
       </Panel>
 
-      <Panel title="Import ledger" meta={models ? `${models.length} records` : "LIVE READ"}>
+      <Panel title={t("Import ledger")} meta={models ? `${models.length} records` : "LIVE READ"}>
         {loading ? (
-          <StateBlock kind="loading" title="Reading model imports" detail="Reactor is the authority for import state and validation evidence." />
+          <StateBlock kind="loading" title={t("Reading model imports")} detail="Reactor is the authority for import state and validation evidence." />
         ) : error ? (
-          <StateBlock kind="error" title="Model imports unavailable" detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>Try again</Button>} />
+          <StateBlock kind="error" title={t("Model imports unavailable")} detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>{t("Try again")}</Button>} />
         ) : models && models.length > 0 ? (
           <ResourceTable
             rows={models}
@@ -489,7 +491,7 @@ export function ModelsPage({ api }: PageProps) {
             ]}
           />
         ) : (
-          <StateBlock kind="empty" title="No imports yet" detail="Submit a pinned model source above. Reactor will publish validation evidence here." />
+          <StateBlock kind="empty" title={t("No imports yet")} detail="Submit a pinned model source above. Reactor will publish validation evidence here." />
         )}
       </Panel>
     </div>
@@ -514,6 +516,7 @@ function contentTypeFor(filename: string): string {
 }
 
 export function DatasetsPage({ api }: PageProps) {
+  const { t } = useI18n();
   const [reloadKey, setReloadKey] = useState(0);
   const [datasets, setDatasets] = useState<JsonRecord[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -694,18 +697,18 @@ export function DatasetsPage({ api }: PageProps) {
     <div className="page-stack">
       <PageHeader
         eyebrow="Catalyst / 02"
-        title="Make the data legible."
+        title={t("Make the data legible.")}
         description="Create the owned container first. Preparation, mapping, quality, and split decisions stay visible at Catalyst rather than being guessed here."
-        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>Refresh datasets</Button>}
+        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>{t("Refresh datasets")}</Button>}
       />
 
-      <Panel title="New dataset container" meta={<span className="mono-label">CATALYST OWNS STATE</span>}>
+      <Panel title={t("New dataset container")} meta={<span className="mono-label">{t("CATALYST OWNS STATE")}</span>}>
         <form className="form-grid form-grid--compact" onSubmit={submitDataset}>
           <Field label="Name">
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="instruction-tuning-v1" />
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("instruction-tuning-v1")} />
           </Field>
           <Field label="Description" hint="Optional context for the preparation team.">
-            <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Curated instruction examples" />
+            <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("Curated instruction examples")} />
           </Field>
           <div className="form-actions">
             <Button tone="primary" type="submit" disabled={submitting}>{submitting ? "Creating..." : "Create dataset"}</Button>
@@ -715,7 +718,7 @@ export function DatasetsPage({ api }: PageProps) {
         </form>
       </Panel>
 
-      <Panel title="Prepare data" meta={<span className="mono-label">UPLOAD → MAP → PREPARE → PUBLISH</span>}>
+      <Panel title={t("Prepare data")} meta={<span className="mono-label">{t("UPLOAD → MAP → PREPARE → PUBLISH")}</span>}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
           <Field label="Dataset" hint="Preparation always belongs to one dataset.">
             <select
@@ -723,7 +726,7 @@ export function DatasetsPage({ api }: PageProps) {
               value={selectedDatasetId}
               onChange={(event) => onDatasetChosen(event.target.value)}
             >
-              <option value="">Select a dataset</option>
+              <option value="">{t("Select a dataset")}</option>
               {datasets?.map((row, index) => (
                 <option key={text(row["id"], `dataset-${index}`)} value={text(row["id"], "")}>
                   {text(row["name"], "Unnamed dataset")}
@@ -737,7 +740,7 @@ export function DatasetsPage({ api }: PageProps) {
               className="input-mono"
               value={uploadName}
               onChange={(event) => setUploadName(event.target.value)}
-              placeholder="instruction-tuning-v1"
+              placeholder={t("instruction-tuning-v1")}
             />
           </Field>
 
@@ -777,7 +780,7 @@ export function DatasetsPage({ api }: PageProps) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px" }}>
             <Field label="Instruction field" hint="Detected columns from the upload.">
               <select className="input-mono" value={instructionField} onChange={(event) => setInstructionField(event.target.value)}>
-                <option value="">(none)</option>
+                <option value="">{t("(none)")}</option>
                 {detectedFields.map((field) => (
                   <option key={field} value={field}>{field}</option>
                 ))}
@@ -785,7 +788,7 @@ export function DatasetsPage({ api }: PageProps) {
             </Field>
             <Field label="Input field" hint="Optional context column.">
               <select className="input-mono" value={inputField} onChange={(event) => setInputField(event.target.value)}>
-                <option value="">(none)</option>
+                <option value="">{t("(none)")}</option>
                 {detectedFields.map((field) => (
                   <option key={field} value={field}>{field}</option>
                 ))}
@@ -793,7 +796,7 @@ export function DatasetsPage({ api }: PageProps) {
             </Field>
             <Field label="Output field" hint="Target completion column.">
               <select className="input-mono" value={outputField} onChange={(event) => setOutputField(event.target.value)}>
-                <option value="">(none)</option>
+                <option value="">{t("(none)")}</option>
                 {detectedFields.map((field) => (
                   <option key={field} value={field}>{field}</option>
                 ))}
@@ -809,31 +812,25 @@ export function DatasetsPage({ api }: PageProps) {
           <Button
             disabled={!preparationId || workflowBusy}
             onClick={() => void runWorkflow("Preparation", () => api.confirmPreparation(preparationId))}
-          >
-            Prepare
-          </Button>
+          >{t("Prepare")}</Button>
           <Button
             disabled={!preparationId || workflowBusy}
             onClick={() => void runWorkflow("Publish", () => api.publishPreparation(preparationId))}
-          >
-            Publish version
-          </Button>
+          >{t("Publish version")}</Button>
           <Button
             disabled={!preparationId || workflowBusy}
             onClick={() => void runWorkflow("Handoff", () => api.sendPreparationToYield(preparationId))}
-          >
-            Send to Yield
-          </Button>
+          >{t("Send to Yield")}</Button>
         </div>
         {workflowError ? <p className="inline-error" role="alert">{workflowError}</p> : null}
         {workflowNotice ? <p className="form-message form-message--success">{workflowNotice}</p> : null}
       </Panel>
 
-      <Panel title="Dataset containers" meta={datasets ? `${datasets.length} records` : "LIVE READ"}>
+      <Panel title={t("Dataset containers")} meta={datasets ? `${datasets.length} records` : "LIVE READ"}>
         {loading ? (
-          <StateBlock kind="loading" title="Reading datasets" detail="Catalyst is the authority for containers and their lifecycle." />
+          <StateBlock kind="loading" title={t("Reading datasets")} detail="Catalyst is the authority for containers and their lifecycle." />
         ) : error ? (
-          <StateBlock kind="error" title="Datasets unavailable" detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>Try again</Button>} />
+          <StateBlock kind="error" title={t("Datasets unavailable")} detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>{t("Try again")}</Button>} />
         ) : datasets && datasets.length > 0 ? (
           <ResourceTable
             rows={datasets}
@@ -843,7 +840,7 @@ export function DatasetsPage({ api }: PageProps) {
               { label: "Dataset", render: (row) => <strong>{text(row["name"], "Unnamed dataset")}</strong> },
               { label: "State", render: (row) => <StatusPill value={text(row["state"], "UNKNOWN")} /> },
               { label: "Description", render: (row) => text(row["description"], "No description") },
-              { label: "Version", render: (row) => <span className="input-mono">v{text(row["resourceVersion"], "-")}</span> },
+              { label: "Version", render: (row) => <span className="input-mono">{t("v")}{text(row["resourceVersion"], "-")}</span> },
               { label: "Updated", render: (row) => formatDate(row["updatedAt"]) },
               {
                 label: "Action",
@@ -855,21 +852,19 @@ export function DatasetsPage({ api }: PageProps) {
                         setPreviewVersionId(id);
                         void loadPreview(id, previewLimit, previewOffset);
                       }}
-                    >
-                      预览样本
-                    </Button>
+                    >{t("预览样本")}</Button>
                   );
                 },
               },
             ]}
           />
         ) : (
-          <StateBlock kind="empty" title="No dataset containers" detail="Create the container that will own your next preparation flow." />
+          <StateBlock kind="empty" title={t("No dataset containers")} detail="Create the container that will own your next preparation flow." />
         )}
       </Panel>
 
       <Panel
-        title="Dataset version sample preview"
+        title={t("Dataset version sample preview")}
         meta={previewData ? `${previewData.totalRows} total rows` : "CATALYST DUCKDB"}
       >
         <form
@@ -886,7 +881,7 @@ export function DatasetsPage({ api }: PageProps) {
                   className="input-mono"
                   value={previewVersionId}
                   onChange={(e) => setPreviewVersionId(e.target.value)}
-                  placeholder="e.g. 11111111-2222-3333-4444-555555555555"
+                  placeholder={t("e.g. 11111111-2222-3333-4444-555555555555")}
                 />
               </Field>
             </div>
@@ -928,15 +923,14 @@ export function DatasetsPage({ api }: PageProps) {
         {previewLoading ? (
           <StateBlock
             kind="loading"
-            title="Loading sample preview"
+            title={t("Loading sample preview")}
             detail="Catalyst DuckDB is reading sample rows from the CAS parquet/jsonl artifact."
           />
         ) : previewError ? (
-          <StateBlock kind="error" title="Preview unavailable" detail={previewError} />
+          <StateBlock kind="error" title={t("Preview unavailable")} detail={previewError} />
         ) : previewData ? (
           <div style={{ marginTop: "16px" }}>
-            <p style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "12px" }}>
-              Displaying {previewData.rows.length} rows (out of {previewData.totalRows} total rows) for version <code className="input-mono">{previewData.versionId}</code>
+            <p style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "12px" }}>{t("Displaying")}{previewData.rows.length}{t("rows (out of")}{previewData.totalRows}{t("total rows) for version")}<code className="input-mono">{previewData.versionId}</code>
             </p>
             <div style={{ display: "grid", gap: "12px" }}>
               {previewData.rows.map((row) => (
@@ -950,30 +944,30 @@ export function DatasetsPage({ api }: PageProps) {
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
-                    <span className="mono-label">ROW #{row.index + 1}</span>
+                    <span className="mono-label">{t("ROW #")}{row.index + 1}</span>
                   </div>
                   <div style={{ display: "grid", gap: "6px", fontSize: "13px" }}>
                     {row.mapped["instruction"] !== undefined ? (
                       <div>
-                        <strong style={{ color: "var(--blue)" }}>Instruction: </strong>
+                        <strong style={{ color: "var(--blue)" }}>{t("Instruction:")}</strong>
                         <span>{String(row.mapped["instruction"])}</span>
                       </div>
                     ) : null}
                     {row.mapped["input"] ? (
                       <div>
-                        <strong style={{ color: "var(--muted)" }}>Input: </strong>
+                        <strong style={{ color: "var(--muted)" }}>{t("Input:")}</strong>
                         <span>{String(row.mapped["input"])}</span>
                       </div>
                     ) : null}
                     {row.mapped["output"] !== undefined ? (
                       <div>
-                        <strong style={{ color: "var(--lime)" }}>Output: </strong>
+                        <strong style={{ color: "var(--lime)" }}>{t("Output:")}</strong>
                         <span>{String(row.mapped["output"])}</span>
                       </div>
                     ) : null}
                   </div>
                   <details style={{ marginTop: "8px", fontSize: "12px", color: "var(--faint)" }}>
-                    <summary style={{ cursor: "pointer", userSelect: "none" }}>Raw record JSON</summary>
+                    <summary style={{ cursor: "pointer", userSelect: "none" }}>{t("Raw record JSON")}</summary>
                     <pre
                       style={{
                         background: "var(--ink-soft)",
@@ -996,7 +990,7 @@ export function DatasetsPage({ api }: PageProps) {
         ) : (
           <StateBlock
             kind="empty"
-            title="No samples loaded"
+            title={t("No samples loaded")}
             detail="Enter a version ID above or click preview on a dataset container to inspect mapped samples."
           />
         )}
@@ -1021,11 +1015,12 @@ export interface ParamFieldProps {
  * 参数字段：显示用户友好提示，并可切换 LLaMA Factory 参数键。
  */
 export function ParamField({ label, hint, llamaKey, children }: ParamFieldProps) {
+  const { t } = useI18n();
   const [showKey, setShowKey] = useState(false);
   return (
     <div className="field">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-        <span className="field__label">{label}</span>
+        <span className="field__label">{t(label)}</span>
         {llamaKey ? (
           <button
             type="button"
@@ -1033,13 +1028,13 @@ export function ParamField({ label, hint, llamaKey, children }: ParamFieldProps)
             style={{ padding: "2px 6px", fontSize: "11px", height: "auto" }}
             onClick={() => setShowKey((v) => !v)}
           >
-            {showKey ? "Hide LLaMA key" : "LLaMA Factory key"}
+            {t(showKey ? "Hide LLaMA key" : "LLaMA Factory key")}
           </button>
         ) : null}
       </div>
       {children}
       <span className="field__hint">
-        {hint}
+        {t(hint)}
         {showKey && llamaKey && (
           <code style={{ marginLeft: "8px", color: "var(--lime)", fontFamily: "var(--mono)" }}>
             ({llamaKey})
@@ -1071,6 +1066,7 @@ function draftBaseModel(row: JsonRecord): JsonRecord | null {
  * 展示训练草稿列表、明确的启动操作和超参数参考。
  */
 export function TrainingPage({ api }: PageProps) {
+  const { t } = useI18n();
   const [reloadKey, setReloadKey] = useState(0);
   const [drafts, setDrafts] = useState<JsonRecord[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1239,19 +1235,19 @@ export function TrainingPage({ api }: PageProps) {
     <div className="page-stack">
       <PageHeader
         eyebrow="Yield / 03"
-        title="Train only from prepared intent."
+        title={t("Train only from prepared intent.")}
         description="Training drafts are owned by Yield. This console can launch a prepared draft and then hands run observation to the Runs page."
-        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>Refresh drafts</Button>}
+        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>{t("Refresh drafts")}</Button>}
       />
 
       <div className="callout callout--orange">
-        <span className="callout__mark" aria-hidden="true">i</span>
-        <p><strong>Preflight belongs to the owner.</strong> The UI never infers GPU readiness from browser state; Yield returns the authoritative preflight and launch result.</p>
+        <span className="callout__mark" aria-hidden="true">{t("i")}</span>
+        <p><strong>{t("Preflight belongs to the owner.")}</strong>{t("The UI never infers GPU readiness from browser state; Yield returns the authoritative preflight and launch result.")}</p>
       </div>
 
       <Panel
-        title="Training hyperparameters & LLaMA Factory mapping"
-        meta={<span className="mono-label">LLAMA-FACTORY ENGINE</span>}
+        title={t("Training hyperparameters & LLaMA Factory mapping")}
+        meta={<span className="mono-label">{t("LLAMA-FACTORY ENGINE")}</span>}
       >
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
           <ParamField
@@ -1370,13 +1366,10 @@ export function TrainingPage({ api }: PageProps) {
             />
           </ParamField>
         </div>
-        <p className="field__hint">
-          These values are submitted to Yield when you press <strong>Save and start</strong> on a
-          draft. Nothing here edits anything until that button is used.
-        </p>
+        <p className="field__hint">{t("These values are submitted to Yield when you press")}<strong>{t("Save and start")}</strong>{t("on a draft. Nothing here edits anything until that button is used.")}</p>
       </Panel>
 
-      <Panel title="Choose the training inputs" meta="PICKERS, NOT IDENTIFIERS">
+      <Panel title={t("Choose the training inputs")} meta="PICKERS, NOT IDENTIFIERS">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
           <ParamField label="Dataset" hint="Catalyst owns preparation and publishing.">
             <select
@@ -1434,18 +1427,15 @@ export function TrainingPage({ api }: PageProps) {
           </ParamField>
         </div>
         {baseModelId && !selectedBaseModel ? (
-          <p className="inline-error" role="alert">
-            This model import does not expose a portable artifact and source yet, so the draft's
-            existing base model will be used.
-          </p>
+          <p className="inline-error" role="alert">{t("This model import does not expose a portable artifact and source yet, so the draft's existing base model will be used.")}</p>
         ) : null}
       </Panel>
 
-      <Panel title="Training drafts" meta={drafts ? `${drafts.length} records` : "LIVE READ"}>
+      <Panel title={t("Training drafts")} meta={drafts ? `${drafts.length} records` : "LIVE READ"}>
         {loading ? (
-          <StateBlock kind="loading" title="Reading training drafts" detail="Yield is the authority for draft readiness and launch intent." />
+          <StateBlock kind="loading" title={t("Reading training drafts")} detail="Yield is the authority for draft readiness and launch intent." />
         ) : error ? (
-          <StateBlock kind="error" title="Training drafts unavailable" detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>Try again</Button>} />
+          <StateBlock kind="error" title={t("Training drafts unavailable")} detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>{t("Try again")}</Button>} />
         ) : drafts && drafts.length > 0 ? (
           <>
             <ResourceTable
@@ -1489,7 +1479,7 @@ export function TrainingPage({ api }: PageProps) {
             {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
           </>
         ) : (
-          <StateBlock kind="empty" title="No training drafts" detail="Publish a DatasetVersion and create a draft in Yield before launching training." />
+          <StateBlock kind="empty" title={t("No training drafts")} detail="Publish a DatasetVersion and create a draft in Yield before launching training." />
         )}
       </Panel>
     </div>
@@ -1505,6 +1495,7 @@ export function TrainingPage({ api }: PageProps) {
  * 使用最精简的 canvas 绘制损失曲线，使控制台无需引入图表依赖。
  */
 function LossChart({ series }: { series: number[] }) {
+  const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -1536,7 +1527,7 @@ function LossChart({ series }: { series: number[] }) {
       width={480}
       height={120}
       style={{ width: "100%", height: "120px" }}
-      aria-label="Training loss over steps"
+      aria-label={t("Training loss over steps")}
     />
   );
 }
@@ -1556,6 +1547,7 @@ function formatDuration(seconds: number): string {
 }
 
 export function RunsPage({ api }: PageProps) {
+  const { t } = useI18n();
   const [runId, setRunId] = useState(() => initialRunId());
   const [run, setRun] = useState<JsonRecord | null>(null);
   const [attempts, setAttempts] = useState<JsonRecord[] | null>(null);
@@ -1666,7 +1658,7 @@ export function RunsPage({ api }: PageProps) {
       const url = `${NAVIGATOR_PROXY_PATHS.yield}/api/v1/training-runs/${currentRunId}/events/stream`;
       try {
         setStreamActive(true);
-        const response = await fetch(url, {
+        const response = await studioProductFetch(url, {
           signal: controller.signal,
           headers: { Accept: "text/event-stream" },
           credentials: "same-origin",
@@ -1814,21 +1806,21 @@ export function RunsPage({ api }: PageProps) {
     <div className="page-stack">
       <PageHeader
         eyebrow="Yield / 04"
-        title="Follow one run to the metal."
+        title={t("Follow one run to the metal.")}
         description="Yield publishes run detail and attempt diagnostics, not a browser-owned history cache. Enter an id to read the current projection."
       />
 
-      <Panel title="Find a training run" meta={<span className="mono-label">OWNER: YIELD</span>}>
+      <Panel title={t("Find a training run")} meta={<span className="mono-label">{t("OWNER: YIELD")}</span>}>
         <form className="lookup-form" onSubmit={lookupRun}>
           <Field label="Training run id" hint="Use the id returned when a prepared draft starts.">
-            <input className="input-mono" value={runId} onChange={(event) => setRunId(event.target.value)} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+            <input className="input-mono" value={runId} onChange={(event) => setRunId(event.target.value)} placeholder={t("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")} />
           </Field>
           <Button tone="primary" type="submit" disabled={loading}>{loading ? "Reading..." : "Read run"}</Button>
         </form>
       </Panel>
 
-      {loading ? <StateBlock kind="loading" title="Reading run projection" detail="Yield is returning current run state and public attempt diagnostics." /> : null}
-      {error ? <StateBlock kind="error" title="Run could not be read" detail={error} /> : null}
+      {loading ? <StateBlock kind="loading" title={t("Reading run projection")} detail="Yield is returning current run state and public attempt diagnostics." /> : null}
+      {error ? <StateBlock kind="error" title={t("Run could not be read")} detail={error} /> : null}
       {run ? (
         <>
           <Panel
@@ -1857,14 +1849,12 @@ export function RunsPage({ api }: PageProps) {
           </Panel>
 
           <Panel
-            title="Realtime execution stream"
+            title={t("Realtime execution stream")}
             meta={
               <div className="panel-actions">
                 <StatusPill value={streamActive ? "STREAMING" : streamDone || ["SUCCEEDED", "FAILED", "CANCELLED"].includes(runState) ? "FINISHED" : "IDLE"} />
                 {(streamDone || ["SUCCEEDED", "FAILED", "CANCELLED"].includes(runState)) && (
-                  <Button onClick={() => void api.getTrainingRun(currentRunId).then((res) => setRun(res))}>
-                    查看结果
-                  </Button>
+                  <Button onClick={() => void api.getTrainingRun(currentRunId).then((res) => setRun(res))}>{t("查看结果")}</Button>
                 )}
               </div>
             }
@@ -1930,17 +1920,15 @@ export function RunsPage({ api }: PageProps) {
               <Button disabled={!canResume || actionBusy} onClick={() => void resumeRun()}>
                 {actionBusy ? "Working..." : "Resume from checkpoint"}
               </Button>
-              <Button disabled={!canDeploy || actionBusy} onClick={() => void deployResult()}>
-                Deploy this model
-              </Button>
+              <Button disabled={!canDeploy || actionBusy} onClick={() => void deployResult()}>{t("Deploy this model")}</Button>
             </div>
             {actionNotice ? <p className="form-message form-message--success">{actionNotice}</p> : null}
 
             <div style={{ marginTop: "16px" }}>
-              <strong style={{ display: "block", marginBottom: "8px", fontSize: "13px" }}>Event logs (last 50):</strong>
+              <strong style={{ display: "block", marginBottom: "8px", fontSize: "13px" }}>{t("Event logs (last 50):")}</strong>
               <div style={{ maxHeight: "260px", overflowY: "auto", background: "var(--color-bg-subtle, #181c20)", padding: "12px", borderRadius: "6px", fontFamily: "monospace", fontSize: "12px" }}>
                 {events.length === 0 ? (
-                  <div style={{ color: "var(--muted, #888)" }}>No realtime stream events captured yet.</div>
+                  <div style={{ color: "var(--muted, #888)" }}>{t("No realtime stream events captured yet.")}</div>
                 ) : (
                   events.map((evt, idx) => {
                     const seq = String(evt["sequence"] ?? idx + 1);
@@ -1959,9 +1947,9 @@ export function RunsPage({ api }: PageProps) {
             </div>
           </Panel>
 
-          <Panel title="Attempt diagnostics" meta={attempts ? `${attempts.length} attempts` : "OWNER READ"}>
+          <Panel title={t("Attempt diagnostics")} meta={attempts ? `${attempts.length} attempts` : "OWNER READ"}>
             {attemptError ? (
-              <StateBlock kind="error" title="Attempts unavailable" detail={attemptError} />
+              <StateBlock kind="error" title={t("Attempts unavailable")} detail={attemptError} />
             ) : attempts && attempts.length > 0 ? (
               <ResourceTable
                 rows={attempts}
@@ -1975,12 +1963,12 @@ export function RunsPage({ api }: PageProps) {
                 ]}
               />
             ) : (
-              <StateBlock kind="empty" title="No attempt diagnostics" detail="Yield has not published attempt records for this run." />
+              <StateBlock kind="empty" title={t("No attempt diagnostics")} detail="Yield has not published attempt records for this run." />
             )}
           </Panel>
         </>
       ) : !loading && !error ? (
-        <StateBlock kind="empty" title="No run selected" detail="Run history stays with Yield. Enter a run id above to inspect a live projection." />
+        <StateBlock kind="empty" title={t("No run selected")} detail="Run history stays with Yield. Enter a run id above to inspect a live projection." />
       ) : null}
     </div>
   );
@@ -1991,6 +1979,7 @@ export function RunsPage({ api }: PageProps) {
  * 展示 Reactor 部署意图、观测状态和明确的停止操作。
  */
 export function DeploymentsPage({ api }: PageProps) {
+  const { t } = useI18n();
   const [reloadKey, setReloadKey] = useState(0);
   const [deployments, setDeployments] = useState<JsonRecord[] | null>(null);
   const [bindings, setBindings] = useState<JsonRecord[]>([]);
@@ -2067,21 +2056,21 @@ export function DeploymentsPage({ api }: PageProps) {
     <div className="page-stack">
       <PageHeader
         eyebrow="Reactor / 05"
-        title="Serve with a known edge."
+        title={t("Serve with a known edge.")}
         description="Deployments express intent; endpoints express addressability. Read both through Reactor and stop only through its explicit lifecycle action."
-        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>Refresh deployments</Button>}
+        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>{t("Refresh deployments")}</Button>}
       />
 
       <div className="callout callout--blue">
-        <span className="callout__mark" aria-hidden="true">i</span>
-        <p><strong>Serving bindings: {bindings.length || "none reported"}.</strong> {bindingError ?? "Reactor resolves node and engine identity; the UI does not infer readiness from a URL."}</p>
+        <span className="callout__mark" aria-hidden="true">{t("i")}</span>
+        <p><strong>{t("Serving bindings:")}{bindings.length || "none reported"}.</strong> {bindingError ?? "Reactor resolves node and engine identity; the UI does not infer readiness from a URL."}</p>
       </div>
 
-      <Panel title="Deployment ledger" meta={deployments ? `${deployments.length} records` : "LIVE READ"}>
+      <Panel title={t("Deployment ledger")} meta={deployments ? `${deployments.length} records` : "LIVE READ"}>
         {loading ? (
-          <StateBlock kind="loading" title="Reading deployments" detail="Reactor is reconciling desired intent with observed serving state." />
+          <StateBlock kind="loading" title={t("Reading deployments")} detail="Reactor is reconciling desired intent with observed serving state." />
         ) : error ? (
-          <StateBlock kind="error" title="Deployments unavailable" detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>Try again</Button>} />
+          <StateBlock kind="error" title={t("Deployments unavailable")} detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>{t("Try again")}</Button>} />
         ) : deployments && deployments.length > 0 ? (
           <>
             <ResourceTable
@@ -2103,9 +2092,7 @@ export function DeploymentsPage({ api }: PageProps) {
                       <Button
                         tone={isSelected ? "primary" : "quiet"}
                         onClick={() => void loadDeploymentEvents(id)}
-                      >
-                        加载历史
-                      </Button>
+                      >{t("加载历史")}</Button>
                     );
                   },
                 },
@@ -2122,7 +2109,7 @@ export function DeploymentsPage({ api }: PageProps) {
             {actionError ? <p className="inline-error" role="alert">{actionError}</p> : null}
           </>
         ) : (
-          <StateBlock kind="empty" title="No deployments" detail="A validated model version must be handed to Reactor before a serving deployment can exist." />
+          <StateBlock kind="empty" title={t("No deployments")} detail="A validated model version must be handed to Reactor before a serving deployment can exist." />
         )}
       </Panel>
 
@@ -2131,18 +2118,18 @@ export function DeploymentsPage({ api }: PageProps) {
           title={`加载历史时间线: ${selectedDeploymentId}`}
           meta={
             deploymentEvents ? (
-              <span className="mono-label">{deploymentEvents.length} EVENTS</span>
+              <span className="mono-label">{deploymentEvents.length}{t("EVENTS")}</span>
             ) : undefined
           }
         >
           {eventsLoading ? (
             <StateBlock
               kind="loading"
-              title="Loading deployment phase events"
+              title={t("Loading deployment phase events")}
               detail="Reactor SQLite store is returning the phase transition timeline."
             />
           ) : eventsError ? (
-            <StateBlock kind="error" title="Events unavailable" detail={eventsError} />
+            <StateBlock kind="error" title={t("Events unavailable")} detail={eventsError} />
           ) : deploymentEvents && deploymentEvents.length > 0 ? (
             <div style={{ marginTop: "12px" }}>
               {/* Phase sequence visualization */}
@@ -2192,9 +2179,7 @@ export function DeploymentsPage({ api }: PageProps) {
                         color: "var(--red)",
                         border: "1px solid var(--red)",
                       }}
-                    >
-                      FAILED
-                    </span>
+                    >{t("FAILED")}</span>
                   </div>
                 ) : null}
               </div>
@@ -2227,8 +2212,7 @@ export function DeploymentsPage({ api }: PageProps) {
                             marginTop: "2px",
                             fontFamily: "var(--mono)",
                           }}
-                        >
-                          Failure: {evt.failureCode}
+                        >{t("Failure:")}{evt.failureCode}
                         </span>
                       ) : null}
                     </div>
@@ -2242,7 +2226,7 @@ export function DeploymentsPage({ api }: PageProps) {
           ) : (
             <StateBlock
               kind="empty"
-              title="No events recorded"
+              title={t("No events recorded")}
               detail="Reactor has not published loading events for this deployment yet."
             />
           )}
@@ -2257,6 +2241,7 @@ export function DeploymentsPage({ api }: PageProps) {
  * 管理 Exchange Gateway 路由、调用示例和 API key 生命周期。
  */
 export function GatewayPage({ api }: PageProps) {
+  const { t } = useI18n();
   const [reloadKey, setReloadKey] = useState(0);
   const [routes, setRoutes] = useState<JsonRecord[] | null>(null);
   const [selectedRoute, setSelectedRoute] = useState<JsonRecord | null>(null);
@@ -2285,7 +2270,7 @@ export function GatewayPage({ api }: PageProps) {
     setLoading(true);
     void Promise.allSettled([
       api.getGatewayRoutes(),
-      api.listApiKeys(),
+      api.listApiKeys().catch(() => []),
       api.getSystemStatus(),
     ]).then(([routesRes, keysRes, systemRes]) => {
       if (!active) return;
@@ -2400,7 +2385,7 @@ export function GatewayPage({ api }: PageProps) {
         baseUrl,
         apiKeyHint: text(route["name"] || model),
       });
-      pushRoute("navigator");
+      pushRoute("chat");
     } catch (err) {
       setActionError(errorMessage(err));
     }
@@ -2437,10 +2422,10 @@ console.log(response.choices[0].message.content);`,
     <div className="page-stack">
       <PageHeader
         eyebrow="Exchange / Gateway"
-        title="Routes, API keys, and client configuration."
+        title={t("Routes, API keys, and client configuration.")}
         description="Exchange acts as the single OpenAI-compatible data plane. Publish model routes, copy client integration code, and manage caller API keys."
         action={
-          <Button onClick={refresh} disabled={loading} aria-label="Refresh gateway">
+          <Button onClick={refresh} disabled={loading} aria-label={t("Refresh gateway")}>
             {loading ? "Reading..." : "Refresh"}
           </Button>
         }
@@ -2455,19 +2440,19 @@ console.log(response.choices[0].message.content);`,
       {actionError ? (
         <div className="callout callout--red">
           <span className="callout__mark" aria-hidden="true">!</span>
-          <p><strong>Error:</strong> {actionError}</p>
+          <p><strong>{t("Error:")}</strong> {actionError}</p>
         </div>
       ) : null}
 
       {/* 1. Gateway Routes Table */}
       <Panel
-        title="Gateway routes"
+        title={t("Gateway routes")}
         meta={routes ? `${routes.length} configured` : "EXCHANGE OWNER"}
       >
         {loading && !routes ? (
-          <StateBlock kind="loading" title="Reading Gateway routes" detail="Exchange is returning published model routes." />
+          <StateBlock kind="loading" title={t("Reading Gateway routes")} detail="Exchange is returning published model routes." />
         ) : error ? (
-          <StateBlock kind="error" title="Routes unavailable" detail={error} />
+          <StateBlock kind="error" title={t("Routes unavailable")} detail={error} />
         ) : routes && routes.length > 0 ? (
           <ResourceTable
             rows={routes}
@@ -2507,19 +2492,13 @@ console.log(response.choices[0].message.content);`,
                   const state = text(row["state"], "ACTIVE");
                   if (state === "DRAFT") {
                     return (
-                      <Button tone="primary" onClick={() => void confirmRoute(row)}>
-                        确认发布
-                      </Button>
+                      <Button tone="primary" onClick={() => void confirmRoute(row)}>{t("确认发布")}</Button>
                     );
                   }
                   return (
                     <div style={{ display: "flex", gap: "6px" }}>
-                      <Button onClick={() => setSelectedRoute(row)}>
-                        View detail
-                      </Button>
-                      <Button tone="primary" onClick={() => void handleUseInNavigator(row)}>
-                        在 Navigator 中使用
-                      </Button>
+                      <Button onClick={() => setSelectedRoute(row)}>{t("View detail")}</Button>
+                      <Button tone="primary" onClick={() => void handleUseInNavigator(row)}>{t("在 Navigator 中使用")}</Button>
                     </div>
                   );
                 },
@@ -2529,7 +2508,7 @@ console.log(response.choices[0].message.content);`,
         ) : (
           <StateBlock
             kind="empty"
-            title="No Gateway routes"
+            title={t("No Gateway routes")}
             detail="Publish a serving deployment or add a route draft in Exchange to expose models."
           />
         )}
@@ -2565,14 +2544,12 @@ console.log(response.choices[0].message.content);`,
             <Button
               tone="primary"
               onClick={() => void handleUseInNavigator(selectedRoute)}
-            >
-              在 Navigator 中使用
-            </Button>
+            >{t("在 Navigator 中使用")}</Button>
           </div>
 
           <div style={{ marginTop: "20px" }}>
             <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center" }}>
-              <strong style={{ marginRight: "12px" }}>Integration code:</strong>
+              <strong style={{ marginRight: "12px" }}>{t("Integration code:")}</strong>
               {(["curl", "python", "javascript"] as const).map((tab) => (
                 <Button
                   key={tab}
@@ -2601,18 +2578,16 @@ console.log(response.choices[0].message.content);`,
 
       {/* 3. API Keys Management Panel */}
       <Panel
-        title="Gateway API keys"
+        title={t("Gateway API keys")}
         meta={apiKeys ? `${apiKeys.filter((k) => k.state === "ACTIVE").length} active` : "EXCHANGE KEYS"}
       >
         {createdSecret ? (
           <div className="callout callout--orange" style={{ marginBottom: "20px", display: "block" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
               <span className="callout__mark" aria-hidden="true" style={{ fontSize: "18px", fontWeight: "bold" }}>⚠</span>
-              <strong style={{ color: "var(--orange, #FF9800)" }}>API Key Created: {createdKeyName}</strong>
+              <strong style={{ color: "var(--orange, #FF9800)" }}>{t("API Key Created:")}{createdKeyName}</strong>
             </div>
-            <p style={{ marginBottom: "12px" }}>
-              此密钥不会再次显示，请立即复制并安全保存。关闭后将无法重新查看完整明文。
-            </p>
+            <p style={{ marginBottom: "12px" }}>{t("此密钥不会再次显示，请立即复制并安全保存。关闭后将无法重新查看完整明文。")}</p>
             <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px" }}>
               <input
                 readOnly
@@ -2630,9 +2605,7 @@ console.log(response.choices[0].message.content);`,
               >
                 {copiedKey ? "Copied!" : "Copy key"}
               </Button>
-              <Button onClick={() => setCreatedSecret(null)}>
-                Close
-              </Button>
+              <Button onClick={() => setCreatedSecret(null)}>{t("Close")}</Button>
             </div>
           </div>
         ) : null}
@@ -2643,7 +2616,7 @@ console.log(response.choices[0].message.content);`,
               <input
                 value={keyName}
                 onChange={(e) => setKeyName(e.target.value)}
-                placeholder="e.g. production-client"
+                placeholder={t("e.g. production-client")}
                 required
               />
             </Field>
@@ -2653,14 +2626,14 @@ console.log(response.choices[0].message.content);`,
                 min="1"
                 value={expiresDays}
                 onChange={(e) => setExpiresDays(e.target.value)}
-                placeholder="e.g. 90"
+                placeholder={t("e.g. 90")}
               />
             </Field>
             <Field label="Model scope" hint="Optional comma-separated aliases">
               <input
                 value={modelScope}
                 onChange={(e) => setModelScope(e.target.value)}
-                placeholder="default: all models"
+                placeholder={t("default: all models")}
               />
             </Field>
             <div>
@@ -2703,12 +2676,10 @@ console.log(response.choices[0].message.content);`,
                 render: (row) => {
                   if (row.state === "ACTIVE") {
                     return (
-                      <Button tone="danger" onClick={() => void handleRevokeKey(row.id, row.name)}>
-                        Revoke
-                      </Button>
+                      <Button tone="danger" onClick={() => void handleRevokeKey(row.id, row.name)}>{t("Revoke")}</Button>
                     );
                   }
-                  return <span style={{ color: "var(--muted)" }}>Revoked</span>;
+                  return <span style={{ color: "var(--muted)" }}>{t("Revoked")}</span>;
                 },
               },
             ]}
@@ -2716,7 +2687,7 @@ console.log(response.choices[0].message.content);`,
         ) : (
           <StateBlock
             kind="empty"
-            title="No API keys"
+            title={t("No API keys")}
             detail="Create an API key above to allow client applications to authenticate with the Exchange gateway."
           />
         )}
@@ -2730,6 +2701,7 @@ console.log(response.choices[0].message.content);`,
  * 展示 Web Host 会话元数据并管理只写凭据。
  */
 export function SettingsPage({ api, session }: SettingsPageProps) {
+  const { t } = useI18n();
   const [reloadKey, setReloadKey] = useState(0);
   const [system, setSystem] = useState<SystemStatus | null>(null);
   const [credentials, setCredentials] = useState<CredentialMetadata[] | null>(null);
@@ -2818,23 +2790,23 @@ export function SettingsPage({ api, session }: SettingsPageProps) {
     <div className="page-stack">
       <PageHeader
         eyebrow="Web Host / 06"
-        title="Keep the boundary boring."
+        title={t("Keep the boundary boring.")}
         description="Session rotation, CSRF, proxy allowlists, and credential metadata are Web Host concerns. Secrets never become a Product read."
-        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>Refresh settings</Button>}
+        action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>{t("Refresh settings")}</Button>}
       />
 
       <div className="settings-grid">
-        <Panel title="Current session" meta={<StatusPill value={session.state} />}>
+        <Panel title={t("Current session")} meta={<StatusPill value={session.state} />}>
           <dl className="detail-grid">
             <Detail label="Access state" value={session.authenticated ? "Authenticated" : "Anonymous"} />
             <Detail label="Access expires" value={formatDate(session.expiresAt)} />
             <Detail label="Refresh window" value={formatDate(session.refreshExpiresAt)} />
             <Detail label="Refreshable" value={session.refreshable ? "Yes" : "No"} />
           </dl>
-          <p className="panel-footnote">Access and refresh cookies remain HttpOnly. The UI keeps only the rotating CSRF token in memory.</p>
+          <p className="panel-footnote">{t("Access and refresh cookies remain HttpOnly. The UI keeps only the rotating CSRF token in memory.")}</p>
         </Panel>
 
-        <Panel title="Navigator Web Host" meta={<StatusPill value={system?.status ?? "UNKNOWN"} />}>
+        <Panel title={t("Navigator Web Host")} meta={<StatusPill value={system?.status ?? "UNKNOWN"} />}>
           {systemError ? <p className="inline-error">{systemError}</p> : null}
           <dl className="detail-grid">
             <Detail label="Service" value={system?.service ?? "Not reported"} mono />
@@ -2843,25 +2815,25 @@ export function SettingsPage({ api, session }: SettingsPageProps) {
             <Detail label="Revoked credentials" value={system ? String(system.credentials.revoked) : "--"} />
           </dl>
           <div className="proxy-list">
-            <p className="eyebrow">Configured proxy paths</p>
-            {system?.proxyPrefixes.length ? system.proxyPrefixes.map((prefix) => <code key={prefix}>{prefix}</code>) : <span className="muted">No proxy prefixes reported.</span>}
+            <p className="eyebrow">{t("Configured proxy paths")}</p>
+            {system?.proxyPrefixes.length ? system.proxyPrefixes.map((prefix) => <code key={prefix}>{prefix}</code>) : <span className="muted">{t("No proxy prefixes reported.")}</span>}
           </div>
         </Panel>
       </div>
 
-      <Panel title="Add credential metadata" meta={<span className="mono-label">SECRET NEVER READ BACK</span>}>
+      <Panel title={t("Add credential metadata")} meta={<span className="mono-label">{t("SECRET NEVER READ BACK")}</span>}>
         <form className="form-grid" onSubmit={createCredential}>
           <Field label="Name">
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Hugging Face access" />
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("Hugging Face access")} />
           </Field>
           <Field label="Provider">
-            <input value={provider} onChange={(event) => setProvider(event.target.value)} placeholder="huggingface" />
+            <input value={provider} onChange={(event) => setProvider(event.target.value)} placeholder={t("huggingface")} />
           </Field>
           <Field label="Kind">
-            <input value={kind} onChange={(event) => setKind(event.target.value)} placeholder="api-token" />
+            <input value={kind} onChange={(event) => setKind(event.target.value)} placeholder={t("api-token")} />
           </Field>
           <Field label="Secret" hint="The Web Host stores this for configured proxy resolution only.">
-            <input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} autoComplete="new-password" placeholder="Paste once, never displayed" />
+            <input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} autoComplete="new-password" placeholder={t("Paste once, never displayed")} />
           </Field>
           <div className="form-actions">
             <Button tone="primary" type="submit" disabled={submitting}>{submitting ? "Saving..." : "Save credential"}</Button>
@@ -2871,11 +2843,11 @@ export function SettingsPage({ api, session }: SettingsPageProps) {
         </form>
       </Panel>
 
-      <Panel title="Credential metadata" meta={credentials ? `${credentials.length} records` : "LIVE READ"}>
+      <Panel title={t("Credential metadata")} meta={credentials ? `${credentials.length} records` : "LIVE READ"}>
         {loading ? (
-          <StateBlock kind="loading" title="Reading credential metadata" detail="Only non-secret fields are returned by the Web Host." />
+          <StateBlock kind="loading" title={t("Reading credential metadata")} detail="Only non-secret fields are returned by the Web Host." />
         ) : error ? (
-          <StateBlock kind="error" title="Credentials unavailable" detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>Try again</Button>} />
+          <StateBlock kind="error" title={t("Credentials unavailable")} detail={error} action={<Button onClick={() => setReloadKey((value) => value + 1)}>{t("Try again")}</Button>} />
         ) : credentials && credentials.length > 0 ? (
           <ResourceTable
             rows={credentials}
@@ -2891,7 +2863,7 @@ export function SettingsPage({ api, session }: SettingsPageProps) {
             ]}
           />
         ) : (
-          <StateBlock kind="empty" title="No credentials configured" detail="Add a write-only credential metadata record when a configured Product proxy needs it." />
+          <StateBlock kind="empty" title={t("No credentials configured")} detail="Add a write-only credential metadata record when a configured Product proxy needs it." />
         )}
       </Panel>
     </div>
@@ -2903,6 +2875,7 @@ export function SettingsPage({ api, session }: SettingsPageProps) {
  * 提供绑定到当前会话活动 Gateway 路由的交互式测试聊天界面。
  */
 export function ChatPage({ api }: PageProps) {
+  const { t } = useI18n();
   const [activeRoute, setActiveRoute] = useState<ActiveRoutePayload | null>(null);
   const [loadingRoute, setLoadingRoute] = useState(true);
   const [routeError, setRouteError] = useState<string | null>(null);
@@ -2971,7 +2944,7 @@ export function ChatPage({ api }: PageProps) {
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
     try {
-      const response = await fetch("/api/proxy/exchange-gateway/v1/chat/completions", {
+      const response = await studioProductFetch("/api/proxy/exchange-gateway/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -3068,22 +3041,20 @@ export function ChatPage({ api }: PageProps) {
     <div className="page-stack">
       <PageHeader
         eyebrow="Exchange / Interactive Chat"
-        title="Test models with active route."
+        title={t("Test models with active route.")}
         description="Interact directly with the model bound to this session through Exchange Gateway proxy."
       />
 
       {loadingRoute ? (
-        <StateBlock kind="loading" title="Loading active route" detail="Checking session active route configuration." />
+        <StateBlock kind="loading" title={t("Loading active route")} detail="Checking session active route configuration." />
       ) : routeError || !activeRoute ? (
-        <Panel title="No active route selected">
+        <Panel title={t("No active route selected")}>
           <StateBlock
             kind="empty"
-            title="Active route required"
+            title={t("Active route required")}
             detail={routeError ?? "No gateway route has been activated for this session yet. Go to Gateway to select and activate a route."}
             action={
-              <Button tone="primary" onClick={() => pushRoute("exchange")}>
-                Go to Gateway
-              </Button>
+              <Button tone="primary" onClick={() => pushRoute("gateway")}>{t("Go to Gateway")}</Button>
             }
           />
         </Panel>
@@ -3109,7 +3080,7 @@ export function ChatPage({ api }: PageProps) {
                   type="password"
                   value={apiKey}
                   onChange={(e) => handleApiKeyChange(e.target.value)}
-                  placeholder="cyk_live_..."
+                  placeholder={t("cyk_live_...")}
                   className="input-mono"
                 />
               </Field>
@@ -3117,21 +3088,19 @@ export function ChatPage({ api }: PageProps) {
           </Panel>
 
           <Panel
-            title="Chat conversation"
+            title={t("Chat conversation")}
             meta={
               <Button
                 onClick={() =>
                   setMessages([{ role: "system", content: "You are a helpful AI assistant." }])
                 }
-              >
-                Clear history
-              </Button>
+              >{t("Clear history")}</Button>
             }
           >
             {chatError ? (
               <div className="callout callout--red" style={{ marginBottom: "12px" }}>
                 <span className="callout__mark" aria-hidden="true">!</span>
-                <p><strong>Error:</strong> {chatError}</p>
+                <p><strong>{t("Error:")}</strong> {chatError}</p>
               </div>
             ) : null}
 
@@ -3149,8 +3118,7 @@ export function ChatPage({ api }: PageProps) {
               }}
             >
               {messages.filter((m) => m.role !== "system").length === 0 ? (
-                <div style={{ color: "var(--muted)", textAlign: "center", padding: "24px 0" }}>
-                  Start conversation with <code>{activeRoute.modelId}</code>
+                <div style={{ color: "var(--muted)", textAlign: "center", padding: "24px 0" }}>{t("Start conversation with")}<code>{activeRoute.modelId}</code>
                 </div>
               ) : (
                 messages
@@ -3196,7 +3164,7 @@ export function ChatPage({ api }: PageProps) {
                 style={{ flex: 1, padding: "10px 14px", borderRadius: "6px" }}
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
-                placeholder="Type a message..."
+                placeholder={t("Type a message...")}
                 disabled={sending || !apiKey.trim()}
               />
               <Button tone="primary" type="submit" disabled={sending || !inputMessage.trim() || !apiKey.trim()}>
@@ -3211,10 +3179,11 @@ export function ChatPage({ api }: PageProps) {
 }
 
 function Detail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  const { t } = useI18n();
   return (
     <div className="detail-item">
-      <dt>{label}</dt>
-      <dd className={mono ? "input-mono" : undefined}>{value}</dd>
+      <dt>{t(label)}</dt>
+      <dd className={mono ? "input-mono" : undefined}>{t(value)}</dd>
     </div>
   );
 }
@@ -3261,7 +3230,7 @@ function initialRunId(): string {
   if (typeof window === "undefined") {
     return "";
   }
-  return new URLSearchParams(window.location.search).get("runId") ?? "";
+  return new URLSearchParams(window.location.search).get("runId") ?? decodeURIComponent(window.location.pathname.match(/^\/runs\/([^/]+)$/)?.[1] ?? "");
 }
 
 function updateRunQuery(runId: string): void {
@@ -3285,18 +3254,3 @@ function errorMessage(error: unknown): string {
   }
   return "The Navigator request failed without a readable error.";
 }
-
-// -----------------------------------------------------------------------------
-// Core Service Workspaces & Save-as-Node Exports
-// -----------------------------------------------------------------------------
-export {
-  CatalystWorkspace,
-  YieldWorkspace,
-  EchoWorkspace,
-  ReactorWorkspace,
-  ExchangeWorkspace,
-  NavigatorWorkspace,
-  SaveNodeToast,
-  SaveAsNodeButton,
-} from "./workspaces";
-export type { SaveNodeToastInfo } from "./workspaces";
