@@ -42,7 +42,7 @@ docker compose run --rm -e STUDIO_ADMIN_USER -e STUDIO_ADMIN_PASSWORD studio-con
 docker compose up -d studio-control studio-web
 ```
 
-bootstrap 仅允许空团队创建首个管理员，已有团队不会被覆盖。首次登录后通过右下角“账号”创建成员。团队模式入口强制要求 PostgreSQL。团队账号当前用于受控团队，尚无 SSO、成员禁用管理界面、密码重置流程或审计导出。
+bootstrap 仅允许空团队创建首个管理员，已有团队不会被覆盖。首次登录后通过左侧栏“账号与安全”查看/添加成员及管理个人 MCP 凭据；右下角“账号”打开同一侧栏。团队模式入口强制要求 PostgreSQL。团队账号当前用于受控团队，尚无 SSO、成员禁用管理界面、密码重置流程或审计导出。
 
 ```powershell
 # 只更新 UI

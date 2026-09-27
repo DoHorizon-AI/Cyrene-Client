@@ -12,6 +12,10 @@
 .ide-menu { position: relative; }
 .ide-menu > button { border: 0; background: transparent; padding: 6px 10px; }
 .ide-menu > button[aria-expanded=true] { background: #414348; }
+@media (max-width: 640px) {
+  .ide-menubar { flex: 1; min-width: 0; overflow-x: auto; }
+  .ide-menu { flex-shrink: 0; }
+}
 .ide-menu-popup { position: absolute; top: 31px; left: 0; z-index: 80; min-width: 245px; max-width: min(370px, calc(100vw - 24px)); padding: 6px; background: #2b2d30; border: 1px solid #52555c; border-radius: 6px; box-shadow: 0 10px 35px #0007; }
 .ide-menu-popup button { width: 100%; text-align: left; display: flex; align-items: center; justify-content: space-between; border: 0; background: transparent; padding: 7px 10px; white-space: normal; }
 .ide-menu-popup button:hover { background: #35538b; }

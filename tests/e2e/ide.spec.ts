@@ -1,6 +1,20 @@
 import { expect, test } from "@playwright/test";
 import { menuAction } from "./ide-helpers";
 
+test("local account page identifies its mode and exposes setup without pretending team accounts are enabled", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "账号与安全", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "账号与安全", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /\.pipeline/ })).toHaveAttribute("aria-selected", "true");
+  const account = page.getByRole("region", { name: "工作台账号管理" });
+  await expect(account).toContainText("旧版本地预演");
+  await account.getByRole("button", { name: "刷新登录状态" }).click();
+  await expect(account.getByRole("status")).toHaveText("登录状态已刷新。");
+  await account.getByText("启用团队账号", { exact: true }).click();
+  await expect(account.getByText(/为控制服务配置 PostgreSQL/)).toBeVisible();
+  await expect(account.getByRole("button", { name: "创建 MCP 凭据（24 小时）" })).toHaveCount(0);
+});
+
 test("tool windows retain edits, resize, collapse and restore layout preferences", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("训练轮数").fill("8");
