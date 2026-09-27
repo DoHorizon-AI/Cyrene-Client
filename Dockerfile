@@ -4,6 +4,8 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
+COPY apps/web/services/navigator/package*.json apps/web/services/navigator/
+RUN cd apps/web/services/navigator && npm ci
 COPY apps/web/services/navigator apps/web/services/navigator
 RUN npm run build:web:navigator
 
