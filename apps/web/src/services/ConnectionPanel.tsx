@@ -41,7 +41,7 @@ export function ConnectionPanel({ client, status, onConnected }: Props) {
     finally { setBusy(false); }
   }
   return <div className="connection-box">
-    <button className="connection-toggle" onClick={() => setOpen(!open)} aria-expanded={open}><i className="dot" />{t(status ? "设置服务已连接" : "服务连接")}</button>
+    <button className="connection-toggle" onClick={() => setOpen(!open)} aria-expanded={open}><i className={`dot${status ? " connected" : ""}`} />{t(status ? "设置服务已连接" : "服务连接")}</button>
     {open && <section className="connection-popover" aria-label={t("服务连接设置")}>
       <strong>Navigator Web Host</strong>
       {target && <p className="connection-target">{target}</p>}
