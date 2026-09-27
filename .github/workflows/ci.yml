@@ -49,6 +49,8 @@ jobs:
       - run: npm run test:containers
       - name: Build unified Client image
         run: docker build --tag cyrene-client-web:ci .
+      - name: Verify Workspace BFF boundary
+        run: sh tooling/check-workspace-bff-routing.sh cyrene-client-web:ci
       - name: Validate unified Client routing configuration
         run: |
           docker run --rm \
@@ -59,6 +61,8 @@ jobs:
             --add-host cyrene-yield:127.0.0.1 \
             --add-host cyrene-exchange:127.0.0.1 \
             cyrene-client-web:ci nginx -t
+      - name: Check Workspace BFF default-off and incomplete routes
+        run: sh tooling/check-workspace-bff-routing.sh
       - name: Upload browser failure evidence
         if: failure()
         uses: actions/upload-artifact@v4

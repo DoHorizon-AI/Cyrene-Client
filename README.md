@@ -12,6 +12,8 @@
 
 新增“构建 / 运行”菜单、持久化 GitHub Actions 构建任务、结果验证和显式节点版本启用；对应操作共享 HTTP/MCP 契约。需管理员配置真实构建仓库和凭据，使用方法见 [节点镜像构建](docs/node-builds.md)。
 
+“左侧栏 → 账号与安全”接入组织工作空间发现和设备接入审批，并可使用 Workspace BFF 读取节点设置。默认关闭组织身份功能；实际使用需要受信登录入口和已部署的后端提供方。接入范围、身份边界及配置见 [账号与安全](docs/workspace-security-integration.md)。
+
 ## 本地启动
 
 Node.js 24+；独立开发存储使用 Node 内置 SQLite。

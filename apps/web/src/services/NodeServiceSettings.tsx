@@ -4,6 +4,7 @@ import type { PipelineNode } from "../../../../packages/pipeline-model";
 import { trainingParametersSchema, type HostStatus, type TrainingDraft } from "../../../../packages/service-settings/contracts";
 import { SettingsClient } from "./client";
 import { useI18n } from "../i18n";
+import type { WorkspaceSummary } from "./workspace-bff-client";
 
 interface Choice { id: string; label: string; apply(): void }
 interface Props { node: PipelineNode; client: SettingsClient; status: HostStatus | null; disabled: boolean; onUpdate(node: PipelineNode): void }
@@ -20,6 +21,12 @@ const description: Record<string, string> = {
 
 export function NodeServiceSettings({ node, client, status, disabled, onUpdate }: Props) {
   const { locale, t } = useI18n();
+  const tx = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
+  const bff = client.workspaceBffEnabled;
+  const [workspaces, setWorkspaces] = useState<readonly WorkspaceSummary[]>([]);
+  const [selectedWorkspace, setSelectedWorkspace] = useState("");
+  const [discoveryError, setDiscoveryError] = useState("");
+  const [discoveryAttempt, setDiscoveryAttempt] = useState(0);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [choices, setChoices] = useState<Choice[]>([]);
   const [resourceId, setResourceId] = useState(node.settingsBinding?.resourceId ?? "");
@@ -37,8 +44,20 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
   useEffect(() => {
     request.current?.abort(); setBusy(false); setChoices([]); setFacts([]); setDraft(null); setMessage("");
   }, [status]);
+  useEffect(() => {
+    if (!bff) return;
+    const controller = new AbortController();
+    setWorkspaces([]); setSelectedWorkspace(""); setDiscoveryError("");
+    void client.discoverWorkspaceBffWorkspaces(controller.signal).then(items => {
+      if (controller.signal.aborted) return;
+      setWorkspaces(items); if (items.length === 1) setSelectedWorkspace(items[0].workspaceId);
+    }, () => { if (!controller.signal.aborted) setDiscoveryError(tx("请从账号与安全完成组织登录，再重试读取。", "Sign in through Account & security, then retry discovery.")); });
+    return () => controller.abort();
+  }, [client, bff, discoveryAttempt]);
+  useEffect(() => { request.current?.abort(); setBusy(false); setChoices([]); setFacts([]); setDraft(null); }, [selectedWorkspace]);
   const service = prefix[node.type];
-  const available = !!status && (!service || status.proxyPrefixes.some((p) => p === `/api/v1/${service}`));
+  const projected = ["dataset", "model", "training", "evaluation"].includes(node.type);
+  const available = bff && node.type !== "compute" ? projected && workspaces.some(w => w.workspaceId === selectedWorkspace) : !!status && (!service || status.proxyPrefixes.some((p) => p === `/api/v1/${service}`));
   const locked = disabled || busy || !available;
 
   function apply(config: PipelineNode["config"], binding?: PipelineNode["settingsBinding"]) {
@@ -59,6 +78,12 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
   const active = (signal: AbortSignal) => mounted.current && !signal.aborted;
 
   async function load(signal: AbortSignal) {
+    const original = JSON.stringify(latest.current);
+    const unchanged = () => {
+      if (!active(signal)) return false;
+      if (JSON.stringify(latest.current) !== original) throw new Error(tx("节点已变化，请重新读取。", "The node changed. Reload its settings."));
+      return true;
+    };
     if (node.type === "dataset") {
       if (resourceId.trim()) {
         const item = await client.datasetVersion(z.string().uuid().parse(resourceId.trim()), signal);
@@ -68,15 +93,16 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
         setFacts([`数据集：${item.datasetId}`, `版本：${item.version} · ${item.state}`, `行数：${item.rowCount ?? "未报告"}`]);
         setMessage("已读取已发布版本并更新本地节点。");
       } else {
-        const items = await client.datasets(signal); if (!active(signal)) return;
+        const items = await client.datasets(signal, selectedWorkspace); if (!unchanged()) return;
         setFacts(items.map((x) => `${x.name} · ${x.id} · ${x.state}`));
         setMessage(items.length ? "以下是数据集容器；请填写需要使用的数据版本 ID 后读取。" : "服务返回空数据集列表。");
       }
     } else if (node.type === "model") {
-      const items = await client.models(signal); if (!active(signal)) return;
+      const items = await client.models(signal, selectedWorkspace); if (!unchanged()) return;
       const ready = items.filter((x) => x.state === "READY" && x.modelArtifact);
       setChoices(ready.map((x) => ({ id: x.id, label: x.name, apply: () => {
-        apply({ modelRef: x.modelArtifact!.uri }, { kind: "model-import", resourceId: x.id, artifact: x.modelArtifact! });
+        if (!active(signal) || JSON.stringify(latest.current) !== original) { setMessage(tx("节点已变化，请重新读取。", "The node changed. Reload its settings.")); return; }
+        apply({ modelRef: x.modelArtifact!.uri }, { kind: "model-import", resourceId: x.id, artifact: x.modelArtifact!, ...(bff ? { workspaceId: selectedWorkspace } : {}) });
         setMessage(`已选择 ${x.name}，模型制品引用已写入本地节点。`);
       } })));
       setMessage(`已读取 ${items.length} 个模型，其中 ${ready.length} 个可选择。`);
@@ -85,6 +111,15 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
       setFacts((result.gpu?.gpus ?? []).map((x) => `${x.name} · ${x.usedMib}/${x.totalMib} MiB · ${x.utilizationPct}%`));
       setMessage(result.gpu?.available ? "已读取本机 GPU 观测；这不代表资源已分配。" : "Web Host 未报告可用 GPU；没有云端资源数据。");
     } else if (node.type === "training") {
+      if (bff) {
+        const id = z.string().uuid().parse(resourceId.trim());
+        const item = await client.draft(id, signal, selectedWorkspace); if (!unchanged()) return;
+        if (item.id !== id) throw new Error(tx("资源身份不匹配。", "Resource identity mismatch."));
+        const params = item.configuration?.parameters;
+        const editable = params ? Object.fromEntries(Object.entries(params).filter(([key, value]) => key !== "maxSteps" && value != null)) : {};
+        setDraft(item); apply({ ...editable, method: "LoRA" }, { kind: "training-draft", resourceId: item.id, workspaceId: selectedWorkspace });
+        setMessage(tx("已读取训练草稿。此连接暂不支持参数写回。", "Training draft loaded. This connection does not support parameter updates yet.")); return;
+      }
       const items = await client.drafts(signal); if (!active(signal)) return;
       setChoices(items.map((x) => ({ id: x.id, label: `${x.name} · ${x.state}`, apply: () => {
         setDraft(x);
@@ -95,9 +130,11 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
       } })));
       setMessage(items.length ? "选择一份训练草稿以读取其参数。" : "Yield 尚无训练草稿。先从数据集创建草稿后再连接。");
     } else if (node.type === "evaluation") {
-      const item = await client.suite(z.string().uuid().parse(resourceId.trim()), signal); if (!active(signal)) return;
+      const id = z.string().uuid().parse(resourceId.trim());
+      const item = await client.suite(id, signal, selectedWorkspace); if (!unchanged()) return;
+      if (item.id !== id) throw new Error(tx("资源身份不匹配。", "Resource identity mismatch."));
       if (item.state !== "ACTIVE") throw new Error("评估配置已归档，未应用。");
-      apply({ suite: item.name, evaluator: item.evaluator, expectedField: item.expectedField, actualField: item.actualField, threshold: item.threshold, judgeProfileId: item.judgeProfileId ?? "" }, { kind: "evaluation-suite", resourceId: item.id });
+      apply({ suite: item.name, evaluator: item.evaluator, expectedField: item.expectedField, actualField: item.actualField, threshold: item.threshold, judgeProfileId: item.judgeProfileId ?? "" }, { kind: "evaluation-suite", resourceId: item.id, ...(bff ? { workspaceId: selectedWorkspace } : {}) });
       setMessage("已读取评估配置。修改只保存在本地；可另存为新配置。");
     } else if (node.type === "deployment") {
       const items = await client.bindings(signal); if (!active(signal)) return;
@@ -115,6 +152,7 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
     }
   }
   async function saveTraining(signal: AbortSignal) {
+    if (bff) throw new Error(tx("此连接尚不支持训练参数写回。", "Training updates are not available on this connection."));
     const sent = structuredClone(latest.current);
     const id = sent.settingsBinding?.resourceId;
     if (!id || sent.settingsBinding?.kind !== "training-draft") throw new Error("请先选择训练草稿。");
@@ -134,22 +172,23 @@ export function NodeServiceSettings({ node, client, status, disabled, onUpdate }
   async function createSuite(signal: AbortSignal) {
     const sent = structuredClone(latest.current), config = sent.config;
     const payload = { name: config.suite, evaluator: config.evaluator ?? "exact_match.v1", expectedField: config.expectedField ?? "expected", actualField: config.actualField ?? "actual", threshold: config.threshold ?? 0.8, ...(config.judgeProfileId ? { judgeProfileId: config.judgeProfileId } : {}) };
-    const serialized = JSON.stringify(payload);
+    const serialized = JSON.stringify({ payload, workspace: bff ? selectedWorkspace : null });
     if (suiteRequest.current?.payload !== serialized) suiteRequest.current = { payload: serialized, key: crypto.randomUUID() };
-    const item = await client.createSuite(payload, suiteRequest.current!.key);
+    const item = await client.createSuite(payload, suiteRequest.current!.key, selectedWorkspace);
     if (!active(signal)) return;
     if (JSON.stringify(latest.current) !== JSON.stringify(sent)) { setMessage(`Echo 已创建评估配置 ${item.id}；节点期间发生变化，未替换当前绑定。`); return; }
-    apply({}, { kind: "evaluation-suite", resourceId: item.id }); setMessage(`Echo 已创建评估配置「${item.name}」；未发起评估。`);
+    apply({}, { kind: "evaluation-suite", resourceId: item.id, ...(bff ? { workspaceId: selectedWorkspace } : {}) }); setMessage(`Echo 已创建评估配置「${item.name}」；未发起评估。`);
   }
 
   return <section className="service-settings" aria-label={t("节点服务设置")}>
-    <div className="settings-heading"><strong>{t("服务端设置")}</strong><span>{t(!status ? "未连接" : available ? "可请求" : "入口未开放")}</span></div>
+    <div className="settings-heading"><strong>{t("服务端设置")}</strong><span>{t(available ? "可请求" : !status ? "未连接" : "入口未开放")}</span></div>
     <p>{t(description[node.type])}</p>
-    {!status && <p className="settings-hint">{t("请先从页面右上角连接 Web Host。")}</p>}
-    {status && !available && <p className="settings-hint">{locale === "zh-CN" ? `Web Host 未开放 ${service} 入口，此节点保留本地设置。` : `Web Host does not expose the ${service} endpoint. This node keeps its local settings.`}</p>}
-    {(node.type === "dataset" || node.type === "evaluation") && <label className="field"><span>{t(node.type === "dataset" ? "数据版本 ID（留空读取数据集）" : "评估配置 ID")}</span><input value={resourceId} onChange={(e) => setResourceId(e.target.value)} disabled={disabled || busy} /></label>}
+    {bff && <div><label className="field"><span>{tx("组织工作空间", "Organization workspace")}</span><select value={selectedWorkspace} disabled={disabled || busy} onChange={e => setSelectedWorkspace(e.target.value)}><option value="">{tx("选择工作空间", "Select workspace")}</option>{workspaces.map(w => <option key={w.workspaceId} value={w.workspaceId}>{w.displayName}</option>)}</select></label>{discoveryError && <p role="alert">{discoveryError}</p>}<button disabled={busy} onClick={() => setDiscoveryAttempt(n => n + 1)}>{tx("重新读取工作空间", "Reload workspaces")}</button><p>{tx("此连接支持数据集和模型列表、按 ID 读取训练与评估配置，以及新建评估配置。其他操作尚未开放。", "This connection supports dataset and model lists, training and evaluation lookup by ID, and creating evaluation configurations. Other operations are not available yet.")}</p></div>}
+    {!bff && !status && <p className="settings-hint">{t("请先从页面右上角连接 Web Host。")}</p>}
+    {!bff && status && !available && <p className="settings-hint">{locale === "zh-CN" ? `Web Host 未开放 ${service} 入口，此节点保留本地设置。` : `Web Host does not expose the ${service} endpoint. This node keeps its local settings.`}</p>}
+    {(node.type === "dataset" || node.type === "evaluation" || (bff && node.type === "training")) && <label className="field"><span>{node.type === "training" ? tx("训练草稿 ID", "Training draft ID") : t(node.type === "dataset" ? "数据版本 ID（留空读取数据集）" : "评估配置 ID")}</span><input value={resourceId} onChange={(e) => setResourceId(e.target.value)} disabled={disabled || busy} /></label>}
     {node.type === "agent" && <label className="field"><span>{t("Navigator 工作空间 ID")}</span><input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} disabled={disabled || busy} /></label>}
-    <div className="settings-actions"><button disabled={locked} onClick={() => void perform(load)}>{t(busy ? "请求中…" : "读取服务设置")}</button>{node.type === "training" && <button disabled={locked || !draft || draft.state === "STARTED" || !draft.configuration} onClick={() => void perform(saveTraining)}>{t("保存参数到 Yield")}</button>}{node.type === "evaluation" && <button disabled={locked} onClick={() => void perform(createSuite)}>{t("另存到 Echo")}</button>}</div>
+    <div className="settings-actions"><button disabled={locked || (bff && ((node.type === "dataset" && !!resourceId.trim()) || (["training", "evaluation"].includes(node.type) && !resourceId.trim())))} onClick={() => void perform(load)}>{t(busy ? "请求中…" : "读取服务设置")}</button>{node.type === "training" && <button disabled={locked || bff || !draft || draft.state === "STARTED" || !draft.configuration} onClick={() => void perform(saveTraining)}>{t("保存参数到 Yield")}</button>}{node.type === "evaluation" && <button disabled={locked} onClick={() => void perform(createSuite)}>{t("另存到 Echo")}</button>}</div>
     {choices.length > 0 && <div className="resource-choices">{choices.map((c) => <button key={c.id} disabled={locked} onClick={c.apply}>{c.label}<small>{c.id}</small></button>)}</div>}
     {!!facts.length && <ul className="resource-facts">{facts.map((f, i) => <li key={i}>{f}</li>)}</ul>}
     {message && <p role="status" className="settings-message">{message}</p>}

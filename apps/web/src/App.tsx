@@ -18,6 +18,7 @@ import { Icon, Menu, ResizeHandle, useIdeLayout } from "./ide/Chrome";
 import { FilePanel, AssistantPanel, PluginPanel } from "./ide/Panels";
 import { logError } from "./logger";
 import { LanguageSelect, useI18n } from "./i18n";
+import { WorkspaceSecurity } from "./team/WorkspaceSecurity";
 
 import { MonitorWindow } from "./monitoring/MonitorWindow";
 import { productPages } from "./products/navigation";
@@ -74,6 +75,7 @@ function AppView() {
   const catalogRevision = useNodeCatalog();
   const { layout, setLayout, left, right, reset } = useIdeLayout();
   const [serverVisited, setServerVisited] = useState(false);
+  const [securityVisited, setSecurityVisited] = useState(false);
   const [editorTab, setEditorTab] = useState<EditorId>(productPages.some(page => location.pathname === pathForRoute(page.id) && location.pathname !== "/") || (location.pathname.startsWith("/runs/") || location.pathname === "/overview") ? "product" : "graph");
   const [productRoute, setProductRoute] = useState<RouteId>(() => routeForPath(location.pathname));
   const [productVisited, setProductVisited] = useState(() => editorTab === "product");
@@ -87,6 +89,11 @@ function AppView() {
     if (id === "monitor") { setMonitorExpanded(true); setLayout(value => value.right === "monitor" ? { ...value, right: null } : value); }
   };
   const openMonitor = (history = false) => { if (history) setHistoryRequest(value => value + 1); selectEditor("monitor"); };
+  useEffect(() => {
+    const open = () => setLayout(s => ({ ...s, left: "security", ...(innerWidth < 1000 ? { right: null } : {}) }));
+    window.addEventListener("cyrene:open-account", open);
+    return () => window.removeEventListener("cyrene:open-account", open);
+  }, []);
   const toggleMonitor = () => {
     if (monitorExpanded) {
       editorWorkspace.current?.merge("graph"); setMonitorExpanded(false);
@@ -126,7 +133,7 @@ function AppView() {
   useEffect(() => {
     setEvents(previous => previous.at(-1)?.message === notice ? previous : [...previous.slice(-99), { time: new Date().toLocaleTimeString("zh-CN", { hour12: false }), message: notice }]);
   }, [notice]);
-  useEffect(() => { if (layout.left === "servers") setServerVisited(true); }, [layout.left]);
+  useEffect(() => { if (layout.left === "servers") setServerVisited(true); if (layout.left === "security") setSecurityVisited(true); }, [layout.left]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -206,7 +213,7 @@ function AppView() {
 
   function showChecks() { setTab("checks"); setLayout(s => ({ ...s, bottom: true })); }
   function focusNode(id: string | null) { setSelectedId(id); if (id && !layout.right) setLayout(s => ({ ...s, right: "info", ...(innerWidth < 1000 ? { left: null } : {}) })); }
-  const panelTitle = t(layout.left === "files" ? "项目文件" : layout.left === "servers" ? "服务器管理" : "节点库");
+  const panelTitle = layout.left === "security" ? tx("账号与安全", "Account & security") : t(layout.left === "files" ? "项目文件" : layout.left === "servers" ? "服务器管理" : "节点库");
   const rightTitle = layout.right === "monitor" ? "Navigator" : t(layout.right === "assistant" ? "平台 MCP" : layout.right === "plugins" ? "页面插件" : "节点信息");
   const css = { "--left-width": `${layout.leftWidth}px`, "--right-width": `${layout.rightWidth}px`, "--bottom-height": `${layout.bottomHeight}px` } as CSSProperties;
   return <div className={`studio ide-studio ${layout.left ? "has-left" : ""} ${layout.right ? "has-right" : ""}`} style={css}>
@@ -233,6 +240,7 @@ function AppView() {
         <button className={layout.left === "files" ? "active" : ""} aria-label={t("项目文件")} aria-pressed={layout.left === "files"} title={`${t("项目文件")} · Alt 1`} onClick={() => left("files")}><Icon name="files" /></button>
         <button className={layout.left === "nodes" ? "active" : ""} aria-label={t("节点库")} aria-pressed={layout.left === "nodes"} title={`${t("节点库")} · Alt 2`} onClick={() => left("nodes")}><Icon name="nodes" /></button>
         <button className={layout.left === "servers" ? "active" : ""} aria-label={t("服务器管理")} aria-pressed={layout.left === "servers"} title={`${t("服务器管理")} · Alt 3`} onClick={() => left("servers")}><Icon name="servers" /></button>
+        <button className={layout.left === "security" ? "active" : ""} aria-label={tx("账号与安全", "Account & security")} aria-pressed={layout.left === "security"} title={tx("账号与安全", "Account & security")} onClick={() => left("security")}><Icon name="account" /></button>
         <div className="ide-rail-spacer" /><button aria-label={t("显示事件日志")} title={t("事件日志")} onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="log" /></button>
       </nav>
       <aside className="ide-dock ide-left-dock" hidden={!layout.left} aria-label={`${panelTitle}面板`}>
@@ -250,6 +258,7 @@ function AppView() {
 
           </div>
           <div className="ide-server-panel" hidden={layout.left !== "servers"}>{serverVisited && <ServerManagerBody />}</div>
+          <div hidden={layout.left !== "security"}>{securityVisited && <WorkspaceSecurity />}</div>
         </div>
         <ResizeHandle orientation="vertical" value={layout.leftWidth} min={210} max={480} label={t("调整左侧窗口宽度")} onChange={v => setLayout(s => ({ ...s, leftWidth: v }))} />
       </aside>

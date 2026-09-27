@@ -9,14 +9,25 @@ export default defineConfig(({ mode }) => {
   const control = admittedTarget(process.env.STUDIO_CONTROL_URL);
   if (control) {
     const proxy = Object.fromEntries(["/studio-", "/api"].map(prefix => [prefix, { target: control, changeOrigin: false, timeout: 35000, proxyTimeout: 35000 }]));
-    return { root: "apps/web", resolve: { dedupe: ["react", "react-dom"] }, plugins: [react()], server: { host: "127.0.0.1", port: 5180, strictPort: true, proxy }, preview: { host: "127.0.0.1", proxy }, build: { outDir: "../../dist", emptyOutDir: true } };
+    return { root: "apps/web", envDir: process.cwd(), resolve: { dedupe: ["react", "react-dom"] }, plugins: [react(), workspaceBoundary()], server: { host: "127.0.0.1", port: 5180, strictPort: true, proxy }, preview: { host: "127.0.0.1", proxy }, build: { outDir: "../../dist", emptyOutDir: true } };
   }
   const proxy = settingsProxy(target);
   return {
-    root: "apps/web", resolve: { dedupe: ["react", "react-dom"] },
-    plugins: [react(), settingsBridge(target), serverControlBridge(process.env.STUDIO_CONTROL_DATA_DIR), pipelineControlBridge(process.env.STUDIO_CONTROL_DATA_DIR)],
+    root: "apps/web", envDir: process.cwd(), resolve: { dedupe: ["react", "react-dom"] },
+    plugins: [react(), workspaceBoundary(), settingsBridge(target), serverControlBridge(process.env.STUDIO_CONTROL_DATA_DIR), pipelineControlBridge(process.env.STUDIO_CONTROL_DATA_DIR)],
     server: { host: "127.0.0.1", port: 5180, strictPort: true, proxy },
     preview: { host: "127.0.0.1", proxy },
     build: { outDir: "../../dist", emptyOutDir: true },
   };
 });
+
+// Development has no trusted Easy Auth token handoff. Never forward these paths
+// through the legacy Product proxy or return the SPA as a successful API response.
+function workspaceBoundary(): import("vite").Plugin {
+  const middleware = (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, next: () => void) => {
+    if (!(req.url ?? "").startsWith("/api/workspace") && !(req.url ?? "").startsWith("/.auth")) return next();
+    res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify({ code: "workspace_identity_not_configured" }));
+  };
+  return { name: "workspace-identity-boundary", configureServer(server) { server.middlewares.use(middleware); }, configurePreviewServer(server) { server.middlewares.use(middleware); } };
+}
