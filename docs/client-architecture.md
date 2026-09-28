@@ -109,7 +109,7 @@ Installing a service capability also installs its matching UI bundle. A release 
 
 | Optional service selection / 可选服务 | Included capability and UI / 随附能力与 UI |
 | --- | --- |
-| Navigator | Local agent execution environment and harness, plus the Navigator UI module. / 本地 Agent 执行环境与 harness，以及 Navigator UI 模块。 |
+| Navigator | Built-in agent execution environment and harness (based on DeepSeek harness), plus the Client-owned session UI module. / 内置 Agent 执行环境与 harness（基于 DeepSeek harness 二次开发），以及 Client 自有的会话 UI 模块。 |
 | Exchange | API gateway and its client UI module. / API 网关及其客户端 UI 模块。 |
 | Reactor | Inference deployment and its client UI module. / 推理部署及其客户端 UI 模块。 |
 | Yield | Training and its client UI module. / 训练及其客户端 UI 模块。 |
