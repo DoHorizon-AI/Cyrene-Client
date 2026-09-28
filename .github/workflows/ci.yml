@@ -49,6 +49,8 @@ jobs:
       - run: npm run test:containers
       - name: Build unified Client image
         run: docker build --tag cyrene-client-web:ci .
+      - name: Build Workspace web image
+        run: docker build -f Dockerfile.workspace-web --tag cyrene-client-workspace-web:ci .
       - name: Verify Workspace BFF boundary
         run: sh tooling/check-workspace-bff-routing.sh cyrene-client-web:ci
       - name: Validate unified Client routing configuration
