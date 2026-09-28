@@ -12,6 +12,7 @@ import { usePipelineDocument } from "./pipelines/usePipelineDocument";
 import { useRunControl } from "./runs/RunPanel";
 import { useBuildControl } from "./builds/useBuildControl";
 import { useNodeCatalog } from "./pipelines/useNodeCatalog";
+import { DeviceApprovalPage } from "./device-approval/DeviceApprovalPage";
 
 import { EditorWorkspace, type EditorWorkspaceHandle, type EditorId } from "./ide/EditorWorkspace";
 import { Icon, Menu, ResizeHandle, useIdeLayout } from "./ide/Chrome";
@@ -325,9 +326,12 @@ function AppView() {
 }
 
 export function App() {
+  const isDeviceApprovalRoute = typeof window !== "undefined" && window.location.pathname === "/device-approval";
   return (
     <ErrorBoundary>
-      <AppView />
+      {isDeviceApprovalRoute
+        ? <DeviceApprovalPage sessionStatus="unavailable" />
+        : <AppView />}
     </ErrorBoundary>
   );
 }

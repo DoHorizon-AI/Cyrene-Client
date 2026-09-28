@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.4
+FROM node:24-alpine AS builder
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npx tsc --noEmit --project tsconfig.workspace-web.json \
+    && npx vite build --config vite.workspace-web.config.ts
+
+FROM nginx:1.27-alpine AS runtime
+
+# Workspace BFF forwarding stays disabled until trusted sign-in and the verified BFF are ready.
+# 中文：可信登录与已验证的 BFF 就绪前，保持 Workspace BFF 转发关闭。
+RUN apk add --no-cache ca-certificates
+
+ENV CYRENE_WORKSPACE_BFF_ENABLED=false \
+    CYRENE_WORKSPACE_BFF_UPSTREAM="" \
+    CYRENE_WORKSPACE_BFF_DNS_RESOLVER=168.63.129.16 \
+    CYRENE_WORKSPACE_BFF_EXPECTED_ENV_DOMAIN=whitefield-8c4d4393.eastasia.azurecontainerapps.io \
+    NGINX_ENVSUBST_FILTER="^(STUDIO_CONTROL_ORIGIN|CYRENE_WORKSPACE_BFF_(ENABLED|UPSTREAM|DNS_RESOLVER))$"
+
+ENV STUDIO_CONTROL_ORIGIN=http://studio-control:5182
+
+LABEL org.opencontainers.image.source="https://github.com/DoHorizon-AI/Cyrene-Client"
+LABEL org.opencontainers.image.title="Cyrene Client Workspace Web"
+
+RUN rm -f /etc/nginx/conf.d/default.conf
+
+COPY --from=builder /app/dist-workspace-web /usr/share/nginx/html
+COPY nginx.workspace-web.conf /etc/nginx/templates/default.conf.template
+COPY cyrene-proxy.conf /etc/nginx/cyrene-proxy.conf
+COPY --chmod=755 tooling/validate-workspace-bff-upstream.sh /docker-entrypoint.d/10-validate-workspace-bff-upstream.sh
+
+EXPOSE 80
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://127.0.0.1:80/healthz || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]

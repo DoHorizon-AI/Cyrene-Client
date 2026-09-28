@@ -1,0 +1,13 @@
+.git
+.git/**
+node_modules
+**/node_modules
+dist
+dist-workspace-web
+**/dist
+test-results
+playwright-report
+coverage
+.env
+.env.*
+!.env.example
