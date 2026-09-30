@@ -3,7 +3,7 @@
 当前代码横跨两个仓库，均使用 `feat/local-ai-assistant-20260930` 分支：
 
 - Client：<https://github.com/DoHorizon-AI/Cyrene-Client/tree/feat/local-ai-assistant-20260930>
-- Navigator：<https://github.com/DoHorizon-AI/Cyrene-Navigator/tree/feat/local-ai-assistant-20260930>
+- Navigator：本地提交 `516d1ed`；当前账号 `MarchsYu` 对原仓库推送返回 HTTP 403，该分支尚未上传 GitHub。完整分支与历史由 OneDrive 根目录的 `Cyrene-Navigator-516d1ed-20260930.bundle` 携带。
 
 这是当前已验证开发现场的独立分支：Client 基于 `58b0af8`，Navigator 基于 `7d8c1e7`。它不包含后来远端整合分支的 5 个提交和 Navigator develop 的 12 个提交；后续整合时要保留双方的 UI、宿主和权限修复。原整合分支及 develop 未被覆盖。
 
@@ -13,7 +13,8 @@
 
 ```powershell
 git clone --branch feat/local-ai-assistant-20260930 https://github.com/DoHorizon-AI/Cyrene-Client.git
-git clone --branch feat/local-ai-assistant-20260930 https://github.com/DoHorizon-AI/Cyrene-Navigator.git
+git clone --branch feat/local-ai-assistant-20260930 "$env:OneDrive\Cyrene-Navigator-516d1ed-20260930.bundle" Cyrene-Navigator
+git -C Cyrene-Navigator remote set-url origin https://github.com/DoHorizon-AI/Cyrene-Navigator.git
 ```
 
 ## 开发启动
@@ -51,4 +52,4 @@ node assistant/node_modules/typescript/bin/tsc -p harness/tsconfig.json
 
 ## 开发 skill
 
-OneDrive 根目录的 `Cyrene-Development-Skills-20260930.zip` 包含 `cyrene-studio-development`、`cyrene-plugin-development`、安装说明和对应源码提交清单。将两个 skill 目录放入新设备的 `~/.codex/skills/`；如有同名 skill，先备份再合并。skill 中的旧机器绝对路径是历史证据，新设备应重新定位 checkout。
+OneDrive 根目录的 `Cyrene-Development-Skills-20260930.zip` 包含 `cyrene-studio-development`、`cyrene-plugin-development`、安装说明和对应源码提交清单。将两个 skill 目录放入新设备的 `~/.codex/skills/`；如有同名 skill，先备份再合并。skill 中的旧机器绝对路径是历史证据，新设备应重新定位 checkout。完整 Navigator 源码位于旁边的 bundle 文件；复制源码不依赖原仓库的推送权限。OneDrive 云端完成同步的状态需由客户端确认。
