@@ -5,6 +5,7 @@ test("assistant proposals do not write until reviewed and approved through MCP",
   await page.getByLabel("团队用户名").fill("owner"); await page.getByLabel("团队密码").fill("browser-fixture-owner-password");
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
+  await page.getByRole("button", { name: "MCP", exact: true }).click();
   const panel = page.getByRole("region", { name: "MCP 工作台" });
   await panel.getByRole("button", { name: "连接 MCP", exact: true }).click();
   await expect(panel).toContainText("explicit-test-fixture");
@@ -33,6 +34,7 @@ test("workbench uses real MCP to create a diagnostic run and Navigator observes 
   await expect(page.getByLabel("流水线名称")).toBeVisible();
   const initialName = await page.getByLabel("流水线名称").inputValue();
   await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
+  await page.getByRole("button", { name: "MCP", exact: true }).click();
   const panel = page.getByRole("region", { name: "MCP 工作台" });
   await panel.getByRole("button", { name: "连接 MCP", exact: true }).click();
   await expect(panel).toContainText("Streamable HTTP");

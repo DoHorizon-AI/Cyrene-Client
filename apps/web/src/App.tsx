@@ -15,7 +15,8 @@ import { useNodeCatalog } from "./pipelines/useNodeCatalog";
 
 import { EditorWorkspace, type EditorWorkspaceHandle, type EditorId } from "./ide/EditorWorkspace";
 import { Icon, Menu, ResizeHandle, useIdeLayout } from "./ide/Chrome";
-import { FilePanel, AssistantPanel, PluginPanel } from "./ide/Panels";
+import { FilePanel, PluginPanel } from "./ide/Panels";
+import { AssistantWindow } from "./assistant/AssistantWindow";
 import { logError } from "./logger";
 import { LanguageSelect, useI18n } from "./i18n";
 import { WorkspaceSecurity } from "./team/WorkspaceSecurity";
@@ -83,9 +84,12 @@ function AppView() {
   const editorWorkspace = useRef<EditorWorkspaceHandle>(null);
   const [editorLayout, setEditorLayout] = useState<{ split: boolean; visible: EditorId[] }>({ split: false, visible: [editorTab] });
   const monitorDock = useRef<HTMLDivElement>(null), monitorCenter = useRef<HTMLDivElement>(null);
+  const assistantDock = useRef<HTMLDivElement>(null), assistantCenter = useRef<HTMLDivElement>(null);
+  const [assistantExpanded, setAssistantExpanded] = useState(false);
   const tx = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
   const selectEditor = (id: EditorId) => {
     setEditorTab(id);
+    if (id === "assistant") { setAssistantExpanded(true); setLayout(value => value.right === "assistant" ? { ...value, right: null } : value); }
     if (id === "monitor") { setMonitorExpanded(true); setLayout(value => value.right === "monitor" ? { ...value, right: null } : value); }
   };
   const openMonitor = (history = false) => { if (history) setHistoryRequest(value => value + 1); selectEditor("monitor"); };
@@ -117,8 +121,8 @@ function AppView() {
   const [plan, setPlan] = useState<string[]>([]);
   const [cursor, setCursor] = useState(0);
   const [running, setRunning] = useState(false);
-  const { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, redoCount, redoLocal, changed, recordChange, applyDocument, loadServerDocument, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor, recoveries, recoveryStatus, recover, serverBase, updateServerBase } = usePipelineDocument({
-    selectedId, onSelect: setSelectedId, onNotice: setNotice,
+  const { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, redoCount, redoLocal, changed, recordChange, applyDocument, loadServerDocument, openServerPipeline, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor, recoveries, recoveryStatus, recover, serverBase, updateServerBase } = usePipelineDocument({
+    disabled: running, selectedId, onSelect: setSelectedId, onNotice: setNotice,
     onResetPreview: () => { setRunning(false); setPlan([]); setCursor(0); },
     onShowGraph: () => setEditorTab("graph"),
   });
@@ -137,7 +141,7 @@ function AppView() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target?.closest(".product-workspace, .monitor-window") || editorTab === "product" || editorTab === "monitor") return;
+      if (target?.closest(".product-workspace, .monitor-window, .assistant-window") || editorTab === "product" || editorTab === "monitor" || editorTab === "assistant") return;
       const editingText = target?.isContentEditable || !!target?.closest("input, textarea, select");
       if ((e.ctrlKey || e.metaKey) && !editingText && !running) {
         if (e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) redoLocal(); else undoLocal(); }
@@ -276,6 +280,7 @@ function AppView() {
           { id: "source", label: <><Icon name="files" />JSON</>, content: () => <div className="ide-source-view"><div>{pipeline.id}.json · {t("当前草稿")}<span>{t("只读预览")}</span></div><pre tabIndex={0} aria-label={t("文件内容预览")}>{JSON.stringify(pipeline, null, 2)}</pre></div> },
           ...(filePreview ? [{ id: "file" as const, label: <><Icon name="files" />{filePreview.name.split("/").at(-1)}</>, content: () => <div className="ide-source-view"><div>{filePreview.name}<span>{t("只读预览")}</span></div><pre tabIndex={0} aria-label={t("文件内容预览")}>{filePreview.text}</pre></div> }] : []),
           { id: "monitor", label: "Navigator", content: () => <div className="monitor-editor-host" ref={monitorCenter} /> },
+          { id: "assistant", label: "AI Assistant", content: () => <div className="assistant-editor-host" ref={assistantCenter} /> },
           ...(productVisited ? [{ id: "product" as const, label: productPages.find(page => page.id === productRoute)?.[locale === "zh-CN" ? "zh" : "en"], content: () => <div className="monitor-editor-host"><Suspense fallback={<p>{tx("正在打开页面…", "Opening page…")}</p>}><ProductWorkspace route={productRoute} /></Suspense></div> }] : []),
         ]} />
         <section className="bottom-panel" hidden={!layout.bottom} aria-label={t("底部工具窗口")}>
@@ -309,7 +314,7 @@ function AppView() {
 
           </div>
           <div hidden={layout.right !== "plugins"}><PluginPanel onSource={() => setEditorTab("source")} onChecks={showChecks} /></div>
-          <div hidden={layout.right !== "assistant"}><AssistantPanel document={pipeline} selectedId={selectedId} onNotice={setNotice} onMonitor={() => openMonitor()} /></div>
+          <div className="assistant-dock-host" hidden={layout.right !== "assistant"} ref={assistantDock}>{assistantExpanded && <button onClick={() => selectEditor("assistant")}>{tx("在主页面查看聊天", "Show chat in editor")}</button>}</div>
         </div>
       </aside>
       <nav className="ide-rail ide-rail-right" aria-label={t("右侧工具栏")}><button aria-label={tx("Navigator 运行监控", "Navigator monitoring")} title="Navigator" aria-pressed={layout.right === "monitor" || editorLayout.visible.includes("monitor")} onClick={() => { if (layout.right === "monitor") right("monitor"); else openMonitor(); }}><Icon name="log" /></button>
@@ -319,6 +324,7 @@ function AppView() {
       </nav>
     </div>
     <MonitorWindow document={pipeline} dirty={dirty} selectedId={selectedId} visible={monitorExpanded ? editorLayout.visible.includes("monitor") : layout.right === "monitor"} expanded={monitorExpanded} historyRequest={historyRequest} dock={monitorDock} center={monitorCenter} splitRequested={editorLayout.split} onSplit={() => toggleEditorSplit("monitor")} onExpand={toggleMonitor} onLocate={id => { setEditorTab("graph"); withEditor(handle => handle.select(id)); }} />
+    <AssistantWindow document={pipeline} serverBase={serverBase} onOpenWorkflow={openServerPipeline} selectedId={selectedId} dock={assistantDock} center={assistantCenter} expanded={assistantExpanded} visible={assistantExpanded ? editorLayout.visible.includes("assistant") : layout.right === "assistant"} onNotice={setNotice} onMonitor={() => openMonitor()} onDock={() => { if (assistantExpanded) { setAssistantExpanded(false); if (editorTab === "assistant") setEditorTab("graph"); setLayout(value => ({ ...value, right: "assistant" })); } else selectEditor("assistant"); }} />
     <div className="ide-bottom-bar"><button onClick={showChecks}><Icon name="check" />{t("问题")} {validation.issues.length ? `(${validation.issues.length})` : ""}</button><button onClick={() => { setTab("preview"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="play" />{t("运行")}</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}><Icon name="log" />{t("日志")}</button><span>{running ? t("正在本地预演") : tx("Navigator · 运行监控", "Navigator · Run monitoring")}</span></div>
     <footer className="footer ide-statusbar"><p role="status" title={notice}>{notice}</p><div><span aria-label={t("编辑恢复状态")}>{recoveryStatus}</span><span>{t(hostStatus ? "Web Host 已连接" : "Web Host 未连接")}</span><span>UTF-8</span><span>JSON</span><span>Cyrene Client</span></div></footer>
     <input hidden ref={fileInput} type="file" accept=".json,application/json" aria-label={t("导入流程文件")} onChange={e => void importJson(e.target.files?.[0])} />

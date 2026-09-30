@@ -7,18 +7,29 @@ import type { BuildAdapter, BuildObservation } from "./adapter";
 /** A server-configured credential; repository/workflow targets are never taken
  * from graph inputs. Redirects used for signed artifact downloads omit it. */
 export class GitHubBuildAdapter implements BuildAdapter {
+  private nextRequestAt = 0;
   constructor(private token: () => string, private transport: typeof fetch = fetch) {}
   private base(profile: BuildProfile) { return `/repos/${profile.owner}/${profile.repository}`; }
   private async request(path: string, method = "GET", body?: unknown) {
-    return this.transport(`https://api.github.com${path}`, {
+    if (Date.now() < this.nextRequestAt) throw new ControlError("GITHUB_RATE_LIMITED", "等待 GitHub 限流窗口结束。", 503);
+    const response = await this.transport(`https://api.github.com${path}`, {
       method, redirect: "manual", signal: AbortSignal.timeout(20000),
       headers: { authorization: `Bearer ${this.token()}`, accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10", "content-type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+    if (response.status === 429 || response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after"))) {
+      const retry = response.headers.get("retry-after"), reset = Number(response.headers.get("x-ratelimit-reset")) * 1000;
+      const delay = retry ? (/^\d+$/.test(retry) ? Date.now() + Number(retry) * 1000 : Date.parse(retry)) : 0;
+      this.nextRequestAt = Math.max(Date.now() + 60_000, Number.isFinite(delay) ? delay : 0, Number.isFinite(reset) ? reset : 0);
+      throw new ControlError("GITHUB_RATE_LIMITED", "GitHub 请求受到限流，将按限流窗口重试。", 503);
+    }
+    return response;
   }
   private async json(path: string, method = "GET", body?: unknown) {
     const response = await this.request(path, method, body);
-    if (!response.ok) throw new ControlError("GITHUB_UNAVAILABLE", `GitHub 请求未确认（HTTP ${response.status}），请核对配置或稍后重试。`, 503);
+    // GitHub secondary limits may use 403 without a Retry-After header.
+    if (!response.ok) throw new ControlError("GITHUB_UNAVAILABLE", `GitHub 请求未确认（HTTP ${response.status}），请核对配置或稍后重试。`, response.status === 403 ? 503 : response.status);
+    if (response.status === 204) return {};
     return response.json();
   }
   async resolve(profile: BuildProfile, ref: string): Promise<string> { return (await this.json(`${this.base(profile)}/commits/${encodeURIComponent(ref)}`)).sha; }
@@ -38,7 +49,8 @@ export class GitHubBuildAdapter implements BuildAdapter {
       // No automatic redispatch after a lost response. Search bounded pages for
       // the durable correlation embedded by our workflow's run-name.
       for (let page = 1; page <= 10; page++) {
-        const result = await this.json(`${base}/actions/workflows/${encodeURIComponent(build.profile.workflow)}/runs?event=workflow_dispatch&per_page=100&page=${page}`);
+        const created = encodeURIComponent(`>=${new Date(Date.parse(build.createdAt) - 60_000).toISOString()}`);
+        const result = await this.json(`${base}/actions/workflows/${encodeURIComponent(build.profile.workflow)}/runs?event=workflow_dispatch&created=${created}&per_page=100&page=${page}`);
         const matches = result.workflow_runs.filter((r: any) => r.display_title === `studio-build:${build.id}`);
         if (matches.length > 1) throw new ControlError("BUILD_RESULT_INVALID", "发现重复构建关联。", 409);
         if (matches.length) { run = matches[0]; break; }

@@ -26,6 +26,7 @@ import { streamRun } from "./run-stream";
 import { createMcpServer } from "../mcp/server";
 import { serveMcp } from "../mcp/http";
 import { assistantTurn, type AssistantProvider } from "./assistant";
+import { assistantHostRequest, type AssistantHost } from "./assistant-host";
 import { LocalDiagnosticAdapter, diagnosticDatabase, emptyDiagnosticDatabase } from "../../packages/local-diagnostics/adapter";
 
 export interface ControlOptions {
@@ -44,6 +45,7 @@ export interface ControlOptions {
   localDiagnostics?: boolean;
   mcpReadOnly?: boolean;
   assistantProvider?: AssistantProvider;
+  assistantHost?: AssistantHost;
 }
 const localScopes = ["products.read", "products.write", "products.operate", "products.admin", "pipelines.read", "pipelines.write", "servers.read", "servers.write", "runs.read", "runs.write", "builds.read", "builds.write", "catalog.write"];
 const cookieName = "studio_session";
@@ -67,7 +69,7 @@ export function createControlApplication(options: ControlOptions) {
   const workspaceId = options.workspaceId ?? "local";
   const localToken = randomBytes(32).toString("hex");
   const pipelineStore = options.stores.state("pipelines", pipelineDatabase, emptyPipelineDatabase);
-  const pipelines = new PipelineControl(pipelineStore, { maxReceipts: Infinity });
+  const pipelines = new PipelineControl(pipelineStore, { maxReceipts: 10_000, maxBytes: 64 * 1024 * 1024 });
   const servers = new ServerControl(options.stores.state("servers", databaseSchema, emptyDatabase), options.serverObservers);
   const team = new TeamControl(options.stores.state("team", teamDatabase, emptyTeamDatabase));
   const builds = new BuildControl(options.stores.state("builds", buildDatabase, emptyBuildDatabase), options.buildProfiles ?? [], options.buildAdapter);
@@ -81,6 +83,17 @@ export function createControlApplication(options: ControlOptions) {
   const mcp = (actor: Actor) => createMcpServer(pipelines, actor, runs, { monitoring, builds, catalog: registry, servers, readOnly: options.mcpReadOnly });
   const failures = new Map<string, { count: number; until: number }>();
   const activeAssistantTurns = new Set<string>();
+  // All SSE clients share one metadata read per interval. Authentication and
+  // workspace filtering remain per connection, including after revocation.
+  let snapshotUntil = 0;
+  let sharedSnapshot: Promise<{ workspaceId: string; pipelineId: string; graphRevision: number; layoutRevision: number; updatedBy: string }[]> | undefined;
+  function pipelineSnapshot() {
+    if (!sharedSnapshot || Date.now() >= snapshotUntil) {
+      snapshotUntil = Infinity;
+      sharedSnapshot = pipelineStore.read().then(db => db.records.map(record => ({ workspaceId: record.workspaceId, pipelineId: record.document.id, graphRevision: record.graphRevision, layoutRevision: record.layoutRevision, updatedBy: record.updatedBy }))).finally(() => { snapshotUntil = Date.now() + 1500; });
+    }
+    return sharedSnapshot;
+  }
   function originBoundary(req: IncomingMessage) {
     // Do not trust Forwarded/X-Forwarded-* supplied by clients. The gateway
     // preserves Host and Origin, and only explicitly configured origins pass.
@@ -93,14 +106,14 @@ export function createControlApplication(options: ControlOptions) {
       const token = authorization.slice(7);
       if (options.mode === "local") {
         if (!options.localApiToken || !secretEqual(token, options.localApiToken)) throw new ControlError("UNAUTHENTICATED", "无效的本地 API 凭据。", 401);
-        return { actor: { id: "local-mcp", workspaceIds: [workspaceId], scopes: localScopes }, csrf: "", username: "local-mcp" };
+        return { actor: { id: "local-mcp", workspaceIds: [workspaceId], scopes: localScopes }, kind: "api" as const, csrf: "", username: "local-mcp" };
       }
       return team.authenticate(token, "api");
     }
     originBoundary(req);
     if (options.mode === "local") {
       if (mutation && (typeof req.headers["x-studio-control-token"] !== "string" || !secretEqual(req.headers["x-studio-control-token"], localToken))) throw new ControlError("FORBIDDEN", "控制会话已失效，请重新连接。", 403);
-      return { actor: { id: "local-user", workspaceIds: [workspaceId], scopes: localScopes }, csrf: localToken, username: "local-user" };
+      return { actor: { id: "local-user", workspaceIds: [workspaceId], scopes: localScopes }, kind: "browser" as const, csrf: localToken, username: "local-user" };
     }
     const context = await team.authenticate(cookie(req), "browser");
     if (mutation && (typeof req.headers["x-studio-control-token"] !== "string" || !secretEqual(req.headers["x-studio-control-token"], context.csrf))) throw new ControlError("FORBIDDEN", "缺少有效的会话 CSRF 凭据。", 403);
@@ -114,7 +127,7 @@ export function createControlApplication(options: ControlOptions) {
     ["/studio-builds", { commands: buildCommands, execute: (raw, actor) => builds.execute(raw, actor) }],
     ["/studio-catalog", { commands: catalogCommands, execute: (raw, actor) => registry.execute(raw, actor) }],
   ]);
-  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([name, command]) => (name !== "monitoring.snapshot" || actor.scopes.includes("pipelines.read")) && actor.scopes.includes(command.scope ?? `${prefix === "/studio-runs" ? "runs" : "pipelines"}.${command.readOnly ? "read" : "write"}`)).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
+  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([name, command]) => (!["monitoring.snapshot", "runs.preflight", "runs.start"].includes(name) || actor.scopes.includes("pipelines.read")) && actor.scopes.includes(command.scope ?? `${prefix === "/studio-runs" ? "runs" : "pipelines"}.${command.readOnly ? "read" : "write"}`)).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const path = (req.url ?? "").split("?")[0];
@@ -134,6 +147,12 @@ export function createControlApplication(options: ControlOptions) {
         res.once("close", closed);
         try { return send(res, 200, await assistantTurn(input, actor, options.assistantProvider, mcp(actor), AbortSignal.any([abort.signal, AbortSignal.timeout(25000)]))); }
         finally { activeAssistantTurns.delete(actor.id); res.off("close", closed); }
+      }
+      if (path.startsWith("/studio-assistant/v1/")) {
+        const { actor } = await authorize(req, req.method !== "GET");
+        if (options.mode !== "local") throw new ControlError("ASSISTANT_LOCAL_ONLY", "Personal assistants require the local launcher", 403);
+        const input = ["POST", "PUT", "PATCH"].includes(req.method ?? "") ? await readJson(req, 6_000_000) : undefined;
+        return send(res, 200, await assistantHostRequest(options.assistantHost, actor, workspaceId, req.method ?? "GET", (req.url ?? "").slice("/studio-assistant/v1".length), input));
       }
       if (path === "/studio-mcp") {
         // Validate Origin even with bearer credentials; browser POSTs need CSRF.
@@ -165,9 +184,9 @@ export function createControlApplication(options: ControlOptions) {
         const push = async () => {
           if (pending || closed) return; pending = true;
           try {
-            const { actor } = await authorize(req, false), db = await pipelineStore.read();
+            const { actor } = await authorize(req, false), snapshot = await pipelineSnapshot();
             if (!actor.scopes.includes("pipelines.read")) throw new ControlError("FORBIDDEN", "订阅权限已失效。", 403);
-            const records = db.records.filter(record => actor.workspaceIds.includes(record.workspaceId)).map(record => ({ workspaceId: record.workspaceId, pipelineId: record.document.id, graphRevision: record.graphRevision, layoutRevision: record.layoutRevision, updatedBy: record.updatedBy }));
+            const records = snapshot.filter(record => actor.workspaceIds.includes(record.workspaceId));
             const data = JSON.stringify(records), next = createHash("sha256").update(data).digest("hex");
             if (!closed && next !== cursor) { cursor = next; res.write(`id: ${next}\nevent: snapshot\ndata: ${data}\n\n`); }
             else if (!closed) res.write(": heartbeat\n\n");
@@ -184,29 +203,33 @@ export function createControlApplication(options: ControlOptions) {
           catch (error) { if (error instanceof ControlError && error.status === 401) return send(res, 200, { mode: options.mode, authenticated: false }); throw error; }
         }
         if (path === "/studio-team/v1/login" && req.method === "POST" && options.mode === "team") {
-          const key = req.socket.remoteAddress ?? "unknown", now = Date.now();
+          const input = z.object({ username: z.string().max(100), password: z.string().max(256) }).strict().parse(await readJson(req, 4096));
+          // Account buckets remain distinct behind a shared reverse proxy.
+          // Do not trust an arbitrary X-Forwarded-For header.
+          const key = input.username, now = Date.now();
           for (const [id, failure] of failures) if (failure.until <= now) failures.delete(id);
           if ((failures.get(key)?.count ?? 0) >= 10 || failures.size >= 10000) throw new ControlError("RATE_LIMITED", "登录尝试过多，请稍后重试。", 429);
           failures.set(key, { count: (failures.get(key)?.count ?? 0) + 1, until: now + 60_000 });
-          const input = z.object({ username: z.string(), password: z.string() }).strict().parse(await readJson(req, 4096));
           const issued = await team.login(input.username, input.password);
           failures.delete(key);
-          const secure = origins.every(origin => origin.startsWith("https:"));
+          // Prefer HTTPS for this authority even if another admitted frontend
+          // uses HTTP; an Origin on a different host cannot downgrade cookies.
+          const secure = origins.some(origin => new URL(origin).host === req.headers.host && origin.startsWith("https:"));
           res.setHeader("set-cookie", `${cookieName}=${issued.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure ? "; Secure" : ""}`);
           return send(res, 200, { token: issued.csrf, expiresAt: issued.expiresAt });
         }
-        const { actor } = await authorize(req, req.method !== "GET");
+        const context = await authorize(req, req.method !== "GET"), { actor } = context;
         if (path === "/studio-team/v1/logout" && req.method === "POST") { await team.logout(cookie(req)); res.setHeader("set-cookie", `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`); return send(res, 200, { ok: true }); }
         if (path === "/studio-team/v1/members" && req.method === "GET") return send(res, 200, { items: await team.list(actor) });
         if (path === "/studio-team/v1/members" && req.method === "POST") return send(res, 201, await team.createMember(await readJson(req, 16384), actor));
         if (path === "/studio-team/v1/tokens" && req.method === "POST") {
           const input = z.object({ scopes: z.array(z.string()).max(20) }).strict().parse(await readJson(req, 4096));
-          return send(res, 201, await team.issueApiToken(actor, input.scopes));
+          return send(res, 201, await team.issueApiToken(context, input.scopes));
         }
-        if (path === "/studio-team/v1/tokens" && req.method === "GET") return send(res, 200, { items: await team.listApiTokens(actor) });
+        if (path === "/studio-team/v1/tokens" && req.method === "GET") return send(res, 200, { items: await team.listApiTokens(context) });
         if (path === "/studio-team/v1/tokens/revoke" && req.method === "POST") {
           const { id } = z.object({ id: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(await readJson(req, 4096));
-          return send(res, 200, await team.revokeApiToken(id, actor));
+          return send(res, 200, await team.revokeApiToken(id, context));
         }
       }
       for (const [prefix, group] of groups) {

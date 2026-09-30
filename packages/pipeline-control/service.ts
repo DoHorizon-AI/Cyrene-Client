@@ -6,6 +6,7 @@ import { ControlError, type Actor } from "../server-control/contracts";
 import { pipelineCommands, pipelineRequest, recordSchema, type PipelineCommand, type PipelineRecord } from "./contracts";
 import { arrange } from "./layout";
 import { mergeIndependentGraph } from "./collaboration";
+import { canonicalJson } from "../control-storage/canonical";
 
 const historyEntry = z.object({ id: z.string(), workspaceId: z.string(), pipelineId: z.string(), command: z.string(), actorId: z.string(), at: z.string(), graphRevision: z.number(), layoutRevision: z.number(), summary: z.array(z.string()), before: recordSchema.nullable(), undone: z.boolean() });
 const redoEntry = z.object({ workspaceId: z.string(), pipelineId: z.string(), document: recordSchema.shape.document, targetHistoryId: z.string(), actorId: z.string().optional(), undoneDocument: recordSchema.shape.document.optional() });
@@ -50,7 +51,7 @@ function changes(before: Pipeline | undefined, after: Pipeline): string[] {
   return summary.length ? summary : ["内容未变化"];
 }
 export class PipelineControl {
-  constructor(private store: PipelineStore, private options: { maxReceipts?: number } = {}) {}
+  constructor(private store: PipelineStore, private options: { maxReceipts?: number; maxBytes?: number } = {}) {}
   async execute(raw: unknown, actor: Actor): Promise<unknown> {
     const request = pipelineRequest.parse(raw);
     if (!Object.hasOwn(pipelineCommands, request.name)) throw new ControlError("UNKNOWN_COMMAND", "未知流水线操作。");
@@ -77,10 +78,10 @@ export class PipelineControl {
     }
     if (!request.idempotencyKey) throw new ControlError("IDEMPOTENCY_REQUIRED", "写操作需要幂等键。");
     const key = JSON.stringify([actor.id, input.workspaceId, request.idempotencyKey]);
-    const fingerprint = JSON.stringify([name, input]);
+    const fingerprint = canonicalJson([name, input]);
     const replay = (data: PipelineDatabase) => {
       const receipt = data.receipts.find(r => r.key === key);
-      if (receipt && receipt.fingerprint !== fingerprint) throw new ControlError("IDEMPOTENCY_CONFLICT", "幂等键已用于其它内容。", 409);
+      if (receipt && canonicalJson(JSON.parse(receipt.fingerprint)) !== fingerprint) throw new ControlError("IDEMPOTENCY_CONFLICT", "幂等键已用于其它内容。", 409);
       return receipt?.result;
     };
     const previous = replay(db); if (previous) return previous;
@@ -182,6 +183,7 @@ export class PipelineControl {
       if (before && name !== "pipelines.undo" && name !== "pipelines.redo" && (record.graphRevision !== before.graphRevision || record.layoutRevision !== before.layoutRevision)) data.redo = data.redo.filter(entry => entry.workspaceId !== input.workspaceId || entry.pipelineId !== document.id);
       if (!before || record.graphRevision !== before.graphRevision || record.layoutRevision !== before.layoutRevision) data.history.push({ id: request.requestId, workspaceId: input.workspaceId, pipelineId: document.id, command: name, actorId: actor.id, at: record.updatedAt, graphRevision: record.graphRevision, layoutRevision: record.layoutRevision, summary, before: before ?? null, undone: false });
       data.receipts.push({ key, fingerprint, result });
+      if (this.options.maxBytes && new TextEncoder().encode(JSON.stringify(data)).byteLength > this.options.maxBytes) throw new ControlError("STORE_LIMIT", "流程库达到容量上限；请迁移或归档存储。历史回执仍保留，重试不会重复写入。", 409);
       return result;
     });
   }

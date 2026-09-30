@@ -25,6 +25,7 @@ export const buildRecord = z.object({
   state: z.enum(["queued", "dispatching", "running", "unknown", "cancelling", "cancelled", "succeeded", "failed"]),
   workflowRunId: z.string().optional(), workflowUrl: z.string().optional(), result: buildResult.optional(),
   message: z.string().optional(),
+  nextPollAt: z.number().nonnegative().optional(), pollFailures: z.number().int().nonnegative().optional(),
 });
 export type Build = z.infer<typeof buildRecord>;
 export const buildEvent = z.object({ sequence: z.number().int().positive(), buildId: identifier, workspaceId: identifier, at: z.string().datetime(), message: z.string() });
@@ -40,5 +41,6 @@ export const buildCommands = {
   "builds.list": { input: workspace, output: z.object({ items: z.array(buildRecord) }), readOnly: true, scope: "builds.read", description: "列出工作空间的构建与构建结果。" },
   "builds.get": { input: target, output: buildRecord, readOnly: true, scope: "builds.read", description: "读取构建状态、GitHub 关联和已验证的镜像摘要。" },
   "builds.cancel": { input: target.extend({ expectedRevision: z.number().int().positive() }), output: buildRecord, readOnly: false, scope: "builds.write", description: "取消构建；以 GitHub 最终状态为准，不删除已发布镜像。" },
+  "builds.reconcile": { input: target.extend({ expectedRevision: z.number().int().positive(), workflowRunId: z.string().regex(/^[1-9]\d{0,19}$/) }), output: buildRecord, readOnly: false, scope: "builds.write", description: "为结果未知的构建补充 GitHub run ID；验证工作流、源码和关联身份后恢复核对，不重新派发。" },
   "builds.read_events": { input: target.extend({ after: z.number().int().nonnegative().default(0) }), output: z.object({ items: z.array(buildEvent), cursor: z.number() }), readOnly: true, scope: "builds.read", description: "按游标读取持久化构建事件；GitHub 实时输出通过运行链接查看。" },
 } as const;

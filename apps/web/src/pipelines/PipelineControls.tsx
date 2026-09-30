@@ -12,7 +12,7 @@ const graph = ({ presentation: _, ...p }: Pipeline) => p;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 interface Props {
   document: Pipeline; selectedId: string | null; disabled: boolean;
-  onApply(p: Pipeline): void; onLoad(p: Pipeline): void; onNotice(message: string): void;
+  onApply(p: Pipeline): void; onLoad(p: Pipeline, options?: { reveal?: boolean }): void; onNotice(message: string): void;
   canUndo: boolean; onUndo(): void; canRedo: boolean; onRedo(): void;
   serverBase: PipelineRecord | null; onServerBase(record: PipelineRecord | null): void;
   render?(parts: { file: ReactNode; edit: ReactNode; toolbar: ReactNode; status: ReactNode; conflict: ReactNode; history: ReactNode }): ReactNode;
@@ -95,7 +95,7 @@ export function PipelineControls(props: Props) {
     const result = await currentResult(client.execute("pipelines.get", { workspaceId, pipelineId: chosen }));
     if (!same(live.current.document, sent) || live.current.disabled) throw new Error("载入期间画布已修改或开始预演，旧结果未应用，请重试。");
     if ((!base || !same(live.current.document, base.document)) && !window.confirm("载入服务端流程会替换当前画布，是否继续？")) return;
-    live.current.onLoad(result.document); setBase(result); setRemote(null); setSummary([]); live.current.onNotice("已载入服务端流水线，后续 AI 修改会在无本地变更时自动同步。");
+    live.current.onLoad(result.document, { reveal: true }); setBase(result); setRemote(null); setSummary([]); live.current.onNotice("已载入服务端流水线，后续 AI 修改会在无本地变更时自动同步。");
   }
   async function layout(partial: boolean) {
     const p = structuredClone(live.current.document);

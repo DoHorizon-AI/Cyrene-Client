@@ -61,8 +61,13 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
   const callbacks = useRef(props); callbacks.current = props;
   const emit = useRef(() => {});
   const suppressed = useRef(false);
+  const pendingFit = useRef(false);
   const fit = () => {
     const current = live.current; if (!current) return;
+    const box = container.current?.getBoundingClientRect();
+    if (!box || box.width < 1 || box.height < 1) { pendingFit.current = true; return; }
+    if (current.canvas.canvas.width !== Math.floor(box.width) || current.canvas.canvas.height !== Math.floor(box.height)) current.canvas.resize(Math.floor(box.width), Math.floor(box.height));
+    pendingFit.current = false;
     const nodes = editorNodes(current.graph); if (!nodes.length) return;
     const minX = Math.min(...nodes.map((n) => n.pos[0])) - 35;
     const minY = Math.min(...nodes.map((n) => n.pos[1])) - 65;
@@ -143,7 +148,7 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
     canvas.onNodeMoved = emit.current;
     canvas.onSelectionChange = (selected) => callbacks.current.onSelect((Object.values(selected)[0] as ClientNode | undefined)?.properties.document.id ?? null);
     canvas.onShowNodePanel = (node) => callbacks.current.onSelect((node as ClientNode).properties.document.id);
-    const resize = () => { const box = container.current!.getBoundingClientRect(); canvas.resize(Math.floor(box.width), Math.floor(box.height)); };
+    const resize = () => { const box = container.current!.getBoundingClientRect(); if (box.width < 1 || box.height < 1) return; canvas.resize(Math.floor(box.width), Math.floor(box.height)); if (pendingFit.current) fit(); };
     const observer = new ResizeObserver(resize); observer.observe(container.current!);
     resize(); fit();
     return () => {

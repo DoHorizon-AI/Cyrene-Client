@@ -13,7 +13,8 @@ test("build menu and panel share one persisted task; activation remains explicit
   const panel = page.getByRole("region", { name: "构建与节点版本" });
   await expect(panel).toContainText("a".repeat(40));
   await panel.getByRole("button", { name: "提交节点镜像构建", exact: true }).click();
-  await expect(panel).toContainText("succeeded", { timeout: 15000 });
+  // Production polls GitHub every 15s; allow dispatch and the UI's 3s refresh.
+  await expect(panel).toContainText("succeeded", { timeout: 25000 });
   const before = await (await page.request.get("/studio-catalog/v1/packages")).json(); expect(before.active).not.toContain("fixture@1");
   await page.getByLabel("收起底部窗口").click();
   await menuAction(page, "构建", "预览启用构建版本");

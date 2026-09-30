@@ -8,5 +8,5 @@ export const activationPreview = z.object({ fingerprint: z.string(), revision: z
 export const catalogCommands = {
   "catalog.list_packages": { input: workspace, output: z.object({ revision: z.number(), packages: z.array(packageSchema), active: z.array(z.string()), updatedBy: z.string() }), readOnly: true, scope: "pipelines.read", description: "查询节点包、历史版本及当前启用版本。" },
   "catalog.preview_activation": { input: activation, output: activationPreview, readOnly: true, scope: "catalog.write", description: "预览已验证构建的版本启用，检查契约冲突；不修改目录。" },
-  "catalog.activate": { input: activation.extend({ expectedFingerprint: z.string().length(64) }), output: z.object({ revision: z.number(), packageId: z.string(), version: z.string() }), readOnly: false, scope: "catalog.write", description: "显式启用已预览的新节点版本，保留旧文档和运行的固定版本。" },
+  "catalog.activate": { input: activation.extend({ expectedFingerprint: z.string().length(64) }), output: z.object({ revision: z.number(), packageId: z.string(), version: z.string() }), readOnly: false, scope: "catalog.write", description: "使用实例级 catalog.write 权限启用节点版本，影响此实例所有工作空间；workspaceId 仅限定构建来源，旧文档和运行保留固定版本。" },
 } as const;

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { loadEnv } from "vite";
-Object.assign(process.env, loadEnv("development", process.cwd(), "STUDIO_"));
+for (const [key, value] of Object.entries(loadEnv("development", process.cwd(), "STUDIO_"))) if (process.env[key] === undefined) process.env[key] = value;
 const args = process.argv.slice(2);
 const index = args.indexOf("--port"), port = index >= 0 ? Number(args[index + 1]) : 5180;
 const controlPort = Number(process.env.STUDIO_CONTROL_PORT ?? port + 100);

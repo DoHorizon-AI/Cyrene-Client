@@ -19,7 +19,7 @@ test("tool windows retain edits, resize, collapse and restore layout preferences
   await page.goto("/");
   await page.getByLabel("训练轮数").fill("8");
   await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
-  await page.getByLabel("助手任务").fill("保留训练节点，增加第二组评估。");
+  await page.getByLabel("助手消息").fill("保留训练节点，增加第二组评估。");
   await page.getByRole("button", { name: "节点信息", exact: true }).click();
   await expect(page.getByLabel("训练轮数")).toHaveValue("8");
   const left = page.getByRole("separator", { name: "调整左侧窗口宽度" });
@@ -35,7 +35,7 @@ test("tool windows retain edits, resize, collapse and restore layout preferences
   await page.keyboard.press("Control+s");
   await expect(page.locator(".footer [role=status]")).toContainText("草稿已保存");
   await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
-  await expect(page.getByLabel("助手任务")).toHaveValue("保留训练节点，增加第二组评估。");
+  await expect(page.getByLabel("助手消息")).toHaveValue("保留训练节点，增加第二组评估。");
   await page.reload();
   await expect(left).toHaveAttribute("aria-valuenow", "256");
   await expect(right).toHaveAttribute("aria-valuenow", "350");
@@ -83,9 +83,10 @@ test("MCP panel keeps external task copy and reports unavailable legacy transpor
   page.on("request", r => { if (r.method() !== "GET") requests.push(r.url()); });
   await page.goto("/");
   await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
+  await page.getByRole("button", { name: "MCP", exact: true }).click();
   await expect(page.getByText("模型尚未配置。", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "连接 MCP", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("npm run dev");
+  await expect(page.getByRole("region", { name: "MCP 工作台" }).getByRole("alert")).toContainText("npm run dev");
   await page.getByLabel("助手任务").fill("增加评估节点，保留已锁定的位置。");
   await page.getByRole("button", { name: /复制任务与上下文/ }).click();
   await expect(page.locator(".footer [role=status]")).toContainText("上下文已复制");
