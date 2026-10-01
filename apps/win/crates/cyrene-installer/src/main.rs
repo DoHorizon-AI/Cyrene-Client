@@ -977,6 +977,12 @@ fn apply_update_plan(
     ) {
         Ok(()) => plan.phase = "succeeded".to_string(),
         Err(error) => {
+            if maintenance::is_definitive_begin_refusal(&error) {
+                finish_definitive_begin_refusal(app_dir, &update_journal_path(app_dir), &error)
+                    .map_err(|cleanup_error| format!("{error}; {cleanup_error}"))?;
+                plan.phase = "staged".to_string();
+                return Err(error);
+            }
             plan.phase = if error.contains("已恢复目标服务") {
                 "rolled_back"
             } else {
@@ -1584,14 +1590,22 @@ fn update_service_from_manifest(
     let plan = make_local_plan_binding(&expected_manifest_id, &manifest)?;
     confirm_local_plan(&manifest, &plan)?;
     let candidate_image = format!("{}@{}", manifest.image.repository, manifest.image.digest);
-    apply_product_image(
+    let result = apply_product_image(
         app_dir,
         tool,
         &plan,
         &candidate_image,
         &manifest.version,
         "stable",
-    )
+    );
+    if let Err(error) = &result {
+        if let Err(cleanup_error) =
+            finish_definitive_begin_refusal(app_dir, &update_journal_path(app_dir), error)
+        {
+            return Err(format!("{error}; {cleanup_error}"));
+        }
+    }
+    result
 }
 
 fn apply_product_image(
@@ -1718,12 +1732,8 @@ fn apply_product_image(
         true,
     ) {
         Ok(token) => token,
-        Err(error) => {
-            if error.starts_with("MAINTENANCE_REJECTED:") {
-                let _ = fs::remove_file(&journal_path);
-            }
-            return Err(format!("维护 broker 未授予更新围栏: {error}"));
-        }
+        Err(error) if maintenance::is_definitive_begin_refusal(&error) => return Err(error),
+        Err(error) => return Err(format!("维护 broker 未授予更新围栏: {error}")),
     };
     journal.maintenance_token = Some(maintenance_token.clone());
     journal.phase = Some("applying".to_string());
@@ -2261,6 +2271,64 @@ fn update_journal_path(app_dir: &Path) -> PathBuf {
     app_dir.join("service-update-in-progress.json")
 }
 
+fn finish_definitive_begin_refusal(
+    app_dir: &Path,
+    journal_path: &Path,
+    error: &str,
+) -> Result<(), String> {
+    if !maintenance::is_definitive_begin_refusal(error) {
+        return Ok(());
+    }
+    let journal_text = match fs::read_to_string(journal_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("无法读取被拒绝的更新记录，记录仍保留: {error}")),
+    };
+    let journal: ServiceUpdateJournal = serde_json::from_str(&journal_text)
+        .map_err(|error| format!("被拒绝的更新记录无效，记录仍保留: {error}"))?;
+    if let (Some(plan_id), Some(plan_digest)) =
+        (journal.plan_id.as_deref(), journal.plan_digest.as_deref())
+    {
+        let plan_path = update_plans_dir(app_dir).join(format!("{plan_id}.json"));
+        if plan_id.starts_with("plan-") {
+            if !plan_path.exists() {
+                return Err(format!(
+                    "受控计划 `{plan_id}` 的持久文件缺失；拒绝清除维护恢复记录"
+                ));
+            }
+            let mut plan = load_stored_plan(app_dir, plan_id)?;
+            if plan.plan_digest != plan_digest {
+                return Err(format!(
+                    "计划 `{plan_id}` digest 与被拒绝的 Begin 记录不匹配；记录仍保留"
+                ));
+            }
+            match plan.phase.as_str() {
+                "applying" => {
+                    plan.phase = "staged".to_string();
+                    save_stored_plan(app_dir, &plan).map_err(|error| {
+                        format!("无法恢复计划 `{plan_id}` 的 staged 状态，更新记录仍保留: {error}")
+                    })?;
+                }
+                "staged" => {}
+                phase => {
+                    return Err(format!(
+                        "计划 `{plan_id}` 阶段 `{phase}` 不允许从 Begin 拒绝恢复重试；更新记录仍保留"
+                    ));
+                }
+            }
+        } else if !plan_id.starts_with("legacy-") {
+            return Err("拒绝清除绑定到未知 planId 格式的维护恢复记录".to_string());
+        }
+    }
+    match fs::remove_file(journal_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "计划已恢复到可重试状态，但无法清除明确拒绝后的 maintenance_pending 更新记录: {error}"
+        )),
+    }
+}
+
 fn derived_maintenance_end_request_id(identity: &str) -> String {
     let digest = sha256_hex(identity.as_bytes());
     format!("end-{}", &digest[..32])
@@ -2482,8 +2550,12 @@ fn recover_interrupted_update(app_dir: &Path) -> Result<(), String> {
             ) {
                 Ok(token) => token,
                 Err(error) => {
-                    if error.starts_with("MAINTENANCE_REJECTED:") {
-                        let _ = fs::remove_file(&journal_path);
+                    if let Err(cleanup_error) =
+                        finish_definitive_begin_refusal(app_dir, &journal_path, &error)
+                    {
+                        return Err(format!(
+                            "无法恢复已确认的维护 Begin: {error}; {cleanup_error}"
+                        ));
                     }
                     return Err(format!("无法恢复已确认的维护 Begin: {error}"));
                 }
@@ -3616,10 +3688,24 @@ fn get_cyrene_home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_service_update_lock, derived_maintenance_end_request_id, generate_docker_compose,
-        runtime_broker_version_range, validate_init_catalog_sources, version_satisfies_range,
-        ToolKind, TOOLS,
+        acquire_service_update_lock, derived_maintenance_end_request_id,
+        finish_definitive_begin_refusal, generate_docker_compose, runtime_broker_version_range,
+        validate_init_catalog_sources, version_satisfies_range, ToolKind, TOOLS,
     };
+    use std::path::PathBuf;
+
+    fn pending_journal_path(test_name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "cyrene-update-intent-{test_name}-{}-{nonce}",
+                std::process::id()
+            ))
+            .join("service-update-in-progress.json")
+    }
 
     #[test]
     fn maintenance_end_request_id_is_stable_for_journal_recovery() {
@@ -3631,6 +3717,172 @@ mod tests {
         assert_ne!(first, other_update);
         assert!(first.starts_with("end-"));
         assert_eq!(first.len(), 36);
+    }
+
+    #[test]
+    fn stale_or_busy_begin_refusal_clears_intent_so_the_same_plan_can_retry() {
+        let plan_id = "plan-0123456789abcdef0123456789abcdef";
+        for status in ["STALE_READINESS", "ACTIVE_TASKS", "UNKNOWN"] {
+            let journal_path = pending_journal_path(status);
+            let parent = journal_path.parent().expect("test journal parent");
+            std::fs::create_dir_all(parent).expect("create test journal directory");
+            let plan_digest =
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            let plans_dir = super::update_plans_dir(parent);
+            std::fs::create_dir_all(&plans_dir).expect("create test plan directory");
+            let plan_path = plans_dir.join(format!("{plan_id}.json"));
+            std::fs::write(
+                &plan_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "schemaVersion": 1,
+                    "planId": plan_id,
+                    "planDigest": plan_digest,
+                    "channel": "stable",
+                    "phase": "applying",
+                    "components": [{
+                        "componentId": "cyrene-yield",
+                        "version": "0.1.0",
+                        "manifestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "artifactDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                        "restartGroup": "single-service",
+                        "indexJson": "{}",
+                        "manifestJson": "{}"
+                    }]
+                }))
+                .expect("serialize applying plan"),
+            )
+            .expect("write applying plan");
+            let pending = serde_json::json!({
+                "schemaVersion": 1,
+                "serviceId": "cyrene-yield",
+                "previousImage": "ghcr.io/dohorizon-ai/cyrene-yield@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "candidateImage": "ghcr.io/dohorizon-ai/cyrene-yield@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "planId": plan_id,
+                "planDigest": plan_digest,
+                "componentArtifactDigests": {},
+                "maintenanceToken": null,
+                "maintenanceRequestId": "begin-stable-retry",
+                "maintenanceEndRequestId": "end-stable-retry",
+                "expectedGateGeneration": 42,
+                "expectedCatalogGeneration": 12,
+                "phase": "maintenance_pending",
+                "userConfirmedRestart": true
+            });
+            std::fs::write(
+                &journal_path,
+                serde_json::to_vec(&pending).expect("serialize pending journal"),
+            )
+            .expect("write pending update journal");
+
+            let refusal = format!("MAINTENANCE_REJECTED:{status}: UPDATE_READINESS_BLOCKED");
+            finish_definitive_begin_refusal(parent, &journal_path, &refusal)
+                .expect("clear an explicitly rejected Begin intent");
+            assert!(
+                !journal_path.exists(),
+                "{status} must permit retrying the same plan"
+            );
+            let retry_plan: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&plan_path).expect("read retry plan"))
+                    .expect("parse retry plan");
+            assert_eq!(retry_plan["phase"], "staged");
+            assert_eq!(retry_plan["planId"], plan_id);
+            assert_eq!(retry_plan["planDigest"], plan_digest);
+            std::fs::remove_dir_all(parent).expect("remove test journal directory");
+        }
+    }
+
+    #[test]
+    fn missing_persisted_plan_keeps_definitive_refusal_journal() {
+        let journal_path = pending_journal_path("missing-plan");
+        let app_dir = journal_path.parent().expect("test journal parent");
+        std::fs::create_dir_all(app_dir).expect("create test journal directory");
+        let pending = serde_json::json!({
+            "schemaVersion": 1,
+            "serviceId": "cyrene-yield",
+            "previousImage": "old",
+            "candidateImage": "new",
+            "planId": "plan-0123456789abcdef0123456789abcdef",
+            "planDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "componentArtifactDigests": {},
+            "maintenanceToken": null,
+            "maintenanceRequestId": "begin-missing-plan",
+            "maintenanceEndRequestId": "end-missing-plan",
+            "expectedGateGeneration": 42,
+            "expectedCatalogGeneration": 12,
+            "phase": "maintenance_pending",
+            "userConfirmedRestart": true
+        });
+        std::fs::write(
+            &journal_path,
+            serde_json::to_vec(&pending).expect("serialize pending journal"),
+        )
+        .expect("write pending update journal");
+
+        let result = finish_definitive_begin_refusal(
+            app_dir,
+            &journal_path,
+            "MAINTENANCE_REJECTED:UNKNOWN: UPDATE_READINESS_BLOCKED",
+        );
+        assert!(
+            result.is_err(),
+            "missing controlled plan must remain fail-closed"
+        );
+        assert!(
+            journal_path.exists(),
+            "recovery journal must remain durable"
+        );
+        std::fs::remove_dir_all(app_dir).expect("remove test journal directory");
+    }
+
+    #[test]
+    fn unrecognized_begin_response_and_transport_errors_keep_pending_intent() {
+        for (test_name, error) in [
+            (
+                "unknown-status",
+                "BeginMaintenance result status `FUTURE_STATUS` is not recognized",
+            ),
+            (
+                "broker-error",
+                "MAINTENANCE_BROKER_ERROR:UPDATE_READINESS_UNKNOWN: timeout",
+            ),
+            (
+                "transport-error",
+                "维护 broker 请求超时；运行状态按 UNKNOWN 处理。",
+            ),
+        ] {
+            let journal_path = pending_journal_path(test_name);
+            let parent = journal_path.parent().expect("test journal parent");
+            std::fs::create_dir_all(parent).expect("create test journal directory");
+            let pending = serde_json::json!({
+                "schemaVersion": 1,
+                "serviceId": "cyrene-yield",
+                "previousImage": "old",
+                "candidateImage": "new",
+                "planId": null,
+                "planDigest": null,
+                "componentArtifactDigests": {},
+                "maintenanceToken": null,
+                "maintenanceRequestId": "begin-unknown-test",
+                "maintenanceEndRequestId": null,
+                "expectedGateGeneration": 42,
+                "expectedCatalogGeneration": 12,
+                "phase": "maintenance_pending",
+                "userConfirmedRestart": true
+            });
+            std::fs::write(
+                &journal_path,
+                serde_json::to_vec(&pending).expect("serialize pending journal"),
+            )
+            .expect("write pending update journal");
+
+            finish_definitive_begin_refusal(parent, &journal_path, error)
+                .expect("indeterminate errors must not alter the update journal");
+            assert!(
+                journal_path.exists(),
+                "{test_name} must keep recovery evidence"
+            );
+            std::fs::remove_dir_all(parent).expect("remove test journal directory");
+        }
     }
 
     #[test]
