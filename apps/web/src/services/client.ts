@@ -156,17 +156,20 @@ export class SettingsClient {
   }
   status(signal?: AbortSignal) { return this.read("/api/v1/system/status", hostStatusSchema, signal); }
   datasets(signal?: AbortSignal, workspaceId?: string) {
+    if (!this.workspaceBff.enabled) return this.read("/api/v1/catalyst/datasets", z.array(datasetSchema), signal);
     return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.listDatasets, z.array(datasetSchema), { signal });
   }
   datasetVersion(id: string, signal?: AbortSignal) { return this.read(`/api/v1/catalyst/dataset-versions/${pathId(id)}`, datasetVersionSchema, signal); }
   models(signal?: AbortSignal, workspaceId?: string) {
+    if (!this.workspaceBff.enabled) return this.read("/api/v1/reactor/model-imports", z.array(modelImportSchema), signal);
     return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.listModelImports, z.array(modelImportSchema), { signal });
   }
   bindings(signal?: AbortSignal) { return this.read("/api/v1/reactor/serving-bindings", z.array(bindingSchema), signal); }
   drafts(signal?: AbortSignal) { return this.read("/api/v1/yield/training-drafts", z.array(trainingDraftSchema), signal); }
   draft(id: string, signal?: AbortSignal, workspaceId?: string) {
     const resourceId = id.trim();
-    pathId(resourceId);
+    const safeId = pathId(resourceId);
+    if (!this.workspaceBff.enabled) return this.read(`/api/v1/yield/training-drafts/${safeId}`, trainingDraftSchema, signal);
     return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.getTrainingDraft, trainingDraftSchema, { resourceId, signal });
   }
   async prepareDraft(id: string, body: unknown) {
@@ -175,11 +178,19 @@ export class SettingsClient {
   }
   suite(id: string, signal?: AbortSignal, workspaceId?: string) {
     const resourceId = id.trim();
-    pathId(resourceId);
+    const safeId = pathId(resourceId);
+    if (!this.workspaceBff.enabled) return this.read(`/api/v1/echo/evaluation-suites/${safeId}`, suiteSchema, signal);
     return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.getEvaluationSuite, suiteSchema, { resourceId, signal });
   }
   createSuite(body: unknown, idempotencyKey: string, workspaceId?: string) {
     const payload = suiteInputSchema.parse(body);
+    if (!this.workspaceBff.enabled) {
+      return this.request("/api/v1/echo/evaluation-suites", suiteSchema, {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify(payload),
+      });
+    }
     return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.createEvaluationSuite, suiteSchema, {
       body: payload,
       idempotencyKey,

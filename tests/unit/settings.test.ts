@@ -3,7 +3,7 @@ import { SettingsClient, ServiceError } from "../../apps/web/src/services/client
 import { WorkspaceBffClient } from "../../apps/web/src/services/workspace-bff-client";
 import { trainingDraftSchema, trainingConfigurationSchema, suiteInputSchema, pathId } from "../../packages/service-settings/contracts";
 import { admittedTarget, allowedSettingsRequest } from "../../tooling/settings-proxy";
-import { artifact, authSession, draft, models } from "../fixtures/settings";
+import { artifact, authSession, draft, ids, models, suite } from "../fixtures/settings";
 import { examplePipeline, parsePipeline } from "../../packages/pipeline-model";
 import { LGraph } from "litegraph.js/build/litegraph.core.js";
 import { loadGraph, snapshotGraph } from "../../apps/web/src/graph/adapter";
@@ -128,18 +128,50 @@ describe("settings client", () => {
     const controller = new AbortController(); controller.abort();
     await expect(client.status(controller.signal)).rejects.toBeInstanceOf(TypeError);
   });
-  it("does not fall back to v1 Product routes when the v2 BFF gate is disabled", async () => {
-    const fetcher = vi.fn<typeof fetch>();
+  it("uses the explicitly selected local WebHost routes when Workspace BFF is disabled", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/catalyst/datasets") return json([{ id: ids.dataset, name: "Fixture dataset", state: "ACTIVE" }]);
+      if (path === "/api/v1/reactor/model-imports") return json(models);
+      if (path === "/api/v1/yield/training-drafts") return json([draft]);
+      if (path === `/api/v1/yield/training-drafts/${ids.draft}`) return json(draft);
+      if (path === `/api/v1/echo/evaluation-suites/${ids.suite}`) return json(suite);
+      if (path === "/api/v1/echo/evaluation-suites" && init?.method === "POST") return json({ ...suite, ...JSON.parse(String(init.body)) });
+      throw new Error(`unexpected local WebHost request: ${path}`);
+    });
     const client = new SettingsClient(fetcher, 10_000, new WorkspaceBffClient({ enabled: false, fetcher }));
-    const calls = [
-      client.datasets(undefined, "ws-1"),
-      client.models(undefined, "ws-1"),
-      client.draft(draft.id, undefined, "ws-1"),
-      client.suite(draft.id, undefined, "ws-1"),
-      client.createSuite({ name: "eval", evaluator: "exact_match.v1", expectedField: "a", actualField: "b", threshold: 0.5 }, "key-1", "ws-1"),
-    ];
-    for (const call of calls) await expect(call).rejects.toMatchObject({ code: "feature_disabled" });
-    expect(fetcher).not.toHaveBeenCalled();
+
+    await client.datasets(undefined, "ws-1");
+    await client.models(undefined, "ws-1");
+    await client.drafts();
+    await client.draft(draft.id, undefined, "ws-1");
+    await client.suite(ids.suite, undefined, "ws-1");
+    await client.createSuite({ name: "eval", evaluator: "exact_match.v1", expectedField: "a", actualField: "b", threshold: 0.5 }, "key-1", "ws-1");
+
+    expect(fetcher.mock.calls.map(([path]) => path)).toEqual([
+      "/api/v1/catalyst/datasets",
+      "/api/v1/reactor/model-imports",
+      "/api/v1/yield/training-drafts",
+      `/api/v1/yield/training-drafts/${ids.draft}`,
+      `/api/v1/echo/evaluation-suites/${ids.suite}`,
+      "/api/v1/echo/evaluation-suites",
+    ]);
+    const createRequest = fetcher.mock.calls.at(-1)!;
+    expect(createRequest[1]?.method).toBe("POST");
+    expect(new Headers(createRequest[1]?.headers).get("Idempotency-Key")).toBe("key-1");
+    expect(fetcher.mock.calls.some(([path]) => String(path).includes("/api/workspace/v2/"))).toBe(false);
+  });
+  it("does not fall back to a local Product route when a v2 invocation fails", async () => {
+    const { client, requests } = workspaceSettingsClient([
+      new Response(JSON.stringify({ title: "Unavailable", status: 503, code: "upstream_unavailable" }), {
+        status: 503,
+        headers: { "Content-Type": "application/problem+json" },
+      }),
+    ]);
+    await client.discoverWorkspaceBffWorkspaces();
+    await expect(client.datasets(undefined, "ws-1")).rejects.toMatchObject({ code: "upstream_unavailable", status: 503 });
+    expect(requests.filter(({ path }) => path.endsWith("/products/invocations"))).toHaveLength(1);
+    expect(requests.some(({ path }) => path.startsWith("/api/v1/catalyst/"))).toBe(false);
   });
 });
 
