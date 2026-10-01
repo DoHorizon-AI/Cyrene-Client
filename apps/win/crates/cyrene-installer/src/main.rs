@@ -7,10 +7,15 @@
 
 use std::collections::BTreeSet;
 use std::env;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 
 /// 编译期注入的默认 Exchange URL，若构建时未设置则回退至本地网关
 const COMPILE_TIME_EXCHANGE_URL: Option<&str> = option_env!("CYRENE_DEFAULT_EXCHANGE_URL");
@@ -39,6 +44,7 @@ struct ToolSpec {
     title: &'static str,
     kind: ToolKind,
     image: Option<&'static str>,
+    image_repository: Option<&'static str>,
     port: Option<u16>,
     desc: &'static str,
 }
@@ -49,6 +55,7 @@ const TOOLS: &[ToolSpec] = &[
         title: "Cyrene Navigator (桌面 Agent & DeepSeek Harness 运行时)",
         kind: ToolKind::LocalAgent,
         image: None,
+        image_repository: None,
         port: None,
         desc: "本地增强智能体环境、Native Host 进程调度与 Exchange 路由连接器",
     },
@@ -56,7 +63,8 @@ const TOOLS: &[ToolSpec] = &[
         id: "exchange",
         title: "Cyrene Exchange (API 网关 & 路由分发中心)",
         kind: ToolKind::ContainerService,
-        image: Some("ghcr.io/baijin64/cyrene-exchange:latest"),
+        image: Some("ghcr.io/dohorizon-ai/cyrene-exchange:latest"),
+        image_repository: Some("ghcr.io/dohorizon-ai/cyrene-exchange"),
         port: Some(8000),
         desc: "OpenAI 兼容端点、统一凭据认证与模型提供商连接器",
     },
@@ -64,7 +72,8 @@ const TOOLS: &[ToolSpec] = &[
         id: "reactor",
         title: "Cyrene Reactor (模型推理与部署控制面)",
         kind: ToolKind::ContainerService,
-        image: Some("ghcr.io/baijin64/cyrene-reactor:latest"),
+        image: Some("ghcr.io/dohorizon-ai/cyrene-reactor-aca:latest"),
+        image_repository: Some("ghcr.io/dohorizon-ai/cyrene-reactor-aca"),
         port: Some(19300),
         desc: "推理端点协调、模型放置策略与计算引擎连接",
     },
@@ -72,7 +81,8 @@ const TOOLS: &[ToolSpec] = &[
         id: "yield",
         title: "Cyrene Yield (统一模型训练与微调服务)",
         kind: ToolKind::ContainerService,
-        image: Some("ghcr.io/baijin64/cyrene-yield:latest"),
+        image: Some("ghcr.io/dohorizon-ai/cyrene-yield-aca:latest"),
+        image_repository: Some("ghcr.io/dohorizon-ai/cyrene-yield-aca"),
         port: Some(8092),
         desc: "训练生命周期管理、检查点持久化与插件训练编排",
     },
@@ -80,7 +90,8 @@ const TOOLS: &[ToolSpec] = &[
         id: "catalyst",
         title: "Cyrene Catalyst (数据集准备与血缘服务)",
         kind: ToolKind::ContainerService,
-        image: Some("ghcr.io/baijin64/cyrene-catalyst:latest"),
+        image: Some("ghcr.io/dohorizon-ai/cyrene-catalyst:latest"),
+        image_repository: Some("ghcr.io/dohorizon-ai/cyrene-catalyst"),
         port: Some(8014),
         desc: "数据集导入、指令映射、划分与训练格式发布",
     },
@@ -88,7 +99,8 @@ const TOOLS: &[ToolSpec] = &[
         id: "echo",
         title: "Cyrene Echo (模型评测与质量门禁服务)",
         kind: ToolKind::ContainerService,
-        image: Some("ghcr.io/baijin64/cyrene-echo:latest"),
+        image: Some("ghcr.io/dohorizon-ai/cyrene-echo:latest"),
+        image_repository: Some("ghcr.io/dohorizon-ai/cyrene-echo"),
         port: Some(8094),
         desc: "评测套件执行、样本比对与 LLM Judge 质量判定",
     },
@@ -109,6 +121,41 @@ fn main() {
 
     let app_dir = get_cyrene_home();
 
+    if let Some(option_index) = args.iter().position(|arg| arg == "--update-service") {
+        let Some(service_id) = args
+            .get(option_index + 1)
+            .filter(|value| !value.starts_with('-'))
+        else {
+            eprintln!("--update-service 缺少服务名称。请运行 --help 查看用法。\n");
+            std::process::exit(2);
+        };
+
+        if service_id.eq_ignore_ascii_case("navigator") {
+            if let Err(error) = update_service_from_manifest(&app_dir, service_id, Path::new("")) {
+                eprintln!("\n❌ {error}");
+                std::process::exit(1);
+            }
+        }
+        let manifest_path = option_value(&args, "--manifest");
+        let Some(manifest_path) = manifest_path else {
+            eprintln!("更新服务需要同时提供 --update-service <NAME> 和 --manifest <PATH>。请运行 --help 查看用法。\n");
+            std::process::exit(2);
+        };
+
+        if let Err(error) =
+            update_service_from_manifest(&app_dir, service_id, Path::new(&manifest_path))
+        {
+            eprintln!("\n❌ 服务更新失败: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.contains(&"--manifest".to_string()) {
+        eprintln!("--manifest 只能与 --update-service 一起使用。请运行 --help 查看用法。\n");
+        std::process::exit(2);
+    }
+
     // Check for uninstall commands
     if args.contains(&"--uninstall".to_string()) || args.contains(&"--clean-uninstall".to_string())
     {
@@ -117,6 +164,19 @@ fn main() {
         perform_clean_uninstall(&app_dir, force);
         return;
     }
+
+    let update_lock = match acquire_service_update_lock(&app_dir) {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("\n❌ 无法取得服务更新锁: {error}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = recover_interrupted_update(&app_dir) {
+        eprintln!("\n❌ 无法恢复上次未完成的服务更新: {error}");
+        std::process::exit(1);
+    }
+    drop(update_lock);
 
     if args.contains(&"--silent".to_string()) {
         run_silent(&args, &app_dir);
@@ -138,8 +198,739 @@ fn print_usage(prog: &str) {
     );
     println!("  --exchange-token <KEY>  设置统一访问 API Key 凭据");
     println!("  --deploy-tools <NAMES>  以逗号分隔下载部署的服务: all 或 navigator,exchange,reactor,yield,catalyst,echo");
+    println!("  --update-service <NAME> 按不可变 digest 更新单个容器: exchange,reactor,yield,catalyst,echo");
+    println!("  --manifest <PATH>       指向发布工作流产出的 service-update-manifest.json");
     println!("  --generate-compose <PATH> 生成统一 docker-compose.yml 部署清单");
     println!("  -h, --help              显示帮助信息\n");
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceUpdateManifest {
+    schema_version: u32,
+    service_id: String,
+    version: String,
+    source_commit: String,
+    image: ServiceImageManifest,
+    platform: ServicePlatformManifest,
+}
+
+#[derive(Deserialize)]
+struct ServiceImageManifest {
+    repository: String,
+    digest: String,
+}
+
+#[derive(Deserialize)]
+struct ServicePlatformManifest {
+    os: String,
+    arch: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceUpdateJournal {
+    schema_version: u32,
+    service_id: String,
+    previous_image: String,
+    candidate_image: String,
+}
+
+struct ServiceUpdateLock {
+    _file: File,
+}
+
+fn option_value(args: &[String], option: &str) -> Option<String> {
+    let index = args.iter().position(|arg| arg == option)?;
+    args.get(index + 1)
+        .filter(|value| !value.starts_with('-'))
+        .cloned()
+}
+
+/// Updates one running Product container from a validated immutable image manifest.
+///
+/// The installed Compose file is edited only for the requested service. Its existing bind mount
+/// remains in place, and a failed health check restores the previous registry digest.
+fn update_service_from_manifest(
+    app_dir: &Path,
+    requested_id: &str,
+    manifest_path: &Path,
+) -> Result<(), String> {
+    let tool = TOOLS
+        .iter()
+        .find(|tool| tool.id.eq_ignore_ascii_case(requested_id))
+        .ok_or_else(|| {
+            format!("未知服务 `{requested_id}`；可更新 exchange、reactor、yield、catalyst、echo。")
+        })?;
+
+    if matches!(tool.kind, ToolKind::LocalAgent) {
+        return Err(
+            "Navigator 当前只有本地配置，没有可下载的原生二进制制品；此命令不会声称更新 Navigator 二进制。需要刷新配置时请运行 --deploy-tools navigator。".to_string(),
+        );
+    }
+
+    let _update_lock = acquire_service_update_lock(app_dir)?;
+    recover_interrupted_update(app_dir)?;
+
+    let expected_repository = tool
+        .image_repository
+        .ok_or_else(|| format!("服务 `{}` 未配置规范镜像仓库。", tool.id))?;
+    let expected_manifest_id = format!("cyrene-{}", tool.id);
+    let manifest_text = fs::read_to_string(manifest_path)
+        .map_err(|error| format!("无法读取清单 {}: {error}", manifest_path.display()))?;
+    let manifest: ServiceUpdateManifest = serde_json::from_str(&manifest_text)
+        .map_err(|error| format!("服务更新清单 JSON 无效: {error}"))?;
+
+    validate_service_manifest(&manifest, &expected_manifest_id, expected_repository)?;
+    ensure_manifest_matches_docker_platform(&manifest.platform)?;
+
+    let compose_file = app_dir.join("docker-compose.yml");
+    let compose_content = fs::read_to_string(&compose_file).map_err(|error| {
+        format!(
+            "未找到已安装服务的 Compose 清单 {}: {error}。请先通过安装器部署该服务。",
+            compose_file.display()
+        )
+    })?;
+    let compose_service = format!("cyrene-{}", tool.id);
+    let candidate_image = format!("{}@{}", manifest.image.repository, manifest.image.digest);
+    let candidate_compose =
+        replace_compose_service_image(&compose_content, &compose_service, &candidate_image)?;
+    let configured_image = compose_service_image(&compose_content, &compose_service)?;
+
+    let container_name = format!("cyrene-{}", tool.id);
+    let running_container = docker_inspect(&["container".to_string(), "inspect".to_string(), container_name.clone()])
+        .map_err(|error| {
+            format!(
+                "目标容器 `{container_name}` 未安装或不可读取；请先部署并启动该服务。Docker 返回: {error}"
+            )
+        })?;
+    let container_state = running_container
+        .get("State")
+        .and_then(|state| state.get("Status"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if container_state != "running" {
+        return Err(format!(
+            "目标容器 `{container_name}` 当前状态为 `{container_state}`；为确保可回滚，请先启动该服务后再更新。"
+        ));
+    }
+
+    let image_id = running_container
+        .get("Image")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("无法从容器 `{container_name}` 读取当前镜像 ID。"))?;
+    let container_image = running_container
+        .get("Config")
+        .and_then(|config| config.get("Image"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("无法从容器 `{container_name}` 读取当前镜像引用。"))?;
+    let previous_image = immutable_repo_digest(image_id, &configured_image, container_image)?;
+
+    println!("目标服务: {} ({})", tool.id, expected_manifest_id);
+    println!(
+        "候选版本: {} / {}",
+        manifest.version, manifest.source_commit
+    );
+    println!("候选镜像: {candidate_image}");
+    println!("当前镜像回滚点: {previous_image}");
+    println!("\n>> 拉取候选 digest；其他服务不会被拉取或重启...");
+    run_docker_status(
+        &["pull".to_string(), candidate_image.clone()],
+        "拉取候选镜像",
+    )?;
+
+    let journal = ServiceUpdateJournal {
+        schema_version: 1,
+        service_id: expected_manifest_id,
+        previous_image: previous_image.clone(),
+        candidate_image,
+    };
+    let journal_path = update_journal_path(app_dir);
+    write_json_atomically(&journal_path, &journal).map_err(|error| {
+        format!(
+            "候选镜像已拉取，但无法记录回滚点 {}; 运行中的服务未修改: {error}",
+            journal_path.display()
+        )
+    })?;
+
+    if let Err(error) = atomic_write(&compose_file, candidate_compose.as_bytes()) {
+        let journal_cleanup = fs::remove_file(&journal_path);
+        let cleanup_note = journal_cleanup
+            .err()
+            .map(|cleanup_error| format!(" 回滚记录也未能清除: {cleanup_error}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "候选镜像已拉取，但无法原子更新 Compose 文件 {}; 运行中的服务未修改: {error}.{cleanup_note}",
+            compose_file.display()
+        ));
+    }
+
+    let compose_path = compose_file.to_string_lossy().into_owned();
+    let update_result = run_compose_up(&compose_path, &compose_service)
+        .and_then(|()| wait_for_container_health(&container_name, Duration::from_secs(90)));
+
+    match update_result {
+        Ok(()) => {
+            fs::remove_file(&journal_path).map_err(|error| {
+                format!(
+                    "服务已通过健康检查，但无法清除回滚记录 {}: {error}。下次启动时将自动恢复到先前镜像。",
+                    journal_path.display()
+                )
+            })?;
+            println!("\n✅ {} 已更新并通过 Docker HEALTHCHECK。", tool.id);
+            println!("   仅重建了目标容器；服务数据卷保持原样。\n");
+            Ok(())
+        }
+        Err(update_error) => {
+            eprintln!("\n⚠️ 候选版本未通过启动或健康检查: {update_error}");
+            match rollback_service(
+                &compose_file,
+                &compose_path,
+                &compose_service,
+                &container_name,
+                &journal_path,
+                &previous_image,
+            ) {
+                Ok(()) => Err(format!(
+                    "候选版本失败；已恢复目标服务到此前的不可变镜像并通过健康检查。原始错误: {update_error}"
+                )),
+                Err(rollback_error) => Err(format!(
+                    "候选版本失败，且自动回滚未能完成。请检查 `{container_name}`。更新错误: {update_error}; 回滚错误: {rollback_error}"
+                )),
+            }
+        }
+    }
+}
+
+fn validate_service_manifest(
+    manifest: &ServiceUpdateManifest,
+    expected_service_id: &str,
+    expected_repository: &str,
+) -> Result<(), String> {
+    if manifest.schema_version != 1 {
+        return Err(format!(
+            "不支持清单 schemaVersion={}；当前仅接受 schemaVersion=1。",
+            manifest.schema_version
+        ));
+    }
+    if manifest.service_id != expected_service_id {
+        return Err(format!(
+            "清单 serviceId 为 `{}`，但本次目标是 `{expected_service_id}`。",
+            manifest.service_id
+        ));
+    }
+    if manifest.image.repository != expected_repository {
+        return Err(format!(
+            "清单镜像仓库 `{}` 与服务规范仓库 `{expected_repository}` 不一致。",
+            manifest.image.repository
+        ));
+    }
+    if !is_full_hex(&manifest.source_commit, 40) {
+        return Err("清单 sourceCommit 必须是完整的 40 位 Git SHA。".to_string());
+    }
+    if manifest.version.is_empty()
+        || manifest.version.len() > 128
+        || !manifest
+            .version
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+    {
+        return Err("清单 version 不是有效的镜像 tag。".to_string());
+    }
+    if !is_sha256_digest(&manifest.image.digest) {
+        return Err("清单 image.digest 必须使用 sha256:<64 位十六进制摘要>。".to_string());
+    }
+    if manifest.platform.os != "linux" || manifest.platform.arch != "amd64" {
+        return Err(format!(
+            "清单平台为 {}/{}；Windows 安装器当前只接受 Linux/amd64 Product 镜像。",
+            manifest.platform.os, manifest.platform.arch
+        ));
+    }
+    Ok(())
+}
+
+fn is_full_hex(value: &str, length: usize) -> bool {
+    value.len() == length && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(|digest| is_full_hex(digest, 64))
+}
+
+fn ensure_manifest_matches_docker_platform(
+    platform: &ServicePlatformManifest,
+) -> Result<(), String> {
+    let output = docker_output(&[
+        "info".to_string(),
+        "--format".to_string(),
+        "{{.OSType}}/{{.Architecture}}".to_string(),
+    ])?;
+    if !output.status.success() {
+        return Err(format!(
+            "无法读取 Docker 守护进程平台: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let daemon_platform = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_ascii_lowercase();
+    let normalized = match daemon_platform.as_str() {
+        "linux/x86_64" | "linux/x64" => "linux/amd64".to_string(),
+        "linux/aarch64" => "linux/arm64".to_string(),
+        other => other.to_string(),
+    };
+    let manifest_platform = format!("{}/{}", platform.os, platform.arch);
+    if normalized != manifest_platform {
+        return Err(format!(
+            "清单平台 {manifest_platform} 与当前 Docker 守护进程平台 {normalized} 不匹配。"
+        ));
+    }
+    Ok(())
+}
+
+fn docker_output(args: &[String]) -> Result<Output, String> {
+    Command::new("docker")
+        .args(args)
+        .output()
+        .map_err(|error| format!("无法启动 Docker 命令: {error}"))
+}
+
+fn docker_inspect(args: &[String]) -> Result<serde_json::Value, String> {
+    let output = docker_output(args)?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Docker inspect 返回无效 JSON: {error}"))?;
+    value
+        .as_array()
+        .and_then(|entries| entries.first())
+        .cloned()
+        .ok_or_else(|| "Docker inspect 没有返回目标对象。".to_string())
+}
+
+fn immutable_repo_digest(
+    image_id: &str,
+    configured_image: &str,
+    container_image: &str,
+) -> Result<String, String> {
+    let configured_repository = image_reference_repository(configured_image)?;
+    let container_repository = image_reference_repository(container_image)?;
+    if configured_repository != container_repository {
+        return Err(format!(
+            "Compose 配置镜像仓库 `{configured_repository}` 与运行容器仓库 `{container_repository}` 不一致；为避免对错误版本回滚，更新已取消。"
+        ));
+    }
+
+    let image = docker_inspect(&[
+        "image".to_string(),
+        "inspect".to_string(),
+        image_id.to_string(),
+    ])
+    .map_err(|error| format!("无法读取当前镜像的不可变元数据: {error}"))?;
+    let digests = image
+        .get("RepoDigests")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            "当前镜像没有 RepoDigests；为保证可回滚，更新已取消且未修改容器。".to_string()
+        })?;
+    digests
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find(|reference| {
+            reference.rsplit_once('@').is_some_and(|(repository, digest)| {
+                repository == configured_repository && is_sha256_digest(digest)
+            })
+        })
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "当前镜像没有仓库 `{configured_repository}` 对应的 sha256 RepoDigest；为保证可回滚，更新已取消。"
+            )
+        })
+}
+
+fn image_reference_repository(image_reference: &str) -> Result<&str, String> {
+    let without_digest = image_reference
+        .split_once('@')
+        .map_or(image_reference, |(repository, _)| repository);
+    let last_segment = without_digest.rsplit('/').next().unwrap_or(without_digest);
+    if let Some(tag_start) = last_segment.rfind(':') {
+        let repository_length = without_digest.len() - (last_segment.len() - tag_start);
+        return Ok(&without_digest[..repository_length]);
+    }
+    if without_digest.is_empty() || !without_digest.contains('/') {
+        return Err(format!("无效的容器镜像引用 `{image_reference}`。"));
+    }
+    Ok(without_digest)
+}
+
+fn compose_service_image(compose_content: &str, service_name: &str) -> Result<String, String> {
+    let lines: Vec<&str> = compose_content.split('\n').collect();
+    let heading = format!("  {service_name}:");
+    let matches: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (*line == heading).then_some(index))
+        .collect();
+    if matches.len() != 1 {
+        return Err(format!(
+            "Compose 文件中必须恰好包含一个 `{service_name}` 服务定义。"
+        ));
+    }
+    let start = matches[0];
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find_map(|(index, line)| {
+            (line.starts_with("  ") && !line.starts_with("    ")).then_some(index)
+        })
+        .unwrap_or(lines.len());
+    let images: Vec<&str> = lines[start + 1..end]
+        .iter()
+        .filter_map(|line| line.strip_prefix("    image:"))
+        .map(str::trim)
+        .collect();
+    if images.len() != 1 || images[0].is_empty() {
+        return Err(format!(
+            "Compose 服务 `{service_name}` 必须恰好包含一个非空 image 配置。"
+        ));
+    }
+    Ok(images[0].to_string())
+}
+
+fn replace_compose_service_image(
+    compose_content: &str,
+    service_name: &str,
+    image_reference: &str,
+) -> Result<String, String> {
+    let lines: Vec<&str> = compose_content.split('\n').collect();
+    let heading = format!("  {service_name}:");
+    let matches: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (*line == heading).then_some(index))
+        .collect();
+    if matches.len() != 1 {
+        return Err(format!(
+            "Compose 文件中必须恰好包含一个 `{service_name}` 服务定义。"
+        ));
+    }
+
+    let start = matches[0];
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find_map(|(index, line)| {
+            (line.starts_with("  ") && !line.starts_with("    ")).then_some(index)
+        })
+        .unwrap_or(lines.len());
+    let image_lines: Vec<usize> = (start + 1..end)
+        .filter(|index| lines[*index].starts_with("    image:"))
+        .collect();
+    if image_lines.len() != 1 {
+        return Err(format!(
+            "Compose 服务 `{service_name}` 必须恰好包含一个 image 配置。"
+        ));
+    }
+
+    let image_line = image_lines[0];
+    let mut updated = lines;
+    updated[image_line] = "";
+    let replacement = format!("    image: {image_reference}");
+    let mut output = updated.join("\n");
+    let byte_position: usize = updated[..image_line]
+        .iter()
+        .map(|line| line.len() + 1)
+        .sum();
+    output.replace_range(byte_position..byte_position, &replacement);
+    Ok(output)
+}
+
+fn update_journal_path(app_dir: &Path) -> PathBuf {
+    app_dir.join("service-update-in-progress.json")
+}
+
+fn acquire_service_update_lock(app_dir: &Path) -> Result<ServiceUpdateLock, String> {
+    let parent = app_dir.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("无法创建安装器父目录 {}: {error}", parent.display()))?;
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|error| format!("无法解析安装器父目录 {}: {error}", parent.display()))?;
+    let app_name = app_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("安装器目录路径无效: {}", app_dir.display()))?;
+    let lock_path = canonical_parent.join(format!(".{app_name}.service-update.lock"));
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| format!("无法打开服务更新锁 {}: {error}", lock_path.display()))?;
+    file.try_lock_exclusive().map_err(|error| {
+        format!(
+            "另一个更新或恢复操作正在运行，锁定文件为 {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    Ok(ServiceUpdateLock { _file: file })
+}
+
+fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let contents = serde_json::to_vec_pretty(value)
+        .map_err(|error| format!("无法序列化更新回滚记录: {error}"))?;
+    atomic_write(path, &contents)
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("目标路径 {} 没有父目录。", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("目标路径 {} 没有有效文件名。", path.display()))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary_path = parent.join(format!(
+        ".{file_name}.cyrene-{}-{nonce}.tmp",
+        std::process::id()
+    ));
+
+    let write_result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)
+            .map_err(|error| format!("无法创建临时文件 {}: {error}", temporary_path.display()))?;
+        file.write_all(contents)
+            .map_err(|error| format!("无法写入临时文件 {}: {error}", temporary_path.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("无法同步临时文件 {}: {error}", temporary_path.display()))?;
+        drop(file);
+        fs::rename(&temporary_path, path).map_err(|error| {
+            format!(
+                "无法原子替换 {} 为 {}: {error}",
+                path.display(),
+                temporary_path.display()
+            )
+        })
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    write_result
+}
+
+fn recover_interrupted_update(app_dir: &Path) -> Result<(), String> {
+    let journal_path = update_journal_path(app_dir);
+    if !journal_path.exists() {
+        return Ok(());
+    }
+
+    let journal_text = fs::read_to_string(&journal_path)
+        .map_err(|error| format!("无法读取回滚记录 {}: {error}", journal_path.display()))?;
+    let journal: ServiceUpdateJournal = serde_json::from_str(&journal_text)
+        .map_err(|error| format!("回滚记录 JSON 无效: {error}"))?;
+    if journal.schema_version != 1 {
+        return Err(format!(
+            "不支持回滚记录 schemaVersion={}。",
+            journal.schema_version
+        ));
+    }
+    let tool = TOOLS
+        .iter()
+        .find(|tool| {
+            matches!(tool.kind, ToolKind::ContainerService)
+                && format!("cyrene-{}", tool.id) == journal.service_id
+        })
+        .ok_or_else(|| format!("回滚记录包含未知服务 `{}`。", journal.service_id))?;
+    validate_journal_image(&journal.previous_image, tool, false)?;
+    validate_journal_image(&journal.candidate_image, tool, true)?;
+
+    let compose_file = app_dir.join("docker-compose.yml");
+    let compose_content = fs::read_to_string(&compose_file)
+        .map_err(|error| format!("无法读取 Compose 文件以恢复回滚: {error}"))?;
+    let compose_service = format!("cyrene-{}", tool.id);
+    let restored =
+        replace_compose_service_image(&compose_content, &compose_service, &journal.previous_image)?;
+    atomic_write(&compose_file, restored.as_bytes())?;
+
+    let compose_path = compose_file.to_string_lossy().into_owned();
+    let container_name = format!("cyrene-{}", tool.id);
+    println!(
+        "检测到未完成的 `{}` 更新；正在自动恢复到先前不可变镜像。",
+        tool.id
+    );
+    run_compose_up(&compose_path, &compose_service)?;
+    wait_for_container_health(&container_name, Duration::from_secs(90))?;
+    fs::remove_file(&journal_path)
+        .map_err(|error| format!("无法清除已完成恢复的回滚记录: {error}"))?;
+    println!("已恢复并验证 `{}` 的 Docker HEALTHCHECK。", tool.id);
+    Ok(())
+}
+
+fn validate_journal_image(
+    image_reference: &str,
+    tool: &ToolSpec,
+    is_candidate: bool,
+) -> Result<(), String> {
+    let (repository, digest) = image_reference
+        .rsplit_once('@')
+        .ok_or_else(|| format!("回滚记录中的镜像 `{image_reference}` 未固定 digest。"))?;
+    if !is_sha256_digest(digest) {
+        return Err(format!(
+            "回滚记录中的镜像 `{image_reference}` digest 无效。"
+        ));
+    }
+    if is_candidate && Some(repository) != tool.image_repository {
+        return Err(format!(
+            "回滚记录中的候选仓库 `{repository}` 与服务规范仓库不匹配。"
+        ));
+    }
+
+    let owner_and_repository = repository
+        .strip_prefix("ghcr.io/")
+        .ok_or_else(|| format!("回滚记录镜像必须来自 GHCR: `{repository}`。"))?;
+    let (owner, image_name) = owner_and_repository
+        .split_once('/')
+        .ok_or_else(|| format!("回滚记录 GHCR 仓库格式无效: `{repository}`。"))?;
+    let expected_name = format!("cyrene-{}", tool.id);
+    let valid_previous_name = image_name == expected_name
+        || (matches!(tool.id, "reactor" | "yield") && image_name == format!("{expected_name}-aca"));
+    if owner.is_empty()
+        || !owner.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || "-._".contains(character)
+        })
+        || !valid_previous_name
+    {
+        return Err(format!("回滚记录中的 GHCR 仓库不属于 `{}`。", tool.id));
+    }
+    Ok(())
+}
+
+fn run_docker_status(args: &[String], operation: &str) -> Result<(), String> {
+    let status = Command::new("docker")
+        .args(args)
+        .status()
+        .map_err(|error| format!("{operation}时无法启动 Docker: {error}"))?;
+    if !status.success() {
+        return Err(format!("{operation}失败，Docker 退出状态为 {status}."));
+    }
+    Ok(())
+}
+
+fn run_compose_up(compose_path: &str, service_name: &str) -> Result<(), String> {
+    println!("\n>> 仅重建目标服务 `{service_name}`...");
+    run_docker_status(
+        &[
+            "compose".to_string(),
+            "-f".to_string(),
+            compose_path.to_string(),
+            "up".to_string(),
+            "-d".to_string(),
+            "--no-deps".to_string(),
+            "--force-recreate".to_string(),
+            "--pull".to_string(),
+            "never".to_string(),
+            service_name.to_string(),
+        ],
+        "启动目标服务",
+    )
+}
+
+fn wait_for_container_health(container_name: &str, timeout: Duration) -> Result<(), String> {
+    let started = Instant::now();
+    let mut last_inspect_error = None;
+    while started.elapsed() < timeout {
+        match docker_inspect(&[
+            "container".to_string(),
+            "inspect".to_string(),
+            container_name.to_string(),
+        ]) {
+            Ok(container) => {
+                let state = container.get("State").cloned().unwrap_or_default();
+                let status = state
+                    .get("Status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                if status != "running" {
+                    let exit_code = state
+                        .get("ExitCode")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or_default();
+                    return Err(format!(
+                        "容器 `{container_name}` 未保持运行，状态为 `{status}` (exit code {exit_code})。"
+                    ));
+                }
+                let health = state
+                    .get("Health")
+                    .and_then(|health| health.get("Status"))
+                    .and_then(serde_json::Value::as_str);
+                match health {
+                    Some("healthy") => return Ok(()),
+                    Some("unhealthy") => {
+                        return Err(format!(
+                            "容器 `{container_name}` 的 Docker HEALTHCHECK 报告 unhealthy。"
+                        ));
+                    }
+                    Some("starting") => {}
+                    Some(other) => {
+                        return Err(format!(
+                            "容器 `{container_name}` 返回未知健康状态 `{other}`。"
+                        ));
+                    }
+                    None => {
+                        return Err(format!(
+                            "容器 `{container_name}` 没有 Docker HEALTHCHECK，无法验证更新就绪状态。"
+                        ));
+                    }
+                }
+            }
+            Err(error) => last_inspect_error = Some(error),
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+    match last_inspect_error {
+        Some(error) => Err(format!(
+            "等待容器 `{container_name}` 健康超时；最近的 inspect 错误: {error}"
+        )),
+        None => Err(format!(
+            "等待容器 `{container_name}` 通过 Docker HEALTHCHECK 超时。"
+        )),
+    }
+}
+
+fn rollback_service(
+    compose_file: &Path,
+    compose_path: &str,
+    compose_service: &str,
+    container_name: &str,
+    journal_path: &Path,
+    previous_image: &str,
+) -> Result<(), String> {
+    println!("\n>> 使用先前不可变镜像回滚 `{container_name}`: {previous_image}");
+    let compose_content = fs::read_to_string(compose_file)
+        .map_err(|error| format!("无法读取 Compose 文件以回滚: {error}"))?;
+    let rollback_compose =
+        replace_compose_service_image(&compose_content, compose_service, previous_image)?;
+    atomic_write(compose_file, rollback_compose.as_bytes())?;
+    run_compose_up(compose_path, compose_service)?;
+    wait_for_container_health(container_name, Duration::from_secs(90))?;
+    fs::remove_file(journal_path)
+        .map_err(|error| format!("回滚已通过健康检查，但无法清除回滚记录: {error}"))?;
+    Ok(())
 }
 
 fn run_interactive(app_dir: &Path) {
@@ -292,6 +1083,18 @@ fn deploy_selected_tools(
     exchange_token: &str,
     interactive: bool,
 ) {
+    let _update_lock = match acquire_service_update_lock(app_dir) {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("\n❌ 无法取得部署锁，未修改 Compose 或容器: {error}");
+            return;
+        }
+    };
+    if let Err(error) = recover_interrupted_update(app_dir) {
+        eprintln!("\n❌ 无法恢复上次未完成的服务更新，已取消部署: {error}");
+        return;
+    }
+
     println!("\n============================================================");
     println!("  开始部署所选组件 / Deploying Selected Components          ");
     println!("============================================================");
@@ -476,6 +1279,18 @@ fn show_system_status(app_dir: &Path) {
 /// 执行完全干净的卸载
 /// Complete clean uninstallation
 fn perform_clean_uninstall(app_dir: &Path, force: bool) {
+    let _update_lock = match acquire_service_update_lock(app_dir) {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("\n❌ 无法取得卸载锁，未停止或删除任何容器: {error}");
+            return;
+        }
+    };
+    if let Err(error) = recover_interrupted_update(app_dir) {
+        eprintln!("\n❌ 无法恢复上次未完成的服务更新，已取消卸载: {error}");
+        return;
+    }
+
     println!("\n============================================================");
     println!("  Cyrene 完全干净卸载程序 / Clean Uninstaller               ");
     println!("============================================================");
