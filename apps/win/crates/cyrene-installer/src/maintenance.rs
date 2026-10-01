@@ -22,6 +22,7 @@ const BROKER_SOCKET: &str = "/run/cyrene/runtime-maintenance.sock";
 const MAX_BROKER_STDOUT_BYTES: usize = 1_048_576;
 const MAX_BROKER_STDERR_BYTES: usize = 65_536;
 const BROKER_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFINITIVE_BEGIN_REFUSAL_PREFIX: &str = "MAINTENANCE_REJECTED:";
 
 /// Complete source set required for Windows Product package updates.
 pub const PRODUCT_ACTIVITY_SOURCES: &[&str] = &[
@@ -234,17 +235,69 @@ fn begin_product_maintenance_with_generations(
             "component_artifact_digests": component_artifact_digests,
         },
     });
-    let result = broker_call(request)?;
-    let snapshot = parse_readiness(result)?;
-    if snapshot.status != "MAINTENANCE_ACTIVE" {
+    begin_maintenance_token(broker_call(request)?)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BeginMaintenanceResult {
+    status: String,
+    maintenance_token: Option<String>,
+    gate_generation: u64,
+    blocker_codes: Vec<String>,
+}
+
+fn begin_maintenance_token(result: Value) -> Result<String, String> {
+    if result.get("maintenance_token").is_none() {
+        return Err(
+            "BeginMaintenance result 缺少 maintenance_token；状态按 UNKNOWN 处理。".to_string(),
+        );
+    }
+    let result: BeginMaintenanceResult = serde_json::from_value(result).map_err(|error| {
+        format!("BeginMaintenance result shape 无法识别；状态按 UNKNOWN 处理: {error}")
+    })?;
+    if let Some(token) = result.maintenance_token.as_deref() {
+        if result.status == "MAINTENANCE_ACTIVE" && !token.is_empty() && token.len() <= 512 {
+            return Ok(token.to_string());
+        }
         return Err(format!(
-            "维护 broker 未授予更新围栏，返回 `{}`。",
-            snapshot.status
+            "BeginMaintenance status/token 组合无法识别；状态按 UNKNOWN 处理: status={} gate_generation={}",
+            result.status, result.gate_generation
         ));
     }
-    snapshot
-        .maintenance_token
-        .ok_or_else(|| "维护 broker 未返回 maintenance_token。".to_string())
+
+    if is_known_begin_refusal_status(&result.status) {
+        let blockers = if result.blocker_codes.is_empty() {
+            "no blocker code".to_string()
+        } else {
+            result.blocker_codes.join(", ")
+        };
+        return Err(format!(
+            "{DEFINITIVE_BEGIN_REFUSAL_PREFIX}{}: maintenance was not acquired at gate generation {}; blockers: {blockers}",
+            result.status, result.gate_generation
+        ));
+    }
+
+    Err(format!(
+        "BeginMaintenance result status `{}` without a token is not a recognized refusal; state remains UNKNOWN.",
+        result.status
+    ))
+}
+
+fn is_known_begin_refusal_status(status: &str) -> bool {
+    matches!(
+        status,
+        "ACTIVE_TASKS"
+            | "UNKNOWN"
+            | "IDLE_RUNTIME_REQUIRES_UNLOAD"
+            | "MAINTENANCE_ACTIVE"
+            | "STALE_READINESS"
+            | "USER_CONFIRMATION_REQUIRED"
+    )
+}
+
+pub fn is_definitive_begin_refusal(error: &str) -> bool {
+    error.starts_with(DEFINITIVE_BEGIN_REFUSAL_PREFIX)
 }
 
 fn validate_plan_binding(
@@ -538,7 +591,7 @@ fn broker_call(request: Value) -> Result<Value, String> {
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("request rejected");
-        return Err(format!("MAINTENANCE_REJECTED:{code}: {message}"));
+        return Err(format!("MAINTENANCE_BROKER_ERROR:{code}: {message}"));
     }
     envelope
         .get("result")
@@ -575,7 +628,10 @@ pub fn new_request_id(prefix: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{end_maintenance_request, ActiveTask, ReadinessSnapshot};
+    use super::{
+        begin_maintenance_token, end_maintenance_request, is_definitive_begin_refusal, ActiveTask,
+        ReadinessSnapshot,
+    };
     use serde_json::json;
 
     fn snapshot(status: &str, gate_generation: Option<u64>) -> ReadinessSnapshot {
@@ -594,6 +650,21 @@ mod tests {
             maintenance_token: None,
             expected_catalog_generation: Some(1),
         }
+    }
+
+    fn begin_result(status: &str, maintenance_token: Option<&str>) -> serde_json::Value {
+        json!({
+            "status": status,
+            "maintenance_token": maintenance_token,
+            "gate_generation": 42,
+            "blocker_codes": if status == "STALE_READINESS" {
+                vec!["READINESS_GENERATION_STALE"]
+            } else if status == "ACTIVE_TASKS" {
+                vec!["ACTIVE_TASKS_PRESENT"]
+            } else {
+                vec!["UPDATE_READINESS_BLOCKED"]
+            },
+        })
     }
 
     #[test]
@@ -638,6 +709,52 @@ mod tests {
         gate.inflight_runtime_admission_count = 1;
         assert_eq!(gate.contract_gate()["state"], json!("unknown"));
         assert!(gate.expected_gate_generation().is_err());
+    }
+
+    #[test]
+    fn known_no_token_begin_results_are_definitive_refusals() {
+        for status in [
+            "ACTIVE_TASKS",
+            "UNKNOWN",
+            "IDLE_RUNTIME_REQUIRES_UNLOAD",
+            "MAINTENANCE_ACTIVE",
+            "STALE_READINESS",
+            "USER_CONFIRMATION_REQUIRED",
+        ] {
+            let error = begin_maintenance_token(begin_result(status, None)).unwrap_err();
+            assert!(
+                is_definitive_begin_refusal(&error),
+                "{status} must be marked as a definitive no-acquire result: {error}"
+            );
+            assert!(error.contains(status));
+        }
+    }
+
+    #[test]
+    fn active_begin_result_requires_its_token_and_ready_without_token_is_indeterminate() {
+        assert_eq!(
+            begin_maintenance_token(begin_result("MAINTENANCE_ACTIVE", Some("broker-token")))
+                .unwrap(),
+            "broker-token"
+        );
+
+        let error = begin_maintenance_token(begin_result("READY", None)).unwrap_err();
+        assert!(!is_definitive_begin_refusal(&error));
+    }
+
+    #[test]
+    fn unknown_or_malformed_begin_results_remain_indeterminate() {
+        let unknown_status =
+            begin_maintenance_token(begin_result("FUTURE_STATUS", None)).unwrap_err();
+        assert!(!is_definitive_begin_refusal(&unknown_status));
+
+        let mut missing_token_field = begin_result("STALE_READINESS", None);
+        missing_token_field
+            .as_object_mut()
+            .expect("BeginMaintenance result is an object")
+            .remove("maintenance_token");
+        let malformed = begin_maintenance_token(missing_token_field).unwrap_err();
+        assert!(!is_definitive_begin_refusal(&malformed));
     }
 
     #[test]
