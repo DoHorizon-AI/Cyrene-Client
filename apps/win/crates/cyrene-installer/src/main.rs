@@ -2274,18 +2274,27 @@ fn end_journaled_product_maintenance(
     outcome: &str,
     healthy: bool,
 ) -> Result<(), String> {
+    let maintenance_request_id = journal.maintenance_request_id.as_deref().ok_or_else(|| {
+        "回滚记录缺少 BeginMaintenance request_id，维护围栏保持活动。".to_string()
+    })?;
     if journal.maintenance_end_request_id.is_none() {
-        let identity = journal.maintenance_request_id.as_deref().unwrap_or(token);
-        journal.maintenance_end_request_id = Some(derived_maintenance_end_request_id(identity));
+        journal.maintenance_end_request_id =
+            Some(derived_maintenance_end_request_id(maintenance_request_id));
     }
-    let request_id = journal
+    let end_request_id = journal
         .maintenance_end_request_id
         .as_deref()
         .ok_or_else(|| "回滚记录缺少 EndMaintenance request_id。".to_string())?;
     write_json_atomically(&update_journal_path(app_dir), journal).map_err(|error| {
         format!("无法持久化 EndMaintenance request_id，维护围栏保持活动: {error}")
     })?;
-    maintenance::end_product_maintenance(token, request_id, outcome, healthy)
+    maintenance::end_product_maintenance(
+        token,
+        maintenance_request_id,
+        end_request_id,
+        outcome,
+        healthy,
+    )
 }
 
 fn acquire_service_update_lock(app_dir: &Path) -> Result<ServiceUpdateLock, String> {

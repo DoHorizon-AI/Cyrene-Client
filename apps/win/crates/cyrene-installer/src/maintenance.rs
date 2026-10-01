@@ -298,38 +298,58 @@ pub fn is_contract_digest(value: &str) -> bool {
 /// it can recover the broker's receipt after a lost response.
 pub fn end_product_maintenance(
     token: &str,
-    request_id: &str,
+    maintenance_request_id: &str,
+    end_request_id: &str,
     outcome: &str,
     healthy: bool,
 ) -> Result<(), String> {
     if token.is_empty() || token.len() > 512 {
         return Err("maintenance_token 格式无效。".to_string());
     }
-    if request_id.is_empty()
-        || request_id.len() > 128
-        || !request_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte))
-    {
-        return Err("EndMaintenance request_id 格式无效。".to_string());
+    for (label, request_id) in [("Begin", maintenance_request_id), ("End", end_request_id)] {
+        if request_id.is_empty()
+            || request_id.len() > 128
+            || !request_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._".contains(&byte))
+        {
+            return Err(format!("EndMaintenance {label} request_id 格式无效。"));
+        }
     }
     if !["SUCCESS", "ROLLED_BACK", "FAILED"].contains(&outcome) {
         return Err(format!("未知维护结果 `{outcome}`。"));
     }
-    let request = json!({
-        "request_id": request_id,
-        "method": "EndMaintenance",
-        "params": {
-            "maintenance_token": token,
-            "outcome": outcome,
-            "healthy": healthy,
-        },
-    });
+    let request = end_maintenance_request(
+        token,
+        maintenance_request_id,
+        end_request_id,
+        outcome,
+        healthy,
+    );
     let result = broker_call(request)?;
     if result.get("unlocked").and_then(Value::as_bool) != Some(true) {
         return Err("维护 broker 未确认围栏已解除。".to_string());
     }
     Ok(())
+}
+
+fn end_maintenance_request(
+    token: &str,
+    maintenance_request_id: &str,
+    end_request_id: &str,
+    outcome: &str,
+    healthy: bool,
+) -> Value {
+    json!({
+        "request_id": end_request_id,
+        "method": "EndMaintenance",
+        "params": {
+            "request_id": maintenance_request_id,
+            "maintenance_token": token,
+            "outcome": outcome,
+            "healthy": healthy,
+        },
+    })
 }
 
 fn parse_readiness(value: Value) -> Result<ReadinessSnapshot, String> {
@@ -555,7 +575,7 @@ pub fn new_request_id(prefix: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActiveTask, ReadinessSnapshot};
+    use super::{end_maintenance_request, ActiveTask, ReadinessSnapshot};
     use serde_json::json;
 
     fn snapshot(status: &str, gate_generation: Option<u64>) -> ReadinessSnapshot {
@@ -618,5 +638,23 @@ mod tests {
         gate.inflight_runtime_admission_count = 1;
         assert_eq!(gate.contract_gate()["state"], json!("unknown"));
         assert!(gate.expected_gate_generation().is_err());
+    }
+
+    #[test]
+    fn end_maintenance_reuses_journal_request_id_in_broker_params() {
+        let begin_request_id = "begin-123-abc";
+        let end_request_id = "end-0123456789abcdef0123456789abcdef";
+        let request = end_maintenance_request(
+            "maintenance-token",
+            begin_request_id,
+            end_request_id,
+            "ROLLED_BACK",
+            true,
+        );
+
+        assert_eq!(request["method"], json!("EndMaintenance"));
+        assert_eq!(request["request_id"], json!(end_request_id));
+        assert_eq!(request["params"]["request_id"], json!(begin_request_id));
+        assert_ne!(request["request_id"], request["params"]["request_id"]);
     }
 }
