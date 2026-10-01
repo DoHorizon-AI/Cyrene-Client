@@ -10,6 +10,7 @@ const jsonResponse = (value: unknown, status = 200, headers?: Record<string, str
     status,
     headers: { "Content-Type": "application/problem+json", ...headers },
   });
+const connectionResponse = { configured: false, target: null };
 
 describe("RFC 9457 Problem Details and W3C correlation handling in Client", () => {
   it("extracts canonical error code, traceId, requestId, and recoveryAction from Problem Details", async () => {
@@ -30,7 +31,7 @@ describe("RFC 9457 Problem Details and W3C correlation handling in Client", () =
 
     let caught: unknown = null;
     try {
-      await client.datasets();
+      await client.connection();
     } catch (err) {
       caught = err;
     }
@@ -66,7 +67,7 @@ describe("RFC 9457 Problem Details and W3C correlation handling in Client", () =
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(problemPayload, 409));
     const client = new SettingsClient(fetcher);
 
-    await expect(client.datasets()).rejects.toMatchObject({
+    await expect(client.connection()).rejects.toMatchObject({
       code: "CATALYST_IDEMPOTENCY_CONFLICT",
       status: 409,
       traceId: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d",
@@ -80,17 +81,17 @@ describe("RFC 9457 Problem Details and W3C correlation handling in Client", () =
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("Internal Server Error", { status: 500 }));
     const client = new SettingsClient(fetcher);
 
-    await expect(client.datasets()).rejects.toMatchObject({
+    await expect(client.connection()).rejects.toMatchObject({
       code: "NON_JSON",
       status: 500,
     });
   });
 
   it("automatically generates and propagates X-Request-ID header on requests", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse([]));
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(connectionResponse));
     const client = new SettingsClient(fetcher);
 
-    await client.datasets();
+    await client.connection();
     expect(fetcher).toHaveBeenCalledOnce();
     const [, init] = fetcher.mock.calls[0];
     const headers = new Headers(init?.headers);
@@ -102,10 +103,10 @@ describe("RFC 9457 Problem Details and W3C correlation handling in Client", () =
 
 describe("W3C trace context propagation from the browser", () => {
   it("sends a well-formed traceparent and a request id on every call", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse([]));
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(connectionResponse));
     const client = new SettingsClient(fetcher);
 
-    await client.datasets();
+    await client.connection();
 
     const headers = new Headers((fetcher.mock.calls[0][1] as RequestInit).headers);
     const traceparent = headers.get("traceparent") ?? "";
@@ -119,10 +120,10 @@ describe("W3C trace context propagation from the browser", () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse({ code: "SESSION_EXPIRED" }, 401))
       .mockResolvedValueOnce(jsonResponse({ authenticated: true, refreshable: true, csrfToken: "csrf-1" }))
-      .mockResolvedValueOnce(jsonResponse([]));
+      .mockResolvedValueOnce(jsonResponse(connectionResponse));
     const client = new SettingsClient(fetcher);
 
-    await client.datasets();
+    await client.connection();
 
     const first = new Headers((fetcher.mock.calls[0][1] as RequestInit).headers).get("traceparent") ?? "";
     const retried = new Headers((fetcher.mock.calls[2][1] as RequestInit).headers).get("traceparent") ?? "";

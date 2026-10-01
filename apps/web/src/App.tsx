@@ -13,6 +13,7 @@ import { useRunControl } from "./runs/RunPanel";
 import { useBuildControl } from "./builds/useBuildControl";
 import { useNodeCatalog } from "./pipelines/useNodeCatalog";
 import { DeviceApprovalPage } from "./device-approval/DeviceApprovalPage";
+import { UpdatesPanel } from "./updates/UpdatesPanel";
 
 import { EditorWorkspace, type EditorWorkspaceHandle, type EditorId } from "./ide/EditorWorkspace";
 import { Icon, Menu, ResizeHandle, useIdeLayout } from "./ide/Chrome";
@@ -95,6 +96,18 @@ function AppView() {
     window.addEventListener("cyrene:open-account", open);
     return () => window.removeEventListener("cyrene:open-account", open);
   }, []);
+  useEffect(() => {
+    let active = true;
+    void fetch("/studio-updates/v1/session", { signal: AbortSignal.timeout(5000) })
+      .then(async response => {
+        if (!response.ok) return false;
+        const session: unknown = await response.json();
+        if (!session || typeof session !== "object" || !("mode" in session) || session.mode !== "local" || !("commands" in session) || !Array.isArray(session.commands)) return false;
+        return session.commands.some(command => command && typeof command === "object" && "name" in command && command.name === "updates.status");
+      })
+      .then(available => { if (active) setLocalUpdatesAvailable(available); }, () => { if (active) setLocalUpdatesAvailable(false); });
+    return () => { active = false; };
+  }, []);
   const toggleMonitor = () => {
     if (monitorExpanded) {
       editorWorkspace.current?.merge("graph"); setMonitorExpanded(false);
@@ -111,6 +124,8 @@ function AppView() {
   const [events, setEvents] = useState<{ time: string; message: string }[]>([]);
   const [settingsClient] = useState(() => new SettingsClient());
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
+  const [localUpdatesAvailable, setLocalUpdatesAvailable] = useState(false);
+  const [updateReminderCount, setUpdateReminderCount] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>("training");
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState("示例已就绪。连接端口、调整参数，然后校验流程。");
@@ -228,6 +243,7 @@ function AppView() {
           <Menu label={t("构建")}><button disabled={running} onClick={() => { showChecks(); setNotice(validation.issues.length ? (locale === "zh-CN" ? `发现 ${validation.issues.length} 个问题。` : `${validation.issues.length} issue(s) found.`) : locale === "zh-CN" ? "结构校验通过；真实资源可用性与业务门禁尚未验证。" : "Structure validation passed; live resource availability and policy gates are not yet verified."); }}>{t("校验流程")}</button><button onClick={() => showBottom("builds")}>{t("节点镜像与版本管理")}</button><div onClick={() => showBottom("runs")}>{runControl.compileAction}</div><div onClick={() => showBottom("builds")}>{buildControl.menu}</div><hr /><button disabled={running} onClick={() => replace(examplePipeline(), locale === "zh-CN" ? "已载入训练示例。" : "Training example loaded.")}>{t("训练示例")}</button>{controls.history}</Menu>
           <Menu label={t("运行")}><button onClick={() => right("assistant")}>{tx("MCP 调试与本地测试", "MCP debugging and local tests")}</button><button onClick={() => openMonitor()}>{tx("打开运行监控", "Open monitoring")}</button><button onClick={() => openMonitor(true)}>{tx("运行历史", "Run history")}</button><hr /><button onClick={() => showBottom("runs")}>{t("执行服务器与运行列表")}</button><div onClick={() => showBottom("runs")}>{runControl.menu}</div><hr /><button disabled={running} onClick={preview}>{t("本地预演")}</button></Menu>
           <Menu label={t("工具")}>{productPages.map(page => <button key={page.id} onClick={() => openProduct(page.id)}>{locale === "zh-CN" ? page.zh : page.en}</button>)}<hr /><button onClick={() => showBottom("builds")}>{t("节点包管理")}</button><button onClick={() => left("servers")}>{t("服务器注册与连接诊断")}</button><button onClick={() => { setTab("log"); setLayout(s => ({ ...s, bottom: true })); }}>{t("事件日志")}</button><button onClick={() => { setEditorTab("source"); }}>{t("查看流程 JSON")}</button><button onClick={() => right("assistant")}>{tx("MCP 助手与工具调试", "MCP assistant and tools")}</button></Menu>
+          {localUpdatesAvailable && <Menu label={`${tx("更新", "Updates")}${updateReminderCount ? ` (${updateReminderCount})` : ""}`}><UpdatesPanel onReminderChange={setUpdateReminderCount} /></Menu>}
         </nav>
         <div className="ide-project-title">Cyrene Client <span> / </span> <b>Local Workspace</b></div>
         <div className="ide-document-meta"><div className="ide-document-name"><Icon name="nodes" /><input aria-label={t("流水线名称")} maxLength={100} value={pipeline.name} disabled={running} onChange={e => recordChange({ ...pipeline, name: e.target.value })} /><span className="ide-dirty" title={t(dirty ? "本地有未保存修改" : "草稿")}>{dirty ? "●" : ""}</span></div><span className="ide-version">{controls.status}</span></div>
