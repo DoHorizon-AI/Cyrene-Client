@@ -197,3 +197,67 @@ for (const change of ["binding", "parameters"] as const) test(`training save can
   expect(writes).toEqual([]);
   await expect(page.getByLabel("训练轮数")).toHaveValue("77");
 });
+
+test("Workspace v2 Product failures never fall back to local Product routes", async ({ page }) => {
+  const calls: { path: string; method: string; payload: Record<string, unknown> }[] = [];
+  await page.route("**/api/workspace/v1/session", (route) => route.fulfill({ json: {
+    issuer: "https://identity.example.test/",
+    subject: "member-one",
+    organizationId: "organization-one",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    csrfToken: "v1.1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  } }));
+  await page.route("**/api/workspace/v1/workspaces", (route) => route.fulfill({ json: { workspaces: [
+    { workspaceId: "workspace-one", organizationId: "organization-one", displayName: "Fixture workspace" },
+  ] } }));
+  await page.route("**/api/workspace/v2/workspaces/workspace-one/products/invocations", async (route) => {
+    calls.push({
+      path: new URL(route.request().url()).pathname,
+      method: route.request().method(),
+      payload: route.request().postDataJSON(),
+    });
+    await route.fulfill({
+      status: 503,
+      contentType: "application/problem+json",
+      body: JSON.stringify({ title: "Product unavailable", status: 503, code: "upstream_unavailable" }),
+    });
+  });
+  let legacyProductRequests = 0;
+  await page.route("**/api/v1/yield/training-drafts/**", async (route) => {
+    legacyProductRequests++;
+    await route.fulfill({ json: draft });
+  });
+  await page.goto("/");
+
+  const result = await page.evaluate(async (resourceId) => {
+    const clientModulePath = "/src/services/client.ts";
+    const workspaceBffModulePath = "/src/services/workspace-bff-client.ts";
+    const [{ SettingsClient }, { WorkspaceBffClient }] = await Promise.all([
+      import(clientModulePath),
+      import(workspaceBffModulePath),
+    ]);
+    const workspaceBff = new WorkspaceBffClient({ enabled: true });
+    const client = new SettingsClient(undefined, 5000, workspaceBff);
+    const workspaces = await client.discoverWorkspaceBffWorkspaces();
+    try {
+      await client.draft(resourceId, undefined, workspaces[0].workspaceId);
+      return { ok: true, name: "", code: "", status: 200 };
+    } catch (error) {
+      return {
+        ok: false,
+        name: error instanceof Error ? error.name : "unknown",
+        code: "code" in Object(error) ? String(Object(error).code) : "",
+        status: "status" in Object(error) ? Number(Object(error).status) : 0,
+      };
+    }
+  }, ids.draft);
+
+  expect(result).toMatchObject({ ok: false, name: "WorkspaceBffError", code: "upstream_unavailable", status: 503 });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({
+    path: "/api/workspace/v2/workspaces/workspace-one/products/invocations",
+    method: "POST",
+    payload: { ownerId: "yield", operationId: "workspaceGetDraft", resourceId: ids.draft },
+  });
+  expect(legacyProductRequests).toBe(0);
+});

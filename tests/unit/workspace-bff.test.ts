@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SettingsClient } from "../../apps/web/src/services/client";
-import { WorkspaceBffClient, WORKSPACE_PRODUCT_OPERATIONS } from "../../apps/web/src/services/workspace-bff-client";
+import { WorkspaceBffClient, WORKSPACE_PRODUCT_REFERENCES } from "../../apps/web/src/services/workspace-bff-client";
 import { decodeBase64url, requestDeviceAssertion } from "../../apps/web/src/services/workspace-security-contracts";
 
 const expiry = () => new Date(Date.now() + 120_000).toISOString();
@@ -30,10 +30,10 @@ describe("Workspace identity and security boundary", () => {
   });
   it("only dispatches operations for discovered workspaces and current principals", async () => {
     const f = fixture(); await f.client.discoverWorkspaces();
-    await expect(f.client.invoke("other", WORKSPACE_PRODUCT_OPERATIONS.listDatasets)).rejects.toMatchObject({ code: "workspace_not_discovered" });
+    await expect(f.client.invoke("other", WORKSPACE_PRODUCT_REFERENCES.listDatasets)).rejects.toMatchObject({ code: "workspace_not_discovered" });
     f.session.subject = "bob";
-    await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_OPERATIONS.listDatasets)).rejects.toMatchObject({ code: "session_changed" });
-    expect(f.requests.some(r => r.path.includes("/products/"))).toBe(false); expect(f.client.identity).toBeNull();
+    await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_REFERENCES.listDatasets)).rejects.toMatchObject({ code: "session_changed" });
+    expect(f.requests.some(r => r.path.endsWith("/products/invocations"))).toBe(false); expect(f.client.identity).toBeNull();
   });
   it("rejects expired sessions before discovery", async () => {
     const f = fixture(); f.session.expiresAt = "2020-01-01T00:00:00Z";
@@ -50,7 +50,7 @@ describe("Workspace identity and security boundary", () => {
     const old = f.client.discoverWorkspaces(); const rejected = expect(old).rejects.toMatchObject({ code: "session_changed" });
     await f.client.discoverWorkspaces(); release(f.response({ ...f.session, subject: "old" })); await rejected;
     expect(f.client.identity?.subject).toBe("alice");
-    await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_OPERATIONS.listDatasets)).resolves.toEqual([]);
+    await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_REFERENCES.listDatasets)).resolves.toEqual([]);
   });
   it("sends fresh CSRF and scope, without bearer or browser storage", async () => {
     const f = fixture(); await f.client.discoverWorkspaces(); f.session.csrfToken = "v1.124." + "b".repeat(40);
@@ -59,6 +59,34 @@ describe("Workspace identity and security boundary", () => {
     expect(headers.get("x-csrf-token")).toBe(f.session.csrfToken); expect(headers.has("authorization")).toBe(false);
     expect(JSON.parse(String(request.init?.body))).toEqual({ userCode: "CODE", scope: { organizationId: "org", workspaceId: "ws" } });
     expect(f.client.identity).not.toHaveProperty("csrfToken");
+  });
+  it("sends the generic v2 owner/operation envelope and preserves Product JSON bytes", async () => {
+    const f = fixture(); await f.client.discoverWorkspaces();
+    const productBody = { prompt: "训练数据", nested: { count: 2 } };
+    await f.client.invoke("ws", { ownerId: "echo", operationId: "workspaceCreateEvaluationSuite" }, {
+      body: productBody, resourceId: "suite-1", idempotencyKey: "create-1",
+    });
+    const request = f.requests.at(-1)!;
+    const headers = new Headers(request.init?.headers);
+    const envelope = JSON.parse(String(request.init?.body)) as Record<string, unknown>;
+    const jsonBody = String(envelope.jsonBody);
+    const decodedBytes = Uint8Array.from(atob(jsonBody), character => character.charCodeAt(0));
+    expect(request.path).toBe("/api/workspace/v2/workspaces/ws/products/invocations");
+    expect(envelope).toMatchObject({ ownerId: "echo", operationId: "workspaceCreateEvaluationSuite", resourceId: "suite-1", idempotencyKey: "create-1" });
+    expect(new TextDecoder().decode(decodedBytes)).toBe(JSON.stringify(productBody));
+    expect(headers.get("x-csrf-token")).toBe(f.session.csrfToken);
+    expect(headers.has("authorization")).toBe(false);
+    expect(Object.keys(envelope).sort()).toEqual(["idempotencyKey", "jsonBody", "operationId", "ownerId", "resourceId"]);
+  });
+  it("rejects unsafe route identifiers and non-token idempotency keys before sending", async () => {
+    const f = fixture(); await f.client.discoverWorkspaces();
+    await expect(f.client.invoke("ws", { ownerId: "../echo", operationId: "workspaceGetEvaluationSuite" }))
+      .rejects.toMatchObject({ code: "invalid_request" });
+    await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_REFERENCES.getEvaluationSuite, { resourceId: "../suite-1" }))
+      .rejects.toMatchObject({ code: "invalid_request" });
+    await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_REFERENCES.createEvaluationSuite, { idempotencyKey: "bad key" }))
+      .rejects.toMatchObject({ code: "invalid_request" });
+    expect(f.requests.some(request => request.path.endsWith("/products/invocations"))).toBe(false);
   });
   it("validates device scope and expiry before displaying a challenge", async () => {
     const f = fixture(); await f.client.discoverWorkspaces(); f.approval.authorization.scope.workspaceId = "other";

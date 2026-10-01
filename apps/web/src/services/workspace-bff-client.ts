@@ -1,7 +1,7 @@
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │  📄 workspace-bff-client.ts                                         │
 // │  Module: services/workspace-bff-client                              │
-// │  Role: Same-origin, closed-operation client for the Workspace BFF.   │
+// │  Role: Same-origin generic Product invocation client for the BFF.   │
 // │                                                                      │
 // │  模块职责：提供同源 Workspace BFF 客户端                              │
 // │  · 仅调用固定 session、discovery 和 Product invocation 路由            │
@@ -13,6 +13,7 @@ import { approvalSchema, completionSchema, denialSchema, type DeviceApproval } f
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const SESSION_PATH = "/api/workspace/v1/session";
 const WORKSPACES_PATH = "/api/workspace/v1/workspaces";
+const PRODUCT_INVOCATIONS_PATH = "/api/workspace/v2/workspaces";
 
 const problemSchema = z.object({
   type: z.string().max(2048).optional(),
@@ -48,22 +49,22 @@ const workspaceListSchema = z.object({
 }).strict();
 
 /**
- * Closed Product operation keys that have real callers in the Studio settings UI.
- * 中文：Studio 设置界面当前确有调用者的封闭 Product operation key。
+ * Stable Product references currently consumed by the Studio settings client.
+ * The BFF client itself accepts any catalog-backed owner and operation pair.
+ * 中文：Studio settings client 当前使用的 Product 引用；BFF client 本身接受目录中的任意 owner/operation 对。
  */
-export const WORKSPACE_PRODUCT_OPERATIONS = {
-  listDatasets: "WORKSPACE_PRODUCT_API_OPERATION_01",
-  getTrainingDraft: "WORKSPACE_PRODUCT_API_OPERATION_03",
-  listModelImports: "WORKSPACE_PRODUCT_API_OPERATION_05",
-  getEvaluationSuite: "WORKSPACE_PRODUCT_API_OPERATION_09",
-  createEvaluationSuite: "WORKSPACE_PRODUCT_API_OPERATION_10",
+export const WORKSPACE_PRODUCT_REFERENCES = {
+  listDatasets: { ownerId: "catalyst", operationId: "workspaceListDatasets" },
+  getTrainingDraft: { ownerId: "yield", operationId: "workspaceGetDraft" },
+  listModelImports: { ownerId: "reactor", operationId: "workspaceListModelImports" },
+  getEvaluationSuite: { ownerId: "echo", operationId: "workspaceGetEvaluationSuite" },
+  createEvaluationSuite: { ownerId: "echo", operationId: "workspaceCreateEvaluationSuite" },
 } as const;
 
-export type WorkspaceProductOperation = typeof WORKSPACE_PRODUCT_OPERATIONS[keyof typeof WORKSPACE_PRODUCT_OPERATIONS];
-
-const commandOperations = new Set<WorkspaceProductOperation>([
-  WORKSPACE_PRODUCT_OPERATIONS.createEvaluationSuite,
-]);
+export interface WorkspaceProductReference {
+  readonly ownerId: string;
+  readonly operationId: string;
+}
 
 export interface WorkspaceSummary {
   readonly workspaceId: string;
@@ -126,6 +127,34 @@ function traceparent(): string {
 
 function contentType(response: Response): string {
   return (response.headers.get("content-type") ?? "").split(";", 1)[0].trim().toLowerCase();
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+function isValidProductReference(operation: WorkspaceProductReference): boolean {
+  return /^[a-z][a-z0-9-]{0,62}$/.test(operation.ownerId)
+    && /^[A-Za-z0-9_.-]{1,256}$/.test(operation.operationId);
+}
+
+function isSafeResourceId(value: string): boolean {
+  return value.length > 0
+    && value.trim().length > 0
+    && value.length <= 512
+    && value !== "."
+    && value !== ".."
+    && !value.includes("..")
+    && !/[\u0000-\u001f\u007f/\\%?#]/.test(value);
+}
+
+function isValidIdempotencyKey(value: string): boolean {
+  return /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,200}$/.test(value);
 }
 
 async function readBoundedJson(response: Response): Promise<unknown> {
@@ -231,12 +260,12 @@ export class WorkspaceBffClient {
   }
 
   /**
-   * Invoke one typed projection through the selected, previously discovered Workspace.
-   * 中文：通过已发现并由调用者明确选择的 Workspace 调用一个封闭投影。
+   * Invoke one catalog-backed Product operation through the selected Workspace.
+   * 中文：通过已发现并由调用者明确选择的 Workspace 调用 catalog 中的 Product operation。
    */
   async invoke(
     workspaceId: string,
-    operation: WorkspaceProductOperation,
+    operation: WorkspaceProductReference,
     options: InvocationOptions = {},
   ): Promise<unknown> {
     this.requireEnabled();
@@ -244,52 +273,51 @@ export class WorkspaceBffClient {
     if (!workspace || workspace.length > 200 || !this.discoveredWorkspaceIds.has(workspace)) {
       throw new WorkspaceBffError("workspace_not_discovered", "请先从当前登录 session 的成员发现结果中选择 Workspace。", 0);
     }
-    if (options.resourceId !== undefined && (!options.resourceId.trim() || options.resourceId.length > 512)) {
-      throw new WorkspaceBffError("invalid_request", "Product resource ID 为空或超过 512 个字符。", 0);
+    if (options.resourceId !== undefined && !isSafeResourceId(options.resourceId)) {
+      throw new WorkspaceBffError("invalid_request", "Product resource ID 无效或包含不安全的路径字符。", 0);
     }
-    if (options.idempotencyKey !== undefined && (options.idempotencyKey.length < 1 || options.idempotencyKey.length > 200 || /[\u0000-\u001f\u007f]/.test(options.idempotencyKey))) {
-      throw new WorkspaceBffError("invalid_request", "Idempotency-Key 必须为 1 到 200 个字符。", 0);
+    if (options.idempotencyKey !== undefined && !isValidIdempotencyKey(options.idempotencyKey)) {
+      throw new WorkspaceBffError("invalid_request", "Idempotency-Key 必须为 1 到 200 个 HTTP token 字符。", 0);
     }
-    if (operation === WORKSPACE_PRODUCT_OPERATIONS.createEvaluationSuite && !options.idempotencyKey) {
-      throw new WorkspaceBffError("invalid_request", "创建 Echo evaluation suite 必须提供 Idempotency-Key。", 0);
-    }
-    if (operation === WORKSPACE_PRODUCT_OPERATIONS.createEvaluationSuite && options.body === undefined) {
-      throw new WorkspaceBffError("invalid_request", "创建 Echo evaluation suite 必须提供 JSON 请求正文。", 0);
+    if (!isValidProductReference(operation)) {
+      throw new WorkspaceBffError("invalid_request", "Product ownerId 或 operationId 无效。", 0);
     }
 
-    let body: string | undefined;
+    let jsonBody: string | undefined;
     if (options.body !== undefined) {
+      let serializedBody: string | undefined;
       try {
-        body = JSON.stringify(options.body);
+        serializedBody = JSON.stringify(options.body);
       } catch {
         throw new WorkspaceBffError("invalid_request", "Product JSON 请求无法序列化。", 0);
       }
-      if (body === undefined) throw new WorkspaceBffError("invalid_request", "Product JSON 请求无法序列化。", 0);
-      if (new TextEncoder().encode(body).byteLength > MAX_JSON_BYTES) {
+      if (serializedBody === undefined) throw new WorkspaceBffError("invalid_request", "Product JSON 请求无法序列化。", 0);
+      const bytes = new TextEncoder().encode(serializedBody);
+      if (bytes.byteLength > MAX_JSON_BYTES) {
         throw new WorkspaceBffError("payload_too_large", "Product JSON 请求超过 4 MiB 上限。", 413);
       }
+      jsonBody = encodeBase64(bytes);
     }
 
-    const headers = new Headers({ Accept: "application/json, application/problem+json", "traceparent": traceparent() });
-    if (body !== undefined) headers.set("Content-Type", "application/json");
-    if (options.idempotencyKey !== undefined) headers.set("Idempotency-Key", options.idempotencyKey);
+    const headers = new Headers({ Accept: "application/json, application/problem+json", "Content-Type": "application/json", traceparent: traceparent() });
     await this.refreshCsrfToken(options.signal);
-    if (commandOperations.has(operation)) {
-      if (!this.csrfToken) throw new WorkspaceBffError("csrf_failed", "Workspace BFF 未提供有效 CSRF token；命令未发送。", 403);
-      headers.set("X-CSRF-Token", this.csrfToken);
-    }
-
-    const query = new URLSearchParams();
-    if (options.resourceId !== undefined) query.set("resourceId", options.resourceId);
-    const querySuffix = query.size ? `?${query.toString()}` : "";
-    const path = `${WORKSPACES_PATH}/${encodeURIComponent(workspace)}/products/${operation}${querySuffix}`;
+    if (!this.csrfToken) throw new WorkspaceBffError("csrf_failed", "Workspace BFF 未提供有效 CSRF token；命令未发送。", 403);
+    headers.set("X-CSRF-Token", this.csrfToken);
+    const envelope = JSON.stringify({
+      ownerId: operation.ownerId,
+      operationId: operation.operationId,
+      ...(jsonBody !== undefined ? { jsonBody } : {}),
+      ...(options.resourceId !== undefined ? { resourceId: options.resourceId } : {}),
+      ...(options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {}),
+    });
+    const path = `${PRODUCT_INVOCATIONS_PATH}/${encodeURIComponent(workspace)}/products/invocations`;
     const init: RequestInit = {
       method: "POST",
       headers,
       credentials: "same-origin",
       cache: "no-store",
       redirect: "error",
-      ...(body !== undefined ? { body } : {}),
+      body: envelope,
       ...(options.signal ? { signal: options.signal } : {}),
     };
     // The browser supplies Origin on same-origin POST; JavaScript cannot set this forbidden header.

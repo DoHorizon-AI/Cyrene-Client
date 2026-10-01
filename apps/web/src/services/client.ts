@@ -6,10 +6,10 @@ import {
   type HostSession,
 } from "../../../../packages/service-settings/contracts";
 import {
-  WORKSPACE_PRODUCT_OPERATIONS,
+  WORKSPACE_PRODUCT_REFERENCES,
   WorkspaceBffClient,
   WorkspaceBffError,
-  type WorkspaceProductOperation,
+  type WorkspaceProductReference,
   type WorkspaceSummary,
 } from "./workspace-bff-client";
 
@@ -126,7 +126,7 @@ export class SettingsClient {
     return this.workspaceBff.discoverWorkspaces(signal);
   }
 
-  connection(signal?: AbortSignal) { return this.request("/studio-api/connection", connectionSchema, { signal }); }
+  connection(signal?: AbortSignal) { return this.read("/studio-api/connection", connectionSchema, signal); }
   async session(signal?: AbortSignal) {
     const s = await this.request("/api/v1/auth/session", sessionSchema, { signal }); this.accept(s);
     if (!s.authenticated && s.refreshable) return this.refresh();
@@ -154,49 +154,47 @@ export class SettingsClient {
     }
     return this.refreshInFlight;
   }
-  status(signal?: AbortSignal) { return this.request("/api/v1/system/status", hostStatusSchema, { signal }); }
+  status(signal?: AbortSignal) { return this.read("/api/v1/system/status", hostStatusSchema, signal); }
   datasets(signal?: AbortSignal, workspaceId?: string) {
-    return this.workspaceBff.enabled
-      ? this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.listDatasets, z.array(datasetSchema), { signal })
-      : this.read("/api/v1/catalyst/datasets", z.array(datasetSchema), signal);
+    if (!this.workspaceBff.enabled) return this.read("/api/v1/catalyst/datasets", z.array(datasetSchema), signal);
+    return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.listDatasets, z.array(datasetSchema), { signal });
   }
   datasetVersion(id: string, signal?: AbortSignal) { return this.read(`/api/v1/catalyst/dataset-versions/${pathId(id)}`, datasetVersionSchema, signal); }
   models(signal?: AbortSignal, workspaceId?: string) {
-    return this.workspaceBff.enabled
-      ? this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.listModelImports, z.array(modelImportSchema), { signal })
-      : this.read("/api/v1/reactor/model-imports", z.array(modelImportSchema), signal);
+    if (!this.workspaceBff.enabled) return this.read("/api/v1/reactor/model-imports", z.array(modelImportSchema), signal);
+    return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.listModelImports, z.array(modelImportSchema), { signal });
   }
   bindings(signal?: AbortSignal) { return this.read("/api/v1/reactor/serving-bindings", z.array(bindingSchema), signal); }
   drafts(signal?: AbortSignal) { return this.read("/api/v1/yield/training-drafts", z.array(trainingDraftSchema), signal); }
   draft(id: string, signal?: AbortSignal, workspaceId?: string) {
-    if (this.workspaceBff.enabled) {
-      const resourceId = id.trim();
-      pathId(resourceId);
-      return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.getTrainingDraft, trainingDraftSchema, { resourceId, signal });
-    }
-    return this.read(`/api/v1/yield/training-drafts/${pathId(id)}`, trainingDraftSchema, signal);
+    const resourceId = id.trim();
+    const safeId = pathId(resourceId);
+    if (!this.workspaceBff.enabled) return this.read(`/api/v1/yield/training-drafts/${safeId}`, trainingDraftSchema, signal);
+    return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.getTrainingDraft, trainingDraftSchema, { resourceId, signal });
   }
   async prepareDraft(id: string, body: unknown) {
     const payload = trainingConfigurationSchema.parse(body);
     return this.request(`/api/v1/yield/training-drafts/${pathId(id)}`, trainingDraftSchema, { method: "PATCH", body: JSON.stringify(payload) });
   }
   suite(id: string, signal?: AbortSignal, workspaceId?: string) {
-    if (this.workspaceBff.enabled) {
-      const resourceId = id.trim();
-      pathId(resourceId);
-      return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.getEvaluationSuite, suiteSchema, { resourceId, signal });
-    }
-    return this.read(`/api/v1/echo/evaluation-suites/${pathId(id)}`, suiteSchema, signal);
+    const resourceId = id.trim();
+    const safeId = pathId(resourceId);
+    if (!this.workspaceBff.enabled) return this.read(`/api/v1/echo/evaluation-suites/${safeId}`, suiteSchema, signal);
+    return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.getEvaluationSuite, suiteSchema, { resourceId, signal });
   }
   createSuite(body: unknown, idempotencyKey: string, workspaceId?: string) {
     const payload = suiteInputSchema.parse(body);
-    if (this.workspaceBff.enabled) {
-      return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_OPERATIONS.createEvaluationSuite, suiteSchema, {
-        body: payload,
-        idempotencyKey,
+    if (!this.workspaceBff.enabled) {
+      return this.request("/api/v1/echo/evaluation-suites", suiteSchema, {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify(payload),
       });
     }
-    return this.request("/api/v1/echo/evaluation-suites", suiteSchema, { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(payload) });
+    return this.invokeWorkspaceProduct(workspaceId, WORKSPACE_PRODUCT_REFERENCES.createEvaluationSuite, suiteSchema, {
+      body: payload,
+      idempotencyKey,
+    });
   }
   sessions(workspace: string, signal?: AbortSignal) {
     return this.read(`/api/v1/navigator/harness/workspaces/${pathId(workspace)}/sessions`, navigatorSessionsSchema, signal);
@@ -225,7 +223,7 @@ export class SettingsClient {
   }
   private async invokeWorkspaceProduct<T extends z.ZodTypeAny>(
     workspaceId: string | undefined,
-    operation: WorkspaceProductOperation,
+    operation: WorkspaceProductReference,
     schema: T,
     options: { resourceId?: string; body?: unknown; idempotencyKey?: string; signal?: AbortSignal },
   ): Promise<z.infer<T>> {
