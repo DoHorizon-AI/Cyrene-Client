@@ -1,0 +1,103 @@
+services:
+  cyrene-workspace-authority:
+    image: __CYRENE_IMMUTABLE_IMAGE_cy-workspace-authority-host__
+    container_name: cyrene-workspace-authority
+    restart: unless-stopped
+    group_add:
+      - "${CYRENE_AUTHORITY_METADATA_GID:?Set CYRENE_AUTHORITY_METADATA_GID in runtime-config/windows-runtime.env}"
+      - "${CYRENE_PRODUCT_BUNDLE_READER_GID:?Set CYRENE_PRODUCT_BUNDLE_READER_GID in runtime-config/windows-runtime.env}"
+    env_file:
+      - ./runtime-config/workspace-authority/authority.env
+    environment:
+      CYRENE_WORKSPACE_AUTHORITY_LISTEN: 0.0.0.0:50051
+      CYRENE_WORKSPACE_AUTHORITY_HEALTH_ADDR: 127.0.0.1:8080
+      CYRENE_WORKSPACE_AUTHORITY_STATE_DIR: /var/lib/cyrene-workspace-authority
+      CYRENE_WORKSPACE_PRODUCT_BUNDLE_ROOT: /var/lib/cyrene-product-bundles
+      CYRENE_WORKSPACE_AUTHORITY_TRUST_CONFIG: /etc/cyrene-workspace-authority/trust.json
+      CYRENE_AUTHORITY_INITIAL_ARTIFACT_ID_FILE: /etc/cyrene-workspace-authority/initial-artifact-id
+      CYRENE_WORKSPACE_AUTHORITY_BFF_UDS: /run/cyrene-workspace-authority/bff/bff.sock
+      CYRENE_WORKSPACE_AUTHORITY_ADMIN_UDS: /run/cyrene-workspace-authority/admin.sock
+      CYRENE_AUTHORITY_BFF_PEER_UID: "10001"
+      CYRENE_AUTHORITY_ADMIN_PEER_UID: "0"
+      CYRENE_AUTHORITY_DATABASE_URL_FILE: /etc/cyrene-workspace-authority/database-url
+      CYRENE_AUTHORITY_SIGNING_KEY_FILE: /etc/cyrene-workspace-authority/signing-key
+      CYRENE_AUTHORITY_TLS_CERT_FILE: /etc/cyrene-workspace-authority/tls/server.crt
+      CYRENE_AUTHORITY_TLS_KEY_FILE: /etc/cyrene-workspace-authority/tls/server.key
+      CYRENE_AUTHORITY_TLS_CLIENT_CA_FILE: /etc/cyrene-workspace-authority/tls/client-ca.crt
+    volumes:
+      - ./runtime-config/workspace-authority:/etc/cyrene-workspace-authority:ro
+      - ./runtime-data/product-bundles:/var/lib/cyrene-product-bundles:ro
+      - cyrene-workspace-authority-state:/var/lib/cyrene-workspace-authority
+      - cyrene-workspace-authority-bff-uds:/run/cyrene-workspace-authority/bff
+
+  cyrene-workspace-relay:
+    image: __CYRENE_IMMUTABLE_IMAGE_cy-workspace-relay__
+    container_name: cyrene-workspace-relay
+    restart: unless-stopped
+    env_file:
+      - ./runtime-config/workspace-relay/relay.env
+    volumes:
+      - ./runtime-config/workspace-relay:/etc/cyrene-workspace-relay:ro
+
+  cyrene-workspace-frontend-bridge:
+    image: __CYRENE_IMMUTABLE_IMAGE_cy-workspace-frontend-bridge__
+    container_name: cyrene-workspace-frontend-bridge
+    restart: unless-stopped
+    env_file:
+      - ./runtime-config/workspace-frontend-bridge/bridge.env
+    depends_on:
+      cyrene-workspace-relay:
+        condition: service_started
+      cyrene-workspace-authority:
+        condition: service_started
+    volumes:
+      - ./runtime-config/workspace-frontend-bridge:/etc/cyrene-workspace-frontend-bridge:ro
+      - cyrene-frontend-bridge-uds:/run/cyrene-frontend-bridge
+
+  cyrene-workspace-connector:
+    image: __CYRENE_IMMUTABLE_IMAGE_cy-workspace-connector__
+    container_name: cyrene-workspace-connector
+    restart: unless-stopped
+    env_file:
+      - ./runtime-config/workspace-connector/connector.env
+    depends_on:
+      cyrene-workspace-relay:
+        condition: service_started
+      cyrene-workspace-authority:
+        condition: service_started
+    volumes:
+      - ./runtime-config/workspace-connector:/etc/cyrene-workspace-connector:ro
+      - cyrene-workspace-connector-state:/var/lib/cyrene/workspace-connector
+
+  cyrene-workspace-web-bff:
+    image: __CYRENE_IMMUTABLE_IMAGE_cy-workspace-web-bff__
+    container_name: cyrene-workspace-web-bff
+    restart: unless-stopped
+    group_add:
+      - "${CYRENE_PRODUCT_BUNDLE_READER_GID:?Set CYRENE_PRODUCT_BUNDLE_READER_GID in runtime-config/windows-runtime.env}"
+    env_file:
+      - ./runtime-config/workspace-web-bff/bff.env
+    depends_on:
+      cyrene-workspace-authority:
+        condition: service_started
+      cyrene-workspace-frontend-bridge:
+        condition: service_started
+    volumes:
+      - ./runtime-config/workspace-web-bff/secrets:/mnt/cyrene-secret-input:ro
+      - ./runtime-data/product-bundles/versions:/var/lib/cyrene-product-bundles/versions:ro
+      - cyrene-workspace-authority-bff-uds:/run/cyrene-workspace-authority/bff
+      - cyrene-frontend-bridge-uds:/run/cyrene-frontend-bridge
+    environment:
+      CYRENE_WORKSPACE_WEB_BFF_AUTHORITY_UDS: /run/cyrene-workspace-authority/bff/bff.sock
+      CYRENE_WORKSPACE_WEB_BFF_BRIDGE_UDS: /run/cyrene-frontend-bridge/frontend.sock
+      CYRENE_WORKSPACE_PRODUCT_BUNDLE_VERSIONS_ROOT: /var/lib/cyrene-product-bundles/versions
+      CYRENE_WORKSPACE_WEB_BFF_CSRF_KEY_FILE: /mnt/cyrene-secret-input/csrf-mac-key
+      CYRENE_WORKSPACE_DEVICE_AUTHORIZATION_USER_CODE_HMAC_KEY_FILE: /mnt/cyrene-secret-input/user-code-hmac-key
+      CYRENE_WORKSPACE_DEVICE_CA_SIGNING_KEY_FILE: /mnt/cyrene-secret-input/device-ca-signing-key.pem
+      CYRENE_WORKSPACE_DEVICE_CA_CERTIFICATE_FILE: /mnt/cyrene-secret-input/device-ca-cert.pem
+
+volumes:
+  cyrene-workspace-authority-state:
+  cyrene-workspace-authority-bff-uds:
+  cyrene-workspace-connector-state:
+  cyrene-frontend-bridge-uds:

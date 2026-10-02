@@ -20,6 +20,12 @@ pub struct PlanComponentDigest {
     pub manifest_digest: String,
     pub artifact_digest: String,
     pub restart_group: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -28,6 +34,8 @@ struct PlanDigestMaterial {
     schema_version: u32,
     channel: String,
     components: Vec<PlanComponentDigest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authority_artifact_id: Option<String>,
 }
 
 /// Compute the cross-platform plan ID/digest using the shared RFC 8785 material.
@@ -35,8 +43,20 @@ pub fn plan_id_and_digest(
     channel: &str,
     components: &[PlanComponentDigest],
 ) -> Result<(String, String), String> {
+    plan_id_and_digest_with_authority_artifact(channel, components, None)
+}
+
+/// Bind a compatibility-group plan to the Authority-owned active or bootstrap bundle identity.
+pub fn plan_id_and_digest_with_authority_artifact(
+    channel: &str,
+    components: &[PlanComponentDigest],
+    authority_artifact_id: Option<&str>,
+) -> Result<(String, String), String> {
     if !matches!(channel, "stable" | "preview") || components.is_empty() {
         return Err("更新计划 channel 或 components 无效。".to_string());
+    }
+    if authority_artifact_id.is_some_and(|digest| !is_digest(digest)) {
+        return Err("Authority data-bundle artifactId 格式无效。".to_string());
     }
     let mut components = components.to_vec();
     components.sort_by(|left, right| left.component_id.cmp(&right.component_id));
@@ -52,6 +72,7 @@ pub fn plan_id_and_digest(
         schema_version: 1,
         channel: channel.to_string(),
         components,
+        authority_artifact_id: authority_artifact_id.map(str::to_string),
     };
     let bytes = serde_jcs::to_vec(&material)
         .map_err(|error| format!("无法按 RFC 8785 编码更新计划: {error}"))?;
@@ -125,6 +146,25 @@ pub fn validate_windows_oci_manifest(
     component_id: &str,
     channel: &str,
 ) -> Result<VerifiedOciManifest, String> {
+    validate_windows_oci_manifest_for_target(
+        index,
+        manifest,
+        catalog,
+        component_id,
+        channel,
+        "windows-10.0-x86_64-docker-linux",
+    )
+}
+
+/// Cross-check an index entry and its one-target Windows Docker OCI manifest for a pinned target.
+pub fn validate_windows_oci_manifest_for_target(
+    index: &Value,
+    manifest: &Value,
+    catalog: &Value,
+    component_id: &str,
+    channel: &str,
+    target_id: &str,
+) -> Result<VerifiedOciManifest, String> {
     let manifest_digest = verify_self_digest(manifest, "manifestDigest")?;
     if !matches!(channel, "stable" | "preview")
         || index.get("channel").and_then(Value::as_str) != Some(channel)
@@ -133,7 +173,6 @@ pub fn validate_windows_oci_manifest(
         return Err("release index/manifest channel 与请求不匹配。".to_string());
     }
 
-    let target_id = "windows-10.0-x86_64-docker-linux";
     let catalog_component = catalog_component(catalog, component_id)?;
     let catalog_target_entry = catalog_component
         .get("targets")
@@ -164,6 +203,14 @@ pub fn validate_windows_oci_manifest(
         })
         .and_then(|target| target.get("target"))
         .ok_or_else(|| "受信 catalog 缺少 Windows Docker target 描述。".to_string())?;
+    if target.get("os").and_then(Value::as_str) != Some("windows")
+        || target.get("architecture").and_then(Value::as_str) != Some("x86_64")
+        || target.get("runtime").and_then(Value::as_str) != Some("docker-desktop:linux")
+    {
+        return Err(format!(
+            "target `{target_id}` 不是受支持的 Windows Docker Desktop Linux target。"
+        ));
+    }
     if manifest.get("target") != Some(target) {
         return Err(format!(
             "组件 `{component_id}` manifest target 不匹配 Windows catalog。"
@@ -171,6 +218,10 @@ pub fn validate_windows_oci_manifest(
     }
     if manifest.get("componentId").and_then(Value::as_str) != Some(component_id) {
         return Err("release manifest componentId 与计划不匹配。".to_string());
+    }
+    validate_manifest_protocol_and_content(manifest, catalog, catalog_component, component_id)?;
+    if manifest.get("schemaVersion").and_then(Value::as_u64) == Some(2) {
+        validate_manifest_source_matches_index(index, manifest)?;
     }
     validate_manifest_dependencies(manifest, catalog, catalog_component, component_id)?;
     let version = manifest
@@ -237,6 +288,14 @@ pub fn validate_windows_oci_manifest(
         .filter(|digest| is_digest(digest))
         .ok_or_else(|| "OCI artifact digest 格式无效。".to_string())?
         .to_string();
+    let protocol_version = manifest
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let content_digest = manifest
+        .get("contentDigest")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let platform = artifact
         .get("platform")
         .ok_or_else(|| "OCI artifact 缺少 platform。".to_string())?;
@@ -264,13 +323,245 @@ pub fn validate_windows_oci_manifest(
     let image_reference = format!("{repository}@{artifact_digest}");
     Ok(VerifiedOciManifest {
         component_id: component_id.to_string(),
+        target_id: target_id.to_string(),
         version,
         manifest_digest,
         artifact_digest,
         image_reference,
         restart_group,
+        protocol_version,
+        content_digest,
         manifest: manifest.clone(),
     })
+}
+
+fn validate_manifest_source_matches_index(index: &Value, manifest: &Value) -> Result<(), String> {
+    let index_source = index
+        .get("source")
+        .ok_or_else(|| "V2 release index 缺少 source provenance。".to_string())?;
+    let manifest_source = manifest
+        .get("source")
+        .ok_or_else(|| "V2 manifest 缺少 source provenance。".to_string())?;
+    if manifest_source.get("repository") != index_source.get("repository")
+        || manifest_source.get("ref") != index_source.get("ref")
+        || manifest_source.get("commit") != index_source.get("commit")
+    {
+        return Err(
+            "V2 manifest source repository/ref/commit 与已验证 release index 不匹配。".to_string(),
+        );
+    }
+    let index_run = index
+        .get("provenance")
+        .and_then(|value| value.get("attestation"))
+        .and_then(|value| value.get("run"))
+        .ok_or_else(|| "V2 release index 缺少 attested Actions run。".to_string())?;
+    let manifest_run = manifest
+        .get("provenance")
+        .and_then(|value| value.get("attestation"))
+        .and_then(|value| value.get("run"))
+        .ok_or_else(|| "V2 manifest 缺少 attested Actions run。".to_string())?;
+    if index_run != manifest_run {
+        return Err("V2 manifest attestation run 与 release index 不一致。".to_string());
+    }
+    Ok(())
+}
+
+fn validate_manifest_protocol_and_content(
+    manifest: &Value,
+    catalog: &Value,
+    catalog_component: &Value,
+    component_id: &str,
+) -> Result<(), String> {
+    let schema_version = manifest
+        .get("schemaVersion")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "release manifest schemaVersion 必须是整数。".to_string())?;
+    match schema_version {
+        1 => {
+            if manifest.get("protocolVersion").is_some() || manifest.get("contentDigest").is_some()
+            {
+                return Err(
+                    "V1 release manifest 不得包含 V2 protocolVersion/contentDigest。".to_string(),
+                );
+            }
+        }
+        2 => {
+            const ALLOWED_V2_KEYS: &[&str] = &[
+                "schemaVersion",
+                "releaseId",
+                "componentId",
+                "version",
+                "channel",
+                "target",
+                "artifact",
+                "dependencies",
+                "restart",
+                "source",
+                "provenance",
+                "health",
+                "compatibility",
+                "manifestDigest",
+                "protocolVersion",
+                "contentDigest",
+            ];
+            let object = manifest
+                .as_object()
+                .ok_or_else(|| "V2 release manifest 必须是 JSON object。".to_string())?;
+            if object
+                .keys()
+                .any(|key| !ALLOWED_V2_KEYS.contains(&key.as_str()))
+                || [
+                    "releaseId",
+                    "componentId",
+                    "version",
+                    "channel",
+                    "target",
+                    "artifact",
+                    "dependencies",
+                    "restart",
+                    "source",
+                    "provenance",
+                    "manifestDigest",
+                    "protocolVersion",
+                    "contentDigest",
+                ]
+                .iter()
+                .any(|key| !object.contains_key(*key))
+            {
+                return Err("V2 release manifest 字段集合无效。".to_string());
+            }
+            let protocol_version = manifest
+                .get("protocolVersion")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.len() <= 128
+                        && value.as_bytes()[0].is_ascii_lowercase()
+                        && value.bytes().all(|byte| {
+                            byte.is_ascii_lowercase()
+                                || byte.is_ascii_digit()
+                                || matches!(byte, b'.' | b'_' | b'-')
+                        })
+                })
+                .ok_or_else(|| "V2 manifest protocolVersion 格式无效。".to_string())?;
+            let component_group = catalog_component
+                .get("compatibilityGroup")
+                .and_then(Value::as_str);
+            let expected_protocol = if let Some(group_id) = component_group {
+                catalog
+                    .get("compatibilityGroups")
+                    .and_then(Value::as_array)
+                    .and_then(|groups| {
+                        groups.iter().find(|group| {
+                            group.get("groupId").and_then(Value::as_str) == Some(group_id)
+                        })
+                    })
+                    .and_then(|group| {
+                        group
+                            .get("members")
+                            .and_then(Value::as_array)
+                            .and_then(|members| {
+                                members.iter().find(|member| {
+                                    member.get("componentId").and_then(Value::as_str)
+                                        == Some(component_id)
+                                })
+                            })
+                    })
+                    .and_then(|member| member.get("protocolVersion"))
+                    .and_then(Value::as_str)
+            } else {
+                catalog_component
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+            }
+            .ok_or_else(|| format!("catalog 未 pin `{component_id}` 的 V2 protocolVersion。"))?;
+            if protocol_version != expected_protocol {
+                return Err(format!(
+                    "`{component_id}` V2 protocolVersion 与受信 catalog 不匹配。"
+                ));
+            }
+            let artifact = manifest
+                .get("artifact")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "V2 manifest artifact 必须是 object。".to_string())?;
+            let expected_content_digest =
+                if artifact.get("kind").and_then(Value::as_str) == Some("oci-image") {
+                    artifact.get("digest").and_then(Value::as_str)
+                } else {
+                    artifact.get("sha256").and_then(Value::as_str)
+                }
+                .filter(|digest| is_digest(digest))
+                .ok_or_else(|| "V2 manifest artifact payload digest 无效。".to_string())?;
+            let content_digest = manifest
+                .get("contentDigest")
+                .and_then(Value::as_str)
+                .filter(|digest| is_digest(digest))
+                .ok_or_else(|| "V2 manifest contentDigest 格式无效。".to_string())?;
+            if content_digest != expected_content_digest {
+                return Err(
+                    "V2 manifest contentDigest 与不可变 payload digest 不匹配。".to_string()
+                );
+            }
+            if let Some(group_id) = component_group {
+                let group = catalog["compatibilityGroups"]
+                    .as_array()
+                    .and_then(|groups| {
+                        groups.iter().find(|group| {
+                            group.get("groupId").and_then(Value::as_str) == Some(group_id)
+                        })
+                    })
+                    .ok_or_else(|| format!("catalog compatibility group `{group_id}` 缺失。"))?;
+                let compatibility = manifest.get("compatibility").ok_or_else(|| {
+                    format!("V2 manifest `{component_id}` 缺少 compatibility pin。")
+                })?;
+                if compatibility
+                    .as_object()
+                    .is_none_or(|object| object.len() != 4)
+                    || compatibility.get("groupId").and_then(Value::as_str) != Some(group_id)
+                    || compatibility.get("contractApiVersion") != group.get("contractApiVersion")
+                    || compatibility.get("wireApiVersion") != group.get("wireApiVersion")
+                {
+                    return Err(format!(
+                        "`{component_id}` manifest compatibility 与 catalog 不匹配。"
+                    ));
+                }
+                validate_contract_lock(compatibility.get("contractLock"))?;
+            }
+        }
+        _ => {
+            return Err(format!(
+                "release manifest schemaVersion `{schema_version}` 不受支持。"
+            ))
+        }
+    }
+    Ok(())
+}
+
+fn validate_contract_lock(value: Option<&Value>) -> Result<(), String> {
+    let lock = value
+        .and_then(Value::as_object)
+        .ok_or_else(|| "V2 compatibility 缺少 contractLock。".to_string())?;
+    if lock.len() != 4
+        || lock.get("repository").and_then(Value::as_str).is_none()
+        || lock
+            .get("commit")
+            .and_then(Value::as_str)
+            .is_none_or(|commit| {
+                !matches!(commit.len(), 40 | 64)
+                    || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        || lock
+            .get("path")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        || lock
+            .get("sha256")
+            .and_then(Value::as_str)
+            .is_none_or(|digest| !is_digest(digest))
+    {
+        return Err("V2 compatibility contractLock 格式无效。".to_string());
+    }
+    Ok(())
 }
 
 fn validate_manifest_dependencies(
@@ -373,11 +664,14 @@ fn dependency_map(
 #[derive(Clone, Debug)]
 pub struct VerifiedOciManifest {
     pub component_id: String,
+    pub target_id: String,
     pub version: String,
     pub manifest_digest: String,
     pub artifact_digest: String,
     pub image_reference: String,
     pub restart_group: String,
+    pub protocol_version: Option<String>,
+    pub content_digest: Option<String>,
     pub manifest: Value,
 }
 
@@ -404,13 +698,16 @@ pub fn validate_component_manifest_for_target(
     target_id: &str,
 ) -> Result<VerifiedComponentManifest, String> {
     let manifest_digest = verify_self_digest(manifest, "manifestDigest")?;
-    if manifest.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || manifest.get("channel").and_then(Value::as_str) != Some(channel)
+    if !matches!(
+        manifest.get("schemaVersion").and_then(Value::as_u64),
+        Some(1 | 2)
+    ) || manifest.get("channel").and_then(Value::as_str) != Some(channel)
         || index.get("channel").and_then(Value::as_str) != Some(channel)
     {
         return Err("release index/manifest schemaVersion 或 channel 不匹配。".to_string());
     }
     let catalog_component = catalog_component(catalog, component_id)?;
+    validate_manifest_protocol_and_content(manifest, catalog, catalog_component, component_id)?;
     let target_entry = catalog_component
         .get("targets")
         .and_then(Value::as_array)
@@ -453,6 +750,9 @@ pub fn validate_component_manifest_for_target(
         .and_then(Value::as_str)
         .ok_or_else(|| format!("catalog component `{component_id}` 缺少 publisher。"))?;
     validate_release_index(index, catalog, publisher, channel)?;
+    if manifest.get("schemaVersion").and_then(Value::as_u64) == Some(2) {
+        validate_manifest_source_matches_index(index, manifest)?;
+    }
     validate_source_provenance(manifest, catalog, publisher, channel, None)?;
     let entry = index
         .get("releases")
@@ -779,8 +1079,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        plan_id_and_digest, validate_runtime_maintenance_sdk_labels, verify_self_digest,
-        PlanComponentDigest, VerifiedComponentManifest,
+        plan_id_and_digest, plan_id_and_digest_with_authority_artifact,
+        validate_manifest_protocol_and_content, validate_runtime_maintenance_sdk_labels,
+        verify_self_digest, PlanComponentDigest, VerifiedComponentManifest,
     };
     use serde_json::Value;
 
@@ -827,6 +1128,9 @@ mod tests {
             manifest_digest: format!("sha256:{}", "a".repeat(64)),
             artifact_digest: format!("sha256:{}", "b".repeat(64)),
             restart_group: "single-service".to_string(),
+            protocol_version: None,
+            content_digest: None,
+            target_id: None,
         };
         let (plan_id_a, digest_a) = plan_id_and_digest(
             "stable",
@@ -846,6 +1150,183 @@ mod tests {
         assert_eq!(plan_id_a, plan_id_b);
         assert_eq!(digest_a, digest_b);
         assert_ne!(digest_a, preview_digest);
+    }
+
+    #[test]
+    fn authority_bundle_identity_is_bound_into_v2_group_plan_digest() {
+        let component = PlanComponentDigest {
+            component_id: "cy-workspace-authority-host".to_string(),
+            version: "0.2.0".to_string(),
+            manifest_digest: format!("sha256:{}", "a".repeat(64)),
+            artifact_digest: format!("sha256:{}", "b".repeat(64)),
+            restart_group: "workspace-product-v2".to_string(),
+            protocol_version: Some("cyrene.workspace.authority.v2".to_string()),
+            content_digest: Some(format!("sha256:{}", "b".repeat(64))),
+            target_id: Some("windows-10.0-x86_64-docker-linux".to_string()),
+        };
+        let artifact_a = format!("sha256:{}", "c".repeat(64));
+        let artifact_b = format!("sha256:{}", "d".repeat(64));
+        let (_, digest_a) = plan_id_and_digest_with_authority_artifact(
+            "stable",
+            std::slice::from_ref(&component),
+            Some(&artifact_a),
+        )
+        .expect("bound plan digest");
+        let (_, digest_b) =
+            plan_id_and_digest_with_authority_artifact("stable", &[component], Some(&artifact_b))
+                .expect("bound plan digest");
+        assert_ne!(digest_a, digest_b);
+    }
+
+    #[test]
+    fn v2_protocol_and_content_digests_are_pinned_to_catalog_and_immutable_oci_digest() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "releaseId": "stable-1111111111111111111111111111111111111111",
+            "componentId": "cyrene-sample",
+            "version": "1.2.3",
+            "channel": "stable",
+            "target": {},
+            "artifact": {"kind": "oci-image", "digest": digest},
+            "dependencies": [],
+            "restart": {"group": "single-service"},
+            "source": {},
+            "provenance": {},
+            "manifestDigest": format!("sha256:{}", "b".repeat(64)),
+            "protocolVersion": "cyrene.sample.v1",
+            "contentDigest": format!("sha256:{}", "a".repeat(64)),
+        });
+        let component = serde_json::json!({
+            "componentId": "cyrene-sample",
+            "protocolVersion": "cyrene.sample.v1",
+        });
+        let catalog = serde_json::json!({});
+        validate_manifest_protocol_and_content(&manifest, &catalog, &component, "cyrene-sample")
+            .expect("matching v2 protocol and immutable OCI digest");
+    }
+
+    #[test]
+    fn compatibility_group_member_protocol_uses_its_component_pin() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let lock = serde_json::json!({
+            "repository": "DoHorizon-AI/Cyrene-Platform",
+            "commit": "1111111111111111111111111111111111111111",
+            "path": "contracts/workspace-product-v2.lock.json",
+            "sha256": format!("sha256:{}", "b".repeat(64)),
+        });
+        let group_id = "workspace-product-v2";
+        let wire_version = "cyrene.workspace.product.v2";
+        let protocol_version = "cyrene.workspace.authority.v2";
+        let catalog = serde_json::json!({
+            "compatibilityGroups": [{
+                "groupId": group_id,
+                "contractApiVersion": "0.1.0",
+                "wireApiVersion": wire_version,
+                "members": [{
+                    "componentId": "cy-workspace-authority-host",
+                    "protocolVersion": protocol_version,
+                    "requiredForAdoption": true,
+                }],
+            }],
+        });
+        let component = serde_json::json!({
+            "componentId": "cy-workspace-authority-host",
+            "compatibilityGroup": group_id,
+        });
+        let mut manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "releaseId": "stable-1111111111111111111111111111111111111111",
+            "componentId": "cy-workspace-authority-host",
+            "version": "0.2.0",
+            "channel": "stable",
+            "target": {},
+            "artifact": {"kind": "oci-image", "digest": digest},
+            "dependencies": [],
+            "restart": {"group": "workspace-product-v2"},
+            "source": {},
+            "provenance": {},
+            "manifestDigest": format!("sha256:{}", "c".repeat(64)),
+            "protocolVersion": protocol_version,
+            "contentDigest": format!("sha256:{}", "a".repeat(64)),
+            "compatibility": {
+                "groupId": group_id,
+                "contractApiVersion": "0.1.0",
+                "wireApiVersion": wire_version,
+                "contractLock": lock,
+            },
+        });
+        validate_manifest_protocol_and_content(
+            &manifest,
+            &catalog,
+            &component,
+            "cy-workspace-authority-host",
+        )
+        .expect("authority member protocol pin differs from group wire version");
+        manifest["protocolVersion"] = Value::from(wire_version);
+        assert!(validate_manifest_protocol_and_content(
+            &manifest,
+            &catalog,
+            &component,
+            "cy-workspace-authority-host",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn v2_rejects_unknown_fields_unpinned_protocol_and_mismatched_content_digest() {
+        let make_manifest = || {
+            serde_json::json!({
+                "schemaVersion": 2,
+                "releaseId": "stable-1111111111111111111111111111111111111111",
+                "componentId": "cyrene-sample",
+                "version": "1.2.3",
+                "channel": "stable",
+                "target": {},
+                "artifact": {"kind": "oci-image", "digest": format!("sha256:{}", "a".repeat(64))},
+                "dependencies": [],
+                "restart": {"group": "single-service"},
+                "source": {},
+                "provenance": {},
+                "manifestDigest": format!("sha256:{}", "b".repeat(64)),
+                "protocolVersion": "cyrene.sample.v1",
+                "contentDigest": format!("sha256:{}", "a".repeat(64)),
+            })
+        };
+        let component = serde_json::json!({
+            "componentId": "cyrene-sample",
+            "protocolVersion": "cyrene.sample.v1",
+        });
+        let catalog = serde_json::json!({});
+        let mut manifest = make_manifest();
+        manifest["unreviewedExtension"] = Value::from(true);
+        assert!(validate_manifest_protocol_and_content(
+            &manifest,
+            &catalog,
+            &component,
+            "cyrene-sample"
+        )
+        .is_err());
+
+        let mut manifest = make_manifest();
+        manifest["contentDigest"] = Value::from(format!("sha256:{}", "c".repeat(64)));
+        assert!(validate_manifest_protocol_and_content(
+            &manifest,
+            &catalog,
+            &component,
+            "cyrene-sample"
+        )
+        .is_err());
+
+        let mut manifest = make_manifest();
+        manifest["protocolVersion"] = Value::from("cyrene.sample.v2");
+        assert!(validate_manifest_protocol_and_content(
+            &manifest,
+            &catalog,
+            &component,
+            "cyrene-sample"
+        )
+        .is_err());
     }
 
     #[test]

@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 2,
+  "targetId": "windows-10.0-x86_64-docker-linux",
+  "workspaceGroupActivitySources": [
+    "cyrene-catalyst",
+    "cyrene-echo",
+    "cyrene-exchange",
+    "cyrene-reactor",
+    "cyrene-yield"
+  ],
+  "services": [
+    {
+      "componentId": "cyrene-catalyst",
+      "composeService": "cyrene-catalyst",
+      "containerName": "cyrene-catalyst",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cyrene-echo",
+      "composeService": "cyrene-echo",
+      "containerName": "cyrene-echo",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cyrene-exchange",
+      "composeService": "cyrene-exchange",
+      "containerName": "cyrene-exchange",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cyrene-reactor",
+      "composeService": "cyrene-reactor",
+      "containerName": "cyrene-reactor",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cyrene-runtime-maintenance",
+      "composeService": "cyrene-runtime-maintenance",
+      "containerName": "cyrene-runtime-maintenance",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cyrene-yield",
+      "composeService": "cyrene-yield",
+      "containerName": "cyrene-yield",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cy-workspace-authority-host",
+      "composeService": "cyrene-workspace-authority",
+      "containerName": "cyrene-workspace-authority",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cy-workspace-connector",
+      "composeService": "cyrene-workspace-connector",
+      "containerName": "cyrene-workspace-connector",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cy-workspace-frontend-bridge",
+      "composeService": "cyrene-workspace-frontend-bridge",
+      "containerName": "cyrene-workspace-frontend-bridge",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cy-workspace-relay",
+      "composeService": "cyrene-workspace-relay",
+      "containerName": "cyrene-workspace-relay",
+      "healthcheck": "docker-healthcheck"
+    },
+    {
+      "componentId": "cy-workspace-web-bff",
+      "composeService": "cyrene-workspace-web-bff",
+      "containerName": "cyrene-workspace-web-bff",
+      "healthcheck": "docker-healthcheck"
+    }
+  ]
+}

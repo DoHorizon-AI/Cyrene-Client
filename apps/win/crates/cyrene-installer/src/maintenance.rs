@@ -32,6 +32,13 @@ pub const PRODUCT_ACTIVITY_SOURCES: &[&str] = &[
     "cyrene-reactor",
     "cyrene-yield",
 ];
+const WORKSPACE_RUNTIME_COMPONENTS: &[&str] = &[
+    "cy-workspace-authority-host",
+    "cy-workspace-frontend-bridge",
+    "cy-workspace-web-bff",
+    "cy-workspace-relay",
+    "cy-workspace-connector",
+];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -130,6 +137,23 @@ impl ReadinessSnapshot {
 
 /// Query the authenticated local broker through a fixed Docker argv and private socket.
 pub fn get_product_readiness(app_dir: &std::path::Path) -> Result<ReadinessSnapshot, String> {
+    get_readiness(app_dir, PRODUCT_ACTIVITY_SOURCES)
+}
+
+/// Query the same atomic Product task gate for a Workspace runtime group transaction.
+/// Workspace component digests are deliberately separate from the Product activity sources.
+pub fn get_workspace_group_readiness(
+    app_dir: &std::path::Path,
+) -> Result<ReadinessSnapshot, String> {
+    let sources = crate::windows_runtime::workspace_group_activity_sources()?;
+    let refs = sources.iter().map(String::as_str).collect::<Vec<_>>();
+    get_readiness(app_dir, &refs)
+}
+
+fn get_readiness(
+    app_dir: &std::path::Path,
+    expected_activity_sources: &[&str],
+) -> Result<ReadinessSnapshot, String> {
     let catalog_generation = read_activity_catalog_generation(app_dir)?;
     let request = json!({
         "request_id": new_request_id("get"),
@@ -138,7 +162,7 @@ pub fn get_product_readiness(app_dir: &std::path::Path) -> Result<ReadinessSnaps
             "target_kind": TARGET_KIND,
             "requires_restart": true,
             "expected_catalog_generation": catalog_generation,
-            "expected_activity_sources": PRODUCT_ACTIVITY_SOURCES,
+            "expected_activity_sources": expected_activity_sources,
         },
     });
     let mut snapshot = broker_call(request).and_then(parse_readiness)?;
@@ -165,10 +189,15 @@ pub fn begin_product_maintenance(
     if !confirmed {
         return Err("Product 更新需要对明确计划进行用户确认。".to_string());
     }
-    validate_plan_binding(plan_id, plan_digest, component_artifact_digests)?;
-    begin_product_maintenance_with_generations(
+    validate_plan_binding(
+        plan_id,
+        plan_digest,
+        component_artifact_digests,
+        PRODUCT_ACTIVITY_SOURCES,
+    )?;
+    begin_product_maintenance_with_generations(BeginMaintenanceRequest {
         request_id,
-        snapshot.install_catalog_generation.ok_or_else(|| {
+        expected_catalog_generation: snapshot.install_catalog_generation.ok_or_else(|| {
             "维护 broker 未提供 install_catalog_generation；状态按 UNKNOWN 处理。".to_string()
         })?,
         expected_gate_generation,
@@ -176,7 +205,45 @@ pub fn begin_product_maintenance(
         plan_digest,
         component_artifact_digests,
         confirmed,
-    )
+        expected_activity_sources: PRODUCT_ACTIVITY_SOURCES,
+        allowed_component_ids: PRODUCT_ACTIVITY_SOURCES,
+    })
+}
+
+/// Atomically acquire the task-admission fence for the installer-owned Workspace group.
+pub fn begin_workspace_group_maintenance(
+    snapshot: &ReadinessSnapshot,
+    request_id: &str,
+    plan_id: &str,
+    plan_digest: &str,
+    component_artifact_digests: &BTreeMap<String, String>,
+    confirmed: bool,
+) -> Result<String, String> {
+    let expected_gate_generation = snapshot.expected_gate_generation()?;
+    if !confirmed {
+        return Err("Workspace compatibility group 更新需要对明确计划进行用户确认。".to_string());
+    }
+    validate_plan_binding(
+        plan_id,
+        plan_digest,
+        component_artifact_digests,
+        WORKSPACE_RUNTIME_COMPONENTS,
+    )?;
+    let source_ids = crate::windows_runtime::workspace_group_activity_sources()?;
+    let source_refs = source_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    begin_product_maintenance_with_generations(BeginMaintenanceRequest {
+        request_id,
+        expected_catalog_generation: snapshot.install_catalog_generation.ok_or_else(|| {
+            "维护 broker 未提供 install_catalog_generation；状态按 UNKNOWN 处理。".to_string()
+        })?,
+        expected_gate_generation,
+        plan_id,
+        plan_digest,
+        component_artifact_digests,
+        confirmed,
+        expected_activity_sources: &source_refs,
+        allowed_component_ids: WORKSPACE_RUNTIME_COMPONENTS,
+    })
 }
 
 /// Retry a journaled Begin using the exact durable request identity and generation snapshot.
@@ -188,26 +255,81 @@ pub fn resume_product_maintenance(
     plan_digest: &str,
     component_artifact_digests: &BTreeMap<String, String>,
 ) -> Result<String, String> {
-    begin_product_maintenance_with_generations(
+    validate_plan_binding(
+        plan_id,
+        plan_digest,
+        component_artifact_digests,
+        PRODUCT_ACTIVITY_SOURCES,
+    )?;
+    begin_product_maintenance_with_generations(BeginMaintenanceRequest {
         request_id,
         expected_catalog_generation,
         expected_gate_generation,
         plan_id,
         plan_digest,
         component_artifact_digests,
-        true,
-    )
+        confirmed: true,
+        expected_activity_sources: PRODUCT_ACTIVITY_SOURCES,
+        allowed_component_ids: PRODUCT_ACTIVITY_SOURCES,
+    })
 }
 
-fn begin_product_maintenance_with_generations(
+/// Resume an uncertain group Begin with its exact durable identity and gate generations.
+pub fn resume_workspace_group_maintenance(
     request_id: &str,
     expected_catalog_generation: u64,
     expected_gate_generation: u64,
     plan_id: &str,
     plan_digest: &str,
     component_artifact_digests: &BTreeMap<String, String>,
-    confirmed: bool,
 ) -> Result<String, String> {
+    validate_plan_binding(
+        plan_id,
+        plan_digest,
+        component_artifact_digests,
+        WORKSPACE_RUNTIME_COMPONENTS,
+    )?;
+    let source_ids = crate::windows_runtime::workspace_group_activity_sources()?;
+    let source_refs = source_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    begin_product_maintenance_with_generations(BeginMaintenanceRequest {
+        request_id,
+        expected_catalog_generation,
+        expected_gate_generation,
+        plan_id,
+        plan_digest,
+        component_artifact_digests,
+        confirmed: true,
+        expected_activity_sources: &source_refs,
+        allowed_component_ids: WORKSPACE_RUNTIME_COMPONENTS,
+    })
+}
+
+struct BeginMaintenanceRequest<'a> {
+    request_id: &'a str,
+    expected_catalog_generation: u64,
+    expected_gate_generation: u64,
+    plan_id: &'a str,
+    plan_digest: &'a str,
+    component_artifact_digests: &'a BTreeMap<String, String>,
+    confirmed: bool,
+    expected_activity_sources: &'a [&'a str],
+    allowed_component_ids: &'a [&'a str],
+}
+
+fn begin_product_maintenance_with_generations(
+    request: BeginMaintenanceRequest<'_>,
+) -> Result<String, String> {
+    let BeginMaintenanceRequest {
+        request_id,
+        expected_catalog_generation,
+        expected_gate_generation,
+        plan_id,
+        plan_digest,
+        component_artifact_digests,
+        confirmed,
+        expected_activity_sources,
+        allowed_component_ids,
+    } = request;
     if request_id.is_empty()
         || request_id.len() > 128
         || !request_id
@@ -219,7 +341,12 @@ fn begin_product_maintenance_with_generations(
     if !confirmed {
         return Err("Product 更新需要对明确计划进行用户确认。".to_string());
     }
-    validate_plan_binding(plan_id, plan_digest, component_artifact_digests)?;
+    validate_plan_binding(
+        plan_id,
+        plan_digest,
+        component_artifact_digests,
+        allowed_component_ids,
+    )?;
     let request = json!({
         "request_id": request_id,
         "method": "BeginMaintenance",
@@ -227,7 +354,7 @@ fn begin_product_maintenance_with_generations(
             "target_kind": TARGET_KIND,
             "requires_restart": true,
             "expected_catalog_generation": expected_catalog_generation,
-            "expected_activity_sources": PRODUCT_ACTIVITY_SOURCES,
+            "expected_activity_sources": expected_activity_sources,
             "expected_gate_generation": expected_gate_generation,
             "user_confirmed_restart": true,
             "plan_id": plan_id,
@@ -304,6 +431,7 @@ fn validate_plan_binding(
     plan_id: &str,
     plan_digest: &str,
     component_artifact_digests: &BTreeMap<String, String>,
+    allowed_component_ids: &[&str],
 ) -> Result<(), String> {
     if plan_id.is_empty()
         || plan_id.len() > 128
@@ -317,12 +445,12 @@ fn validate_plan_binding(
         return Err("plan_digest 必须是 sha256:<64 位小写十六进制>。".to_string());
     }
     if component_artifact_digests.is_empty()
-        || component_artifact_digests.len() > PRODUCT_ACTIVITY_SOURCES.len()
+        || component_artifact_digests.len() > allowed_component_ids.len()
     {
         return Err("component_artifact_digests 必须包含本次计划中全部 Product 制品。".to_string());
     }
     for (component_id, digest) in component_artifact_digests {
-        if !PRODUCT_ACTIVITY_SOURCES.contains(&component_id.as_str()) {
+        if !allowed_component_ids.contains(&component_id.as_str()) {
             return Err(format!(
                 "组件 `{component_id}` 不属于本机 Product 更新目录。"
             ));
@@ -629,10 +757,12 @@ pub fn new_request_id(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_maintenance_token, end_maintenance_request, is_definitive_begin_refusal, ActiveTask,
-        ReadinessSnapshot,
+        begin_maintenance_token, end_maintenance_request, is_definitive_begin_refusal,
+        validate_plan_binding, ActiveTask, ReadinessSnapshot, PRODUCT_ACTIVITY_SOURCES,
+        WORKSPACE_RUNTIME_COMPONENTS,
     };
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     fn snapshot(status: &str, gate_generation: Option<u64>) -> ReadinessSnapshot {
         ReadinessSnapshot {
@@ -773,5 +903,42 @@ mod tests {
         assert_eq!(request["request_id"], json!(end_request_id));
         assert_eq!(request["params"]["request_id"], json!(begin_request_id));
         assert_ne!(request["request_id"], request["params"]["request_id"]);
+    }
+
+    #[test]
+    fn workspace_group_digest_map_is_separate_from_product_activity_sources() {
+        let plan_digest = format!("sha256:{}", "a".repeat(64));
+        let digests = WORKSPACE_RUNTIME_COMPONENTS
+            .iter()
+            .map(|component| {
+                (
+                    (*component).to_string(),
+                    format!("sha256:{}", "b".repeat(64)),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert!(validate_plan_binding(
+            "plan-0123456789abcdef0123456789abcdef",
+            &plan_digest,
+            &digests,
+            WORKSPACE_RUNTIME_COMPONENTS,
+        )
+        .is_ok());
+        let product_digests = PRODUCT_ACTIVITY_SOURCES
+            .iter()
+            .map(|component| {
+                (
+                    (*component).to_string(),
+                    format!("sha256:{}", "c".repeat(64)),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert!(validate_plan_binding(
+            "plan-0123456789abcdef0123456789abcdef",
+            &plan_digest,
+            &product_digests,
+            WORKSPACE_RUNTIME_COMPONENTS,
+        )
+        .is_err());
     }
 }

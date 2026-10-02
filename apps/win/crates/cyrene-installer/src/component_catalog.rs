@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 const EMBEDDED_CATALOG: &str = include_str!("component-catalog-v1.json");
-const CATALOG_RAW_SHA256: &str = "248a9a3b27f3d1daa4c0a6fdc405c612fd492483bb4157ff46b6d2836ffd0d35";
+const CATALOG_RAW_SHA256: &str = "28fc1ef65a38658aeabb2bf23b7a35e91cb64774612f387936a971dfec2bd3dc";
 const WINDOWS_TARGET_ID: &str = "windows-10.0-x86_64-docker-linux";
 
 /// Product components that this Windows installer is authorized to restart.
@@ -57,7 +57,7 @@ fn validate_catalog(catalog: &Value) -> Result<(), String> {
             "Workspace component catalog schemaVersion/defaultChannel 不受支持。".to_string(),
         );
     }
-    if catalog.get("generation").and_then(Value::as_u64) != Some(2)
+    if catalog.get("generation").and_then(Value::as_u64) != Some(4)
         || catalog["activitySourceCatalog"]["path"].as_str()
             != Some("/var/lib/cyrene/runtime/activity-sources.json")
     {
@@ -105,7 +105,12 @@ fn validate_catalog(catalog: &Value) -> Result<(), String> {
         if !publisher_ids.insert(repository.to_ascii_lowercase()) {
             return Err(format!("Workspace catalog publisher `{repository}` 重复。"));
         }
-        let expected_workflow = format!("{repository}/.github/workflows/component-release.yml");
+        let workflow_name = if repository == "DoHorizon-AI/Cyrene-Workspace" {
+            "data-bundle-release.yml"
+        } else {
+            "component-release.yml"
+        };
+        let expected_workflow = format!("{repository}/.github/workflows/{workflow_name}");
         if publisher.get("workflow").and_then(Value::as_str) != Some(expected_workflow.as_str()) {
             return Err(format!(
                 "Workspace publisher `{repository}` workflow 不匹配固定 release workflow。"
@@ -145,6 +150,89 @@ fn validate_catalog(catalog: &Value) -> Result<(), String> {
             ));
         }
     }
+    let groups = catalog
+        .get("compatibilityGroups")
+        .and_then(Value::as_array)
+        .filter(|groups| !groups.is_empty() && groups.len() <= 100)
+        .ok_or_else(|| "Workspace catalog compatibilityGroups 无效。".to_string())?;
+    let mut group_ids = BTreeSet::new();
+    let mut grouped_component_ids = BTreeSet::new();
+    for group in groups {
+        let group_id = group
+            .get("groupId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 128)
+            .ok_or_else(|| "compatibility group 缺少有效 groupId。".to_string())?;
+        if !group_ids.insert(group_id.to_string())
+            || group
+                .get("contractApiVersion")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            || group
+                .get("wireApiVersion")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return Err(format!(
+                "compatibility group `{group_id}` identity 无效或重复。"
+            ));
+        }
+        let members = group
+            .get("members")
+            .and_then(Value::as_array)
+            .filter(|members| !members.is_empty() && members.len() <= 100)
+            .ok_or_else(|| format!("compatibility group `{group_id}` members 无效。"))?;
+        let mut member_ids = BTreeSet::new();
+        for member in members {
+            let component_id = member
+                .get("componentId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("compatibility group `{group_id}` 缺少 componentId。"))?;
+            let protocol = member
+                .get("protocolVersion")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && value.len() <= 128)
+                .ok_or_else(|| {
+                    format!("compatibility group `{group_id}` member `{component_id}` protocolVersion 无效。")
+                })?;
+            if member
+                .get("requiredForAdoption")
+                .and_then(Value::as_bool)
+                .is_none()
+                || !member_ids.insert(component_id.to_string())
+                || !grouped_component_ids.insert(component_id.to_string())
+            {
+                return Err(format!(
+                    "compatibility group `{group_id}` member `{component_id}` 重复或字段无效。"
+                ));
+            }
+            let component = components
+                .iter()
+                .find(|item| item["componentId"].as_str() == Some(component_id))
+                .ok_or_else(|| format!("compatibility group `{group_id}` 引用了未知组件。"))?;
+            if component["compatibilityGroup"].as_str() != Some(group_id)
+                || component["protocolVersion"]
+                    .as_str()
+                    .is_some_and(|component_protocol| component_protocol != protocol)
+            {
+                return Err(format!(
+                    "component `{component_id}` group/protocol pin 与 group member 不匹配。"
+                ));
+            }
+        }
+    }
+    for component in components {
+        let component_id = component["componentId"].as_str().unwrap_or_default();
+        let has_group = component
+            .get("compatibilityGroup")
+            .and_then(Value::as_str)
+            .is_some();
+        if has_group != grouped_component_ids.contains(component_id) {
+            return Err(format!(
+                "component `{component_id}` compatibilityGroup 与 catalog members 声明不一致。"
+            ));
+        }
+    }
     for component_id in WINDOWS_PRODUCT_COMPONENT_IDS
         .iter()
         .copied()
@@ -175,6 +263,7 @@ fn validate_catalog(catalog: &Value) -> Result<(), String> {
             ));
         }
     }
+    crate::windows_runtime::validate_catalog_bindings(catalog)?;
     Ok(())
 }
 

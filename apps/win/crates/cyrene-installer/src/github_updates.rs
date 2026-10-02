@@ -9,7 +9,7 @@
 use crate::release_update::{
     validate_component_manifest_for_target, validate_immutable_manifest_uri,
     validate_release_index, validate_runtime_maintenance_sdk_labels, validate_windows_oci_manifest,
-    VerifiedComponentManifest, VerifiedOciManifest,
+    validate_windows_oci_manifest_for_target, VerifiedComponentManifest, VerifiedOciManifest,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -65,6 +65,23 @@ pub fn discover_windows_candidate(
     catalog: &Value,
     component_id: &str,
     channel: &str,
+) -> Result<Option<ReleaseCandidate>, String> {
+    discover_windows_candidate_for_target(
+        app_dir,
+        catalog,
+        component_id,
+        channel,
+        "windows-10.0-x86_64-docker-linux",
+    )
+}
+
+/// Discover the newest channel-eligible candidate for a trusted Windows OCI target.
+pub fn discover_windows_candidate_for_target(
+    app_dir: &Path,
+    catalog: &Value,
+    component_id: &str,
+    channel: &str,
+    target_id: &str,
 ) -> Result<Option<ReleaseCandidate>, String> {
     if !matches!(channel, "stable" | "preview") {
         return Err("release channel 不受支持。".to_string());
@@ -123,7 +140,6 @@ pub fn discover_windows_candidate(
         let index: Value = serde_json::from_str(&index_json)
             .map_err(|error| format!("release index JSON 無效: {error}"))?;
         validate_release_index(&index, catalog, publisher, channel)?;
-        let target_id = "windows-10.0-x86_64-docker-linux";
         let candidate_entry = index
             .get("releases")
             .and_then(Value::as_array)
@@ -145,8 +161,14 @@ pub fn discover_windows_candidate(
         validate_immutable_manifest_uri(manifest_uri, publisher)?;
         let manifest_json =
             fetch_release_manifest(app_dir, temporary.0.as_path(), manifest_uri, publisher)?;
-        let verified =
-            verify_candidate_bytes(catalog, &index_json, &manifest_json, component_id, channel)?;
+        let verified = verify_candidate_bytes_for_target(
+            catalog,
+            &index_json,
+            &manifest_json,
+            component_id,
+            channel,
+            target_id,
+        )?;
         return Ok(Some(ReleaseCandidate {
             index_json,
             manifest_json,
@@ -154,6 +176,120 @@ pub fn discover_windows_candidate(
         }));
     }
     Ok(None)
+}
+
+/// Resolve a first-adoption compatibility group through each member's own trusted publisher.
+pub fn discover_windows_compatibility_group(
+    app_dir: &Path,
+    catalog: &Value,
+    group_id: &str,
+    channel: &str,
+) -> Result<Vec<ReleaseCandidate>, String> {
+    let group = catalog
+        .get("compatibilityGroups")
+        .and_then(Value::as_array)
+        .and_then(|groups| {
+            groups
+                .iter()
+                .find(|group| group.get("groupId").and_then(Value::as_str) == Some(group_id))
+        })
+        .ok_or_else(|| format!("compatibility group `{group_id}` 未在受信 catalog pin。"))?;
+    let members = group
+        .get("members")
+        .and_then(Value::as_array)
+        .filter(|members| !members.is_empty() && members.len() <= 100)
+        .ok_or_else(|| format!("compatibility group `{group_id}` members 无效。"))?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut candidates = Vec::new();
+    let mut expected_compatibility: Option<Value> = None;
+    for member in members {
+        let component_id = member
+            .get("componentId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("compatibility group `{group_id}` member 缺少 componentId。"))?;
+        if !seen.insert(component_id.to_string()) {
+            return Err(format!(
+                "compatibility group `{group_id}` 重复 member `{component_id}`。"
+            ));
+        }
+        let required = member
+            .get("requiredForAdoption")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                format!("compatibility group `{group_id}` member requiredForAdoption 无效。")
+            })?;
+        let component = catalog_component(catalog, component_id)?;
+        if component.get("compatibilityGroup").and_then(Value::as_str) != Some(group_id) {
+            return Err(format!("catalog component `{component_id}` 与 compatibility group `{group_id}` 交叉声明不一致。"));
+        }
+        if !required {
+            continue;
+        }
+        let windows_targets = component
+            .get("targets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|target| {
+                target.get("support").and_then(Value::as_str) == Some("supported")
+                    && target.get("artifactKind").and_then(Value::as_str) == Some("oci-image")
+                    && target
+                        .get("targetId")
+                        .and_then(Value::as_str)
+                        .and_then(|target_id| catalog_target(catalog, target_id))
+                        .is_some_and(|target| {
+                            target.get("os").and_then(Value::as_str) == Some("windows")
+                                && target.get("runtime").and_then(Value::as_str)
+                                    == Some("docker-desktop:linux")
+                        })
+            })
+            .collect::<Vec<_>>();
+        if windows_targets.len() != 1 {
+            return Err(format!("required compatibility member `{component_id}` 没有唯一受支持的 Windows Docker OCI target。"));
+        }
+        let target_id = windows_targets[0]["targetId"].as_str().ok_or_else(|| {
+            format!("required compatibility member `{component_id}` targetId 无效。")
+        })?;
+        let candidate = discover_windows_candidate_for_target(
+            app_dir,
+            catalog,
+            component_id,
+            channel,
+            target_id,
+        )?
+        .ok_or_else(|| format!("required compatibility member `{component_id}` 没有已验证的 `{channel}` OCI release。"))?;
+        let compatibility = candidate
+            .verified
+            .manifest
+            .get("compatibility")
+            .ok_or_else(|| {
+                format!("required V2 member `{component_id}` 缺少 compatibility pins。")
+            })?;
+        if compatibility.get("groupId").and_then(Value::as_str) != Some(group_id)
+            || compatibility.get("contractApiVersion") != group.get("contractApiVersion")
+            || compatibility.get("wireApiVersion") != group.get("wireApiVersion")
+        {
+            return Err(format!(
+                "required member `{component_id}` compatibility tuple 与受信 group 不匹配。"
+            ));
+        }
+        if let Some(expected) = &expected_compatibility {
+            if expected != compatibility {
+                return Err(format!(
+                    "compatibility group `{group_id}` 含有混合 contractLock/API pins。"
+                ));
+            }
+        } else {
+            expected_compatibility = Some(compatibility.clone());
+        }
+        candidates.push(candidate);
+    }
+    if candidates.is_empty() {
+        return Err(format!(
+            "compatibility group `{group_id}` 没有受支持 required Windows members。"
+        ));
+    }
+    Ok(candidates)
 }
 
 /// Find and verify a catalog-published Windows image by its immutable artifact digest.
@@ -261,12 +397,37 @@ pub fn verify_candidate_bytes(
     component_id: &str,
     channel: &str,
 ) -> Result<VerifiedOciManifest, String> {
+    verify_candidate_bytes_for_target(
+        catalog,
+        index_json,
+        manifest_json,
+        component_id,
+        channel,
+        "windows-10.0-x86_64-docker-linux",
+    )
+}
+
+/// Revalidate exact persisted bytes for one catalog-pinned Windows OCI target.
+pub fn verify_candidate_bytes_for_target(
+    catalog: &Value,
+    index_json: &str,
+    manifest_json: &str,
+    component_id: &str,
+    channel: &str,
+    target_id: &str,
+) -> Result<VerifiedOciManifest, String> {
     let index: Value = serde_json::from_str(index_json)
         .map_err(|error| format!("持久化 release index JSON 无效: {error}"))?;
     let manifest: Value = serde_json::from_str(manifest_json)
         .map_err(|error| format!("持久化 release manifest JSON 无效: {error}"))?;
-    let verified =
-        validate_windows_oci_manifest(&index, &manifest, catalog, component_id, channel)?;
+    let verified = validate_windows_oci_manifest_for_target(
+        &index,
+        &manifest,
+        catalog,
+        component_id,
+        channel,
+        target_id,
+    )?;
     let publisher = catalog_component(catalog, component_id)?["publisher"]
         .as_str()
         .ok_or_else(|| "catalog component 缺少 publisher。".to_string())?;
@@ -732,11 +893,6 @@ fn github_api_route(uri: &str) -> Result<String, String> {
 }
 
 fn create_temp_directory(base: &Path) -> Result<TempDirectory, String> {
-    let base = if base.is_absolute() {
-        base.to_path_buf()
-    } else {
-        base.to_path_buf()
-    };
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

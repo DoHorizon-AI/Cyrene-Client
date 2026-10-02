@@ -23,6 +23,7 @@ mod component_catalog;
 mod github_updates;
 mod maintenance;
 mod release_update;
+mod windows_runtime;
 
 /// Resolve Docker to its fixed Windows installation path for elevated updater operations.
 pub(crate) fn docker_command() -> Command {
@@ -226,6 +227,10 @@ fn main() {
 
 const UPDATE_PROTOCOL_VERSION: &str = "cyrene.component-updates.helper.v1";
 const WINDOWS_TARGET_ID: &str = "windows-10.0-x86_64-docker-linux";
+const WINDOWS_RUNTIME_COMPOSE_TEMPLATE: &str =
+    include_str!("../../../compose/windows-runtime-services-v2.yml");
+const WINDOWS_RUNTIME_COMPOSE_FILE: &str = "windows-runtime-services-v2.yml";
+const WINDOWS_RUNTIME_ENV_FILE: &str = "runtime-config/windows-runtime.env";
 
 fn run_updates_stdio(args: &[String], app_dir: &Path) {
     let mut input = Vec::new();
@@ -350,7 +355,7 @@ fn dispatch_update_request(
                         false,
                     ));
                 };
-                if component_ids.is_empty() || component_ids.len() > 5 {
+                if component_ids.is_empty() || component_ids.len() > 100 {
                     return Err((
                         "UPDATE_HELPER_PROTOCOL",
                         "componentIds 数量超出限制。".to_string(),
@@ -365,7 +370,7 @@ fn dispatch_update_request(
                             false,
                         ));
                     };
-                    if !component_catalog::WINDOWS_PRODUCT_COMPONENT_IDS.contains(&component_id) {
+                    if windows_runtime::service(component_id).is_err() {
                         return Err((
                             "UPDATE_COMPONENT_UNSUPPORTED",
                             format!("组件 `{component_id}` 不在 Windows Product 更新清单中。"),
@@ -606,8 +611,7 @@ fn windows_update_status(app_dir: &Path) -> serde_json::Value {
                     .first()?
                     .as_str()
             });
-        let managed = component_catalog::WINDOWS_PRODUCT_COMPONENT_IDS.contains(&component_id)
-            || component_id == component_catalog::WINDOWS_MAINTENANCE_COMPONENT_ID;
+        let managed = windows_runtime::service(component_id).is_ok();
         let supported = managed && catalog_supported && artifact_kind == Some("oci-image");
         let (installed, active_version) =
             if component_catalog::WINDOWS_PRODUCT_COMPONENT_IDS.contains(&component_id) {
@@ -621,13 +625,11 @@ fn windows_update_status(app_dir: &Path) -> serde_json::Value {
                     ),
                     None => (false, None),
                 }
-            } else if component_id == component_catalog::WINDOWS_MAINTENANCE_COMPONENT_ID {
-                (
-                    docker_container_present(component_id),
-                    docker_component_version(component_id),
-                )
             } else {
-                (false, None)
+                (
+                    runtime_component_present(component_id),
+                    runtime_component_version(component_id),
+                )
             };
         let matching_plan = plans.iter().find(|plan| {
             plan.components
@@ -677,17 +679,20 @@ fn windows_update_status(app_dir: &Path) -> serde_json::Value {
         } else {
             phase = "current";
         }
-        if !installed && supported {
+        let compatibility_member = catalog_component["compatibilityGroup"].as_str().is_some();
+        if !installed && supported && !compatibility_member {
             blockers.push(serde_json::json!({"code": "COMPONENT_NOT_INSTALLED", "message": "目标组件尚未安装在本机。"}));
         }
         let mut allowed_actions = Vec::new();
         if supported {
             allowed_actions.push("check");
-            if matching_plan.is_some_and(|plan| plan.phase == "checked") && installed {
+            if matching_plan.is_some_and(|plan| plan.phase == "checked")
+                && (installed || compatibility_member)
+            {
                 allowed_actions.push("stage");
             }
             if matching_plan.is_some_and(|plan| plan.phase == "staged")
-                && installed
+                && (installed || compatibility_member)
                 && is_idle
                 && operator_authorized
             {
@@ -744,14 +749,179 @@ fn check_product_updates(
             .filter_map(serde_json::Value::as_str)
             .map(str::to_string)
             .collect::<Vec<_>>(),
-        None => component_catalog::WINDOWS_PRODUCT_COMPONENT_IDS
-            .iter()
-            .map(|id| id.to_string())
-            .collect(),
+        None => {
+            let mut ids = component_catalog::WINDOWS_PRODUCT_COMPONENT_IDS
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>();
+            let existing_ids = ids.iter().cloned().collect::<BTreeSet<_>>();
+            ids.extend(
+                windows_runtime::trusted_services()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|service| {
+                        !existing_ids.contains(&service.component_id)
+                            && runtime_component_present(&service.component_id)
+                    })
+                    .map(|service| service.component_id),
+            );
+            ids
+        }
     };
     remove_checked_plans_for_components(app_dir, &component_ids)?;
     let mut reports = Vec::new();
+    let mut processed_compatibility_groups = BTreeSet::new();
     for component_id in component_ids {
+        let catalog_component = catalog["components"].as_array().and_then(|components| {
+            components
+                .iter()
+                .find(|component| component["componentId"].as_str() == Some(component_id.as_str()))
+        });
+        if let Some(group_id) = catalog_component
+            .and_then(|component| component.get("compatibilityGroup"))
+            .and_then(serde_json::Value::as_str)
+        {
+            if !processed_compatibility_groups.insert(group_id.to_string()) {
+                continue;
+            }
+            match github_updates::discover_windows_compatibility_group(
+                app_dir, catalog, group_id, channel,
+            ) {
+                Ok(candidates) => {
+                    let component_updates = candidates
+                        .iter()
+                        .map(|candidate| {
+                            let update_available =
+                                runtime_component_digest(catalog, &candidate.verified.component_id)
+                                    .as_deref()
+                                    != Some(candidate.verified.artifact_digest.as_str());
+                            update_available
+                        })
+                        .collect::<Vec<_>>();
+                    let installed_state = read_installed_workspace_group_state(app_dir)?;
+                    let established = match installed_state.as_ref() {
+                        Some(state) => {
+                            if !installed_workspace_group_matches(
+                                app_dir, catalog, group_id, state,
+                            )? {
+                                return Err("本机已存在 Workspace compatibility state，但运行容器/digest/health 与其不匹配；拒绝把未知或混合版本重新当作首次迁移。".to_string());
+                            }
+                            true
+                        }
+                        None => {
+                            if windows_runtime::workspace_services()?
+                                .iter()
+                                .any(|service| runtime_component_present(&service.component_id))
+                            {
+                                return Err("检测到未纳入 V2 transaction state 的 Workspace 容器；必须先人工清理或完成受支持迁移，拒绝覆盖未知旧安装。".to_string());
+                            }
+                            false
+                        }
+                    };
+                    let group_update_available =
+                        !established || component_updates.iter().any(|value| *value);
+                    let report_rows = candidates
+                        .iter()
+                        .zip(component_updates.iter())
+                        .map(|(candidate, update_available)| ComponentCheckReport {
+                            component_id: candidate.verified.component_id.clone(),
+                            phase: if !established || *update_available {
+                                "checked"
+                            } else {
+                                "current"
+                            }
+                            .to_string(),
+                            available_version: Some(candidate.verified.version.clone()),
+                            update_available: !established || *update_available,
+                            blockers: Vec::new(),
+                        })
+                        .collect::<Vec<_>>();
+                    if group_update_available {
+                        let authority_artifact_id =
+                            selected_workspace_bundle_artifact_id(app_dir, catalog)?;
+                        let candidates_for_plan = candidates
+                            .into_iter()
+                            .zip(component_updates.iter())
+                            .filter_map(|(candidate, changed)| {
+                                (!established || *changed).then_some(candidate)
+                            })
+                            .collect::<Vec<_>>();
+                        let component_digests = candidates_for_plan
+                            .iter()
+                            .map(|candidate| release_update::PlanComponentDigest {
+                                component_id: candidate.verified.component_id.clone(),
+                                version: candidate.verified.version.clone(),
+                                manifest_digest: candidate.verified.manifest_digest.clone(),
+                                artifact_digest: candidate.verified.artifact_digest.clone(),
+                                restart_group: candidate.verified.restart_group.clone(),
+                                protocol_version: candidate.verified.protocol_version.clone(),
+                                content_digest: candidate.verified.content_digest.clone(),
+                                target_id: Some(candidate.verified.target_id.clone()),
+                            })
+                            .collect::<Vec<_>>();
+                        let (plan_id, plan_digest) =
+                            release_update::plan_id_and_digest_with_authority_artifact(
+                                channel,
+                                &component_digests,
+                                Some(&authority_artifact_id),
+                            )?;
+                        let stored_components = candidates_for_plan
+                            .into_iter()
+                            .map(|candidate| StoredPlanComponent {
+                                component_id: candidate.verified.component_id,
+                                version: candidate.verified.version,
+                                manifest_digest: candidate.verified.manifest_digest,
+                                artifact_digest: candidate.verified.artifact_digest,
+                                restart_group: candidate.verified.restart_group,
+                                protocol_version: candidate.verified.protocol_version,
+                                content_digest: candidate.verified.content_digest,
+                                target_id: Some(candidate.verified.target_id),
+                                index_json: candidate.index_json,
+                                manifest_json: candidate.manifest_json,
+                            })
+                            .collect();
+                        save_stored_plan(
+                            app_dir,
+                            &StoredPlan {
+                                schema_version: 1,
+                                plan_id,
+                                plan_digest,
+                                channel: channel.to_string(),
+                                phase: "checked".to_string(),
+                                authority_artifact_id: Some(authority_artifact_id),
+                                components: stored_components,
+                            },
+                        )?;
+                    }
+                    reports.extend(report_rows);
+                }
+                Err(error) => {
+                    let members = catalog["compatibilityGroups"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|group| group["groupId"].as_str() == Some(group_id))
+                        .and_then(|group| group["members"].as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    for member in members {
+                        if let Some(member_id) = member["componentId"].as_str() {
+                            reports.push(ComponentCheckReport {
+                                component_id: member_id.to_string(),
+                                phase: "unknown".to_string(),
+                                available_version: None,
+                                update_available: false,
+                                blockers: vec![serde_json::json!({
+                                    "code": "COMPATIBILITY_GROUP_UNVERIFIED",
+                                    "message": error,
+                                })],
+                            });
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         let tool_id = component_id.strip_prefix("cyrene-").unwrap_or_default();
         if !is_product_installed(app_dir, tool_id) {
             reports.push(ComponentCheckReport {
@@ -792,6 +962,13 @@ fn check_product_updates(
                         manifest_digest: candidate.verified.manifest_digest.clone(),
                         artifact_digest: candidate.verified.artifact_digest.clone(),
                         restart_group: candidate.verified.restart_group.clone(),
+                        protocol_version: candidate.verified.protocol_version.clone(),
+                        content_digest: candidate.verified.content_digest.clone(),
+                        target_id: candidate
+                            .verified
+                            .protocol_version
+                            .as_ref()
+                            .map(|_| candidate.verified.target_id.clone()),
                     };
                     let (plan_id, plan_digest) = release_update::plan_id_and_digest(channel, &[component_digest])?;
                     let stored = StoredPlan {
@@ -800,12 +977,20 @@ fn check_product_updates(
                         plan_digest,
                         channel: channel.to_string(),
                         phase: "checked".to_string(),
+                        authority_artifact_id: None,
                         components: vec![StoredPlanComponent {
                             component_id: candidate.verified.component_id.clone(),
                             version: candidate.verified.version.clone(),
                             manifest_digest: candidate.verified.manifest_digest.clone(),
                             artifact_digest: candidate.verified.artifact_digest.clone(),
                             restart_group: candidate.verified.restart_group.clone(),
+                            protocol_version: candidate.verified.protocol_version.clone(),
+                            content_digest: candidate.verified.content_digest.clone(),
+                            target_id: candidate
+                                .verified
+                                .protocol_version
+                                .as_ref()
+                                .map(|_| candidate.verified.target_id.clone()),
                             index_json: candidate.index_json,
                             manifest_json: candidate.manifest_json,
                         }],
@@ -867,15 +1052,21 @@ fn stage_update_plan(
         ));
     }
     for component in &plan.components {
-        let verified = github_updates::verify_candidate_bytes(
+        let verified = github_updates::verify_candidate_bytes_for_target(
             catalog,
             &component.index_json,
             &component.manifest_json,
             &component.component_id,
             &plan.channel,
+            component
+                .target_id
+                .as_deref()
+                .unwrap_or("windows-10.0-x86_64-docker-linux"),
         )?;
         if verified.manifest_digest != component.manifest_digest
             || verified.artifact_digest != component.artifact_digest
+            || verified.protocol_version != component.protocol_version
+            || verified.content_digest != component.content_digest
         {
             return Err(format!(
                 "计划 `{plan_id}` 的组件 `{}` 制品摘要不匹配。",
@@ -912,23 +1103,66 @@ fn apply_update_plan(
     if plan.plan_digest != plan_digest || channel.is_some_and(|channel| channel != plan.channel) {
         return Err("apply 请求与本机持久计划 digest/channel 不匹配。".to_string());
     }
-    if plan.phase != "staged" || plan.components.len() != 1 {
-        return Err("apply 只接受一个已经暂存的 Windows Product 组件计划。".to_string());
+    if plan.phase != "staged" {
+        return Err("apply 只接受已经暂存的 Windows 更新计划。".to_string());
+    }
+    let has_workspace_group_member = plan.components.iter().any(|component| {
+        catalog["components"].as_array().is_some_and(|components| {
+            components.iter().any(|entry| {
+                entry["componentId"].as_str() == Some(component.component_id.as_str())
+                    && entry["compatibilityGroup"].as_str().is_some()
+            })
+        })
+    });
+    if has_workspace_group_member {
+        if !plan.components.iter().all(|component| {
+            catalog["components"].as_array().is_some_and(|components| {
+                components.iter().any(|entry| {
+                    entry["componentId"].as_str() == Some(component.component_id.as_str())
+                        && entry["compatibilityGroup"].as_str().is_some()
+                })
+            })
+        }) {
+            return Err("多组件 apply 只接受同一个受信 compatibility group 计划。".to_string());
+        }
+        plan.phase = "applying".to_string();
+        save_stored_plan(app_dir, &plan)?;
+        match apply_compatibility_group(app_dir, catalog, &plan) {
+            Ok(()) => plan.phase = "succeeded".to_string(),
+            Err(error) => {
+                plan.phase = if error.contains("已恢复全部旧组件") {
+                    "rolled_back"
+                } else {
+                    "failed"
+                }
+                .to_string();
+                save_stored_plan(app_dir, &plan)?;
+                return Err(error);
+            }
+        }
+        save_stored_plan(app_dir, &plan)?;
+        return Ok(windows_update_status(app_dir));
     }
     let component = plan.components[0].clone();
     if !component_catalog::WINDOWS_PRODUCT_COMPONENT_IDS.contains(&component.component_id.as_str())
     {
         return Err("此组件不在 Windows Product restart allowlist 中。".to_string());
     }
-    let verified = github_updates::verify_candidate_bytes(
+    let verified = github_updates::verify_candidate_bytes_for_target(
         catalog,
         &component.index_json,
         &component.manifest_json,
         &component.component_id,
         &plan.channel,
+        component
+            .target_id
+            .as_deref()
+            .unwrap_or("windows-10.0-x86_64-docker-linux"),
     )?;
     if verified.manifest_digest != component.manifest_digest
         || verified.artifact_digest != component.artifact_digest
+        || verified.protocol_version != component.protocol_version
+        || verified.content_digest != component.content_digest
     {
         return Err("staged manifest/artifact digest 在 apply 前发生变化。".to_string());
     }
@@ -997,17 +1231,652 @@ fn apply_update_plan(
     Ok(windows_update_status(app_dir))
 }
 
+fn apply_compatibility_group(
+    app_dir: &Path,
+    catalog: &serde_json::Value,
+    plan: &StoredPlan,
+) -> Result<(), String> {
+    let group_ids = plan
+        .components
+        .iter()
+        .filter_map(|component| {
+            catalog["components"]
+                .as_array()?
+                .iter()
+                .find(|entry| entry["componentId"].as_str() == Some(&component.component_id))?
+                ["compatibilityGroup"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>();
+    if group_ids.len() != 1 || plan.components.is_empty() {
+        return Err("compatibility group 计划缺少唯一的组身份。".to_string());
+    }
+    let group_id = group_ids.iter().next().expect("one group checked");
+    let group = catalog["compatibilityGroups"]
+        .as_array()
+        .and_then(|groups| {
+            groups
+                .iter()
+                .find(|group| group["groupId"].as_str() == Some(group_id))
+        })
+        .ok_or_else(|| format!("受信 catalog 缺少 compatibility group `{group_id}`。"))?;
+    let required = group["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|member| member["requiredForAdoption"].as_bool() == Some(true))
+        .filter_map(|member| member["componentId"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let planned = plan
+        .components
+        .iter()
+        .map(|component| component.component_id.clone())
+        .collect::<BTreeSet<_>>();
+    let installed_state = read_installed_workspace_group_state(app_dir)?;
+    let established = match installed_state.as_ref() {
+        Some(state) => {
+            if !installed_workspace_group_matches(app_dir, catalog, group_id, state)? {
+                return Err("已记录的 Workspace compatibility state 与运行容器/digest/health 不匹配；拒绝更新或覆盖混合运行态。".to_string());
+            }
+            true
+        }
+        None => {
+            if windows_runtime::workspace_services()?
+                .iter()
+                .any(|service| runtime_component_present(&service.component_id))
+            {
+                return Err(
+                    "发现没有受信 adoption state 的已存在 Workspace 容器；拒绝覆盖未纳管旧安装。"
+                        .to_string(),
+                );
+            }
+            false
+        }
+    };
+    if plan.components.len() == 1 {
+        if !established {
+            return Err("未确认当前 Windows runtime 已完整迁移到 compatibility group；必须先执行完整required组迁移。".to_string());
+        }
+        let state = installed_state.as_ref().expect("established state exists");
+        let candidate_compatibility: serde_json::Value =
+            serde_json::from_str(&plan.components[0].manifest_json)
+                .map_err(|error| format!("group candidate manifest JSON 无效: {error}"))?;
+        if !manifest_compatibility_matches_state(&candidate_compatibility, state) {
+            return Err(
+                "单组件候选与已安装 compatibility group contract pins 不一致；拒绝局部更新。"
+                    .to_string(),
+            );
+        }
+    } else if required.is_empty() || !required.is_subset(&planned) {
+        return Err(
+            "首次迁移的 compatibility group 必须包含全部 requiredForAdoption 成员。".to_string(),
+        );
+    }
+    if plan.components.len() > 1 && established {
+        return Err(
+            "已迁移的 compatibility group 只允许对保持相同 contract pins 的变更组件单独更新。"
+                .to_string(),
+        );
+    }
+
+    ensure_update_operator()?;
+    validate_windows_runtime_configuration(app_dir)?;
+    let authority_artifact_id = plan.authority_artifact_id.as_deref().ok_or_else(|| {
+        "Workspace group 计划未绑定 Authority data-bundle artifactId。".to_string()
+    })?;
+    let current_authority_artifact_id = selected_workspace_bundle_artifact_id(app_dir, catalog)?;
+    if current_authority_artifact_id != authority_artifact_id {
+        return Err(
+            "Authority active/bootstrap data-bundle 已在用户确认后改变；请重新检查并确认更新计划。"
+                .to_string(),
+        );
+    }
+    let compose_path = app_dir.join(WINDOWS_RUNTIME_COMPOSE_FILE);
+    let previous_compose = fs::read_to_string(&compose_path).map_err(|error| {
+        format!(
+            "缺少安装器管理的 Windows runtime Compose 文件 {}: {error}",
+            compose_path.display()
+        )
+    })?;
+    validate_windows_runtime_compose(&previous_compose)?;
+    let mut candidate_compose = previous_compose.clone();
+    let mut candidate_images = BTreeMap::new();
+    for component in &plan.components {
+        let binding = windows_runtime::service(&component.component_id)?;
+        let verified = github_updates::verify_candidate_bytes_for_target(
+            catalog,
+            &component.index_json,
+            &component.manifest_json,
+            &component.component_id,
+            &plan.channel,
+            component.target_id.as_deref().unwrap_or(WINDOWS_TARGET_ID),
+        )?;
+        if verified.manifest_digest != component.manifest_digest
+            || verified.artifact_digest != component.artifact_digest
+            || verified.content_digest != component.content_digest
+            || verified.protocol_version != component.protocol_version
+        {
+            return Err(format!(
+                "组件 `{}` 的 staged V2 manifest/artifact 已变化。",
+                component.component_id
+            ));
+        }
+        let image = docker_inspect(&[
+            "image".to_string(),
+            "inspect".to_string(),
+            verified.image_reference.clone(),
+        ])
+        .map_err(|error| {
+            format!(
+                "组件 `{}` 的 staged OCI digest 不在本机镜像库: {error}",
+                component.component_id
+            )
+        })?;
+        if !image["RepoDigests"].as_array().is_some_and(|digests| {
+            digests
+                .iter()
+                .any(|digest| digest.as_str() == Some(&verified.image_reference))
+        }) {
+            return Err(format!(
+                "组件 `{}` 的镜像 RepoDigest 不匹配，需重新暂存。",
+                component.component_id
+            ));
+        }
+        candidate_compose = replace_compose_service_image(
+            &candidate_compose,
+            &binding.compose_service,
+            &verified.image_reference,
+        )?;
+        candidate_images.insert(component.component_id.clone(), verified.image_reference);
+    }
+
+    let group_compatibility = plan
+        .components
+        .iter()
+        .find_map(|component| {
+            let manifest: serde_json::Value =
+                serde_json::from_str(&component.manifest_json).ok()?;
+            manifest.get("compatibility").cloned()
+        })
+        .ok_or_else(|| "compatibility group manifest 缺少 compatibility pins。".to_string())?;
+    if plan.components.iter().any(|component| {
+        serde_json::from_str::<serde_json::Value>(&component.manifest_json)
+            .ok()
+            .and_then(|manifest| manifest.get("compatibility").cloned())
+            .as_ref()
+            != Some(&group_compatibility)
+    }) {
+        return Err("group plan 中的 compatibility pins 不完全相同。".to_string());
+    }
+
+    let mut previous_images = BTreeMap::new();
+    for component in &plan.components {
+        let binding = windows_runtime::service(&component.component_id)?;
+        match docker_inspect(&[
+            "container".to_string(),
+            "inspect".to_string(),
+            binding.container_name.clone(),
+        ]) {
+            Ok(container) => {
+                let image_id = container["Image"].as_str().ok_or_else(|| {
+                    format!("旧容器 `{}` 没有 Docker image ID。", binding.container_name)
+                })?;
+                let configured_image =
+                    compose_service_image(&previous_compose, &binding.compose_service)?;
+                let container_image = container["Config"]["Image"].as_str().unwrap_or_default();
+                let immutable =
+                    immutable_repo_digest(image_id, &configured_image, container_image)?;
+                previous_images.insert(component.component_id.clone(), Some(immutable));
+            }
+            Err(_) => {
+                previous_images.insert(component.component_id.clone(), None);
+            }
+        }
+    }
+
+    let component_artifact_digests = plan
+        .components
+        .iter()
+        .map(|component| {
+            (
+                component.component_id.clone(),
+                component.artifact_digest.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let readiness = maintenance::get_workspace_group_readiness(app_dir).map_err(|error| {
+        format!("Product task gate 不可用，拒绝更新 Workspace runtime group: {error}")
+    })?;
+    if readiness.contract_gate()["state"].as_str() != Some("idle") {
+        return Err("Product task gate 非 idle；不会取消或排空任务。".to_string());
+    }
+    let request_id = maintenance::new_request_id("begin-workspace-group");
+    let expected_gate_generation = readiness
+        .gate_generation
+        .ok_or_else(|| "task gate 缺少 gate_generation。".to_string())?;
+    let expected_catalog_generation = readiness
+        .install_catalog_generation
+        .ok_or_else(|| "task gate 缺少 install_catalog_generation。".to_string())?;
+    let maintenance_journal = ServiceUpdateJournal {
+        schema_version: 1,
+        service_id: group_id.clone(),
+        previous_image: "workspace-runtime-group".to_string(),
+        candidate_image: "workspace-runtime-group".to_string(),
+        plan_id: Some(plan.plan_id.clone()),
+        plan_digest: Some(plan.plan_digest.clone()),
+        component_artifact_digests,
+        maintenance_token: None,
+        maintenance_request_id: Some(request_id.clone()),
+        maintenance_end_request_id: None,
+        expected_gate_generation: Some(expected_gate_generation),
+        expected_catalog_generation: Some(expected_catalog_generation),
+        phase: Some("maintenance_pending".to_string()),
+        user_confirmed_restart: true,
+    };
+    let mut candidate_group_state =
+        installed_state
+            .clone()
+            .unwrap_or_else(|| InstalledWorkspaceGroupState {
+                schema_version: 1,
+                group_id: group_id.clone(),
+                authority_artifact_id: plan.authority_artifact_id.clone().unwrap_or_default(),
+                contract_api_version: group_compatibility["contractApiVersion"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                wire_api_version: group_compatibility["wireApiVersion"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                contract_lock: group_compatibility["contractLock"].clone(),
+                component_digests: BTreeMap::new(),
+            });
+    candidate_group_state.group_id = group_id.clone();
+    candidate_group_state.contract_api_version = group_compatibility["contractApiVersion"]
+        .as_str()
+        .ok_or_else(|| "compatibility pins 缺少 contractApiVersion。".to_string())?
+        .to_string();
+    candidate_group_state.wire_api_version = group_compatibility["wireApiVersion"]
+        .as_str()
+        .ok_or_else(|| "compatibility pins 缺少 wireApiVersion。".to_string())?
+        .to_string();
+    candidate_group_state.contract_lock = group_compatibility["contractLock"].clone();
+    for component in &plan.components {
+        candidate_group_state.component_digests.insert(
+            component.component_id.clone(),
+            component.artifact_digest.clone(),
+        );
+    }
+    let journal_path = windows_runtime_journal_path(app_dir);
+    let mut journal = WindowsRuntimeUpdateJournal {
+        schema_version: 1,
+        plan_id: plan.plan_id.clone(),
+        plan_digest: plan.plan_digest.clone(),
+        authority_artifact_id: plan.authority_artifact_id.clone().ok_or_else(|| {
+            "Workspace group 计划缺少 Authority data-bundle identity。".to_string()
+        })?,
+        phase: "maintenance_pending".to_string(),
+        previous_compose: previous_compose.clone(),
+        candidate_compose,
+        previous_images,
+        candidate_images,
+        previous_group_state: installed_state.clone(),
+        candidate_group_state,
+        maintenance: maintenance_journal,
+    };
+    write_json_atomically(&journal_path, &journal)
+        .map_err(|error| format!("无法持久化 group 回滚计划，任何容器未修改: {error}"))?;
+    let token = maintenance::begin_workspace_group_maintenance(
+        &readiness,
+        &request_id,
+        &plan.plan_id,
+        &plan.plan_digest,
+        &journal.maintenance.component_artifact_digests,
+        true,
+    )?;
+    journal.maintenance.maintenance_token = Some(token.clone());
+    journal.phase = "applying".to_string();
+    journal.maintenance.phase = Some("applying".to_string());
+    write_json_atomically(&journal_path, &journal).map_err(|error| {
+        format!("group task fence 已建立但 journal 更新失败，恢复记录保留: {error}")
+    })?;
+
+    if let Err(error) = atomic_write(&compose_path, journal.candidate_compose.as_bytes()) {
+        return rollback_windows_runtime_group(
+            app_dir,
+            &compose_path,
+            &journal_path,
+            &mut journal,
+            &token,
+            &format!("无法写入 candidate Compose: {error}"),
+        );
+    }
+    let services = plan
+        .components
+        .iter()
+        .filter_map(|component| {
+            windows_runtime::service(&component.component_id)
+                .ok()
+                .map(|service| service.compose_service)
+        })
+        .collect::<Vec<_>>();
+    let update_result = run_compose_services(app_dir, &services).and_then(|()| {
+        for component in &plan.components {
+            let service = windows_runtime::service(&component.component_id)?;
+            wait_for_container_health(&service.container_name, Duration::from_secs(120))?;
+            verify_runtime_container_digest(
+                catalog,
+                &component.component_id,
+                &component.artifact_digest,
+            )?;
+        }
+        let status = read_authority_admin_status()?;
+        validate_authority_bundle_status(catalog, &status, Some(&journal.authority_artifact_id))?;
+        Ok(())
+    });
+    match update_result {
+        Ok(()) => {
+            journal.phase = "candidate_healthy".to_string();
+            journal.maintenance.phase = Some("candidate_healthy".to_string());
+            write_json_atomically(&journal_path, &journal).map_err(|error| {
+                format!("新组健康但无法记录journal状态，task fence保持活动: {error}")
+            })?;
+            write_json_atomically(
+                &installed_workspace_group_state_path(app_dir),
+                &journal.candidate_group_state,
+            )
+            .map_err(|error| {
+                format!("组容器已健康但无法持久化 compatibility adoption state: {error}")
+            })?;
+            journal.phase = "ending_success".to_string();
+            journal.maintenance.phase = Some("ending_success".to_string());
+            write_json_atomically(&journal_path, &journal).map_err(|error| {
+                format!("adoption state 已写入但无法记录 End 阶段，task fence保持活动: {error}")
+            })?;
+            end_windows_group_maintenance(app_dir, &mut journal, "SUCCESS", true)?;
+            journal.phase = "completed".to_string();
+            journal.maintenance.phase = Some("completed".to_string());
+            write_json_atomically(&journal_path, &journal)
+                .map_err(|error| format!("group 更新成功但完成阶段无法落盘: {error}"))?;
+            fs::remove_file(&journal_path)
+                .map_err(|error| format!("group 更新成功但 journal 无法清除: {error}"))?;
+            Ok(())
+        }
+        Err(error) => rollback_windows_runtime_group(
+            app_dir,
+            &compose_path,
+            &journal_path,
+            &mut journal,
+            &token,
+            &error,
+        ),
+    }
+}
+
+fn rollback_windows_runtime_group(
+    app_dir: &Path,
+    compose_path: &Path,
+    journal_path: &Path,
+    journal: &mut WindowsRuntimeUpdateJournal,
+    token: &str,
+    cause: &str,
+) -> Result<(), String> {
+    if journal.maintenance.maintenance_token.as_deref() != Some(token) {
+        return Err("rollback token 与持久 group journal 不匹配；拒绝恢复。".to_string());
+    }
+    journal.phase = "rolling_back".to_string();
+    journal.maintenance.phase = Some("rolling_back".to_string());
+    write_json_atomically(journal_path, journal)
+        .map_err(|error| format!("更新失败且回滚阶段无法落盘，task fence 保持活动: {error}"))?;
+    atomic_write(compose_path, journal.previous_compose.as_bytes())?;
+    let mut restore_services = Vec::new();
+    let mut remove_services = Vec::new();
+    for (component_id, previous_image) in &journal.previous_images {
+        let binding = windows_runtime::service(component_id)?;
+        if let Some(previous_image) = previous_image {
+            let configured =
+                compose_service_image(&journal.previous_compose, &binding.compose_service)?;
+            if configured != *previous_image {
+                let compose =
+                    fs::read_to_string(compose_path).map_err(|error| error.to_string())?;
+                let restored = replace_compose_service_image(
+                    &compose,
+                    &binding.compose_service,
+                    previous_image,
+                )?;
+                atomic_write(compose_path, restored.as_bytes())?;
+            }
+            restore_services.push(binding.compose_service);
+        } else {
+            remove_services.push(binding.compose_service);
+        }
+    }
+    if journal
+        .previous_images
+        .get("cy-workspace-authority-host")
+        .is_some_and(Option::is_some)
+    {
+        let catalog = component_catalog::trusted_catalog()?;
+        let status = read_authority_admin_status()?;
+        validate_authority_bundle_status(&catalog, &status, Some(&journal.authority_artifact_id))?;
+    }
+    run_compose_services(app_dir, &restore_services)?;
+    if !remove_services.is_empty() {
+        run_compose_rm(app_dir, &remove_services)?;
+    }
+    for (component_id, previous_image) in &journal.previous_images {
+        let binding = windows_runtime::service(component_id)?;
+        if let Some(expected) = previous_image {
+            wait_for_container_health(&binding.container_name, Duration::from_secs(120))?;
+            let catalog = component_catalog::trusted_catalog()?;
+            verify_runtime_container_image_reference(&catalog, component_id, expected)?;
+        } else if runtime_component_present(component_id) {
+            return Err(format!(
+                "回滚后新安装容器 `{}` 仍存在。",
+                binding.container_name
+            ));
+        }
+    }
+    match journal.previous_group_state.as_ref() {
+        Some(state) => write_json_atomically(&installed_workspace_group_state_path(app_dir), state)
+            .map_err(|error| {
+                format!("旧容器已健康但恢复 compatibility state 失败，task fence保持活动: {error}")
+            })?,
+        None => match fs::remove_file(installed_workspace_group_state_path(app_dir)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "首次迁移回滚后无法清除 candidate compatibility state: {error}"
+                ))
+            }
+        },
+    }
+    journal.phase = "rolled_back".to_string();
+    journal.maintenance.phase = Some("rollback_healthy".to_string());
+    write_json_atomically(journal_path, journal).map_err(|error| {
+        format!("旧 group 已恢复但 journal 更新失败，task fence保持活动: {error}")
+    })?;
+    end_windows_group_maintenance(app_dir, journal, "ROLLED_BACK", true)?;
+    fs::remove_file(journal_path)
+        .map_err(|error| format!("旧 group 已恢复但清除 journal 失败: {error}"))?;
+    Err(format!("candidate compatibility group 更新失败；已恢复全部旧组件到原不可变镜像并通过健康检查。原始错误: {cause}"))
+}
+
+fn end_windows_group_maintenance(
+    app_dir: &Path,
+    journal: &mut WindowsRuntimeUpdateJournal,
+    outcome: &str,
+    healthy: bool,
+) -> Result<(), String> {
+    let request_id = journal
+        .maintenance
+        .maintenance_request_id
+        .as_deref()
+        .ok_or_else(|| "group journal 缺少 maintenance request ID。".to_string())?;
+    if journal.maintenance.maintenance_end_request_id.is_none() {
+        journal.maintenance.maintenance_end_request_id =
+            Some(derived_maintenance_end_request_id(request_id));
+    }
+    let end_id = journal
+        .maintenance
+        .maintenance_end_request_id
+        .as_deref()
+        .ok_or_else(|| "group journal 缺少 End request ID。".to_string())?;
+    write_json_atomically(&windows_runtime_journal_path(app_dir), journal)
+        .map_err(|error| format!("无法持久化 EndMaintenance request ID: {error}"))?;
+    maintenance::end_product_maintenance(
+        journal
+            .maintenance
+            .maintenance_token
+            .as_deref()
+            .ok_or_else(|| "group journal 缺少 maintenance token。".to_string())?,
+        request_id,
+        end_id,
+        outcome,
+        healthy,
+    )
+}
+
+fn run_compose_services(app_dir: &Path, services: &[String]) -> Result<(), String> {
+    if services.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec![
+        "compose".to_string(),
+        "--env-file".to_string(),
+        app_dir
+            .join(WINDOWS_RUNTIME_ENV_FILE)
+            .to_string_lossy()
+            .into_owned(),
+        "-f".to_string(),
+        app_dir
+            .join("docker-compose.yml")
+            .to_string_lossy()
+            .into_owned(),
+        "-f".to_string(),
+        app_dir
+            .join(WINDOWS_RUNTIME_COMPOSE_FILE)
+            .to_string_lossy()
+            .into_owned(),
+        "up".to_string(),
+        "-d".to_string(),
+        "--no-build".to_string(),
+        "--no-deps".to_string(),
+        "--force-recreate".to_string(),
+    ];
+    args.extend(services.iter().cloned());
+    run_docker_status(
+        &args,
+        "以一个 Compose 操作更新完整 Workspace compatibility group",
+    )
+}
+
+fn run_compose_rm(app_dir: &Path, services: &[String]) -> Result<(), String> {
+    if services.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec![
+        "compose".to_string(),
+        "--env-file".to_string(),
+        app_dir
+            .join(WINDOWS_RUNTIME_ENV_FILE)
+            .to_string_lossy()
+            .into_owned(),
+        "-f".to_string(),
+        app_dir
+            .join("docker-compose.yml")
+            .to_string_lossy()
+            .into_owned(),
+        "-f".to_string(),
+        app_dir
+            .join(WINDOWS_RUNTIME_COMPOSE_FILE)
+            .to_string_lossy()
+            .into_owned(),
+        "rm".to_string(),
+        "-sf".to_string(),
+    ];
+    args.extend(services.iter().cloned());
+    run_docker_status(&args, "移除本次首次安装失败产生的 Workspace 容器")
+}
+
+fn verify_runtime_container_digest(
+    catalog: &serde_json::Value,
+    component_id: &str,
+    digest: &str,
+) -> Result<(), String> {
+    verify_runtime_container_image_reference(
+        catalog,
+        component_id,
+        &format!(
+            "{}@{digest}",
+            catalog["components"]
+                .as_array()
+                .and_then(|components| components
+                    .iter()
+                    .find(|entry| entry["componentId"].as_str() == Some(component_id)))
+                .and_then(|entry| entry["ociImageRepository"].as_str())
+                .ok_or_else(|| format!("catalog `{component_id}` 缺少 OCI repository"))?
+        ),
+    )
+}
+
+fn verify_runtime_container_image_reference(
+    catalog: &serde_json::Value,
+    component_id: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let binding = windows_runtime::service(component_id)?;
+    let container = docker_inspect(&[
+        "container".into(),
+        "inspect".into(),
+        binding.container_name.clone(),
+    ])?;
+    let expected_digest = expected
+        .rsplit_once('@')
+        .map(|(_, digest)| digest)
+        .ok_or_else(|| "expected image 必须固定 digest".to_string())?
+        .to_string();
+    let actual = runtime_component_digest(catalog, component_id).ok_or_else(|| {
+        format!(
+            "无法从运行容器 `{}` 验证 publisher RepoDigest。",
+            binding.container_name
+        )
+    })?;
+    if actual != expected_digest {
+        return Err(format!(
+            "容器 `{}` 实际 digest `{actual}` 与预期不匹配。",
+            binding.container_name
+        ));
+    }
+    let labels = &container["Config"]["Labels"];
+    if labels["io.cyrene.component.id"].as_str() != Some(component_id)
+        || labels["io.cyrene.component.target-id"].as_str() != Some(WINDOWS_TARGET_ID)
+    {
+        return Err(format!(
+            "容器 `{}` OCI component/target labels 不匹配。",
+            binding.container_name
+        ));
+    }
+    Ok(())
+}
+
 fn stored_plan_contract(plan: &StoredPlan) -> serde_json::Value {
     serde_json::json!({
         "planId": plan.plan_id,
         "planDigest": plan.plan_digest,
         "channel": plan.channel,
         "phase": plan.phase,
+        "authorityArtifactId": plan.authority_artifact_id,
         "components": plan.components.iter().map(|component| serde_json::json!({
             "componentId": component.component_id,
             "version": component.version,
             "manifestDigest": component.manifest_digest,
             "artifactDigest": component.artifact_digest,
+            "protocolVersion": component.protocol_version,
+            "contentDigest": component.content_digest,
+            "targetId": component.target_id,
             "restartGroup": component.restart_group,
         })).collect::<Vec<_>>(),
     })
@@ -1091,7 +1960,8 @@ fn validate_stored_plan_metadata(
     plan: &StoredPlan,
 ) -> Result<(), String> {
     if plan.schema_version != 1
-        || plan.components.len() != 1
+        || plan.components.is_empty()
+        || plan.components.len() > 100
         || !matches!(
             plan.phase.as_str(),
             "checked" | "staged" | "applying" | "succeeded" | "rolled_back" | "failed"
@@ -1108,10 +1978,31 @@ fn validate_stored_plan_metadata(
             manifest_digest: component.manifest_digest.clone(),
             artifact_digest: component.artifact_digest.clone(),
             restart_group: component.restart_group.clone(),
+            protocol_version: component.protocol_version.clone(),
+            content_digest: component.content_digest.clone(),
+            target_id: component.target_id.clone(),
         })
         .collect::<Vec<_>>();
-    let (plan_id, plan_digest) =
-        release_update::plan_id_and_digest(&plan.channel, &component_digests)?;
+    let has_group_member = plan.components.iter().any(|component| {
+        catalog["components"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|entry| {
+                entry["componentId"].as_str() == Some(component.component_id.as_str())
+                    && entry["compatibilityGroup"].as_str().is_some()
+            })
+    });
+    if has_group_member != plan.authority_artifact_id.is_some() {
+        return Err(
+            "兼容组计划必须精确绑定 Authority 当前或初始 data-bundle artifactId。".to_string(),
+        );
+    }
+    let (plan_id, plan_digest) = release_update::plan_id_and_digest_with_authority_artifact(
+        &plan.channel,
+        &component_digests,
+        plan.authority_artifact_id.as_deref(),
+    )?;
     if plan_id != plan.plan_id || plan_digest != plan.plan_digest {
         return Err("本机计划 planId/planDigest 与组件集合不匹配。".to_string());
     }
@@ -1120,17 +2011,25 @@ fn validate_stored_plan_metadata(
             .map_err(|error| format!("本机 release index JSON 无效: {error}"))?;
         let manifest: serde_json::Value = serde_json::from_str(&component.manifest_json)
             .map_err(|error| format!("本机 manifest JSON 无效: {error}"))?;
-        let checked = release_update::validate_windows_oci_manifest(
+        let checked = release_update::validate_windows_oci_manifest_for_target(
             &index,
             &manifest,
             catalog,
             &component.component_id,
             &plan.channel,
+            component
+                .target_id
+                .as_deref()
+                .unwrap_or("windows-10.0-x86_64-docker-linux"),
         )?;
         if checked.manifest_digest != component.manifest_digest
             || checked.artifact_digest != component.artifact_digest
             || checked.version != component.version
             || checked.restart_group != component.restart_group
+            || checked.protocol_version != component.protocol_version
+            || checked.content_digest != component.content_digest
+            || (component.target_id.is_some()
+                && checked.target_id != component.target_id.as_deref().unwrap_or_default())
         {
             return Err("本机计划组件字段与其 immutable manifest 不匹配。".to_string());
         }
@@ -1161,15 +2060,6 @@ fn is_product_installed(app_dir: &Path, tool_id: &str) -> bool {
     compose_service_image(&compose, &format!("cyrene-{tool_id}")).is_ok()
 }
 
-fn docker_container_present(component_id: &str) -> bool {
-    docker_inspect(&[
-        "container".to_string(),
-        "inspect".to_string(),
-        component_id.to_string(),
-    ])
-    .is_ok()
-}
-
 fn docker_component_digest(component_id: &str) -> Option<String> {
     let container = docker_inspect(&[
         "container".to_string(),
@@ -1197,20 +2087,65 @@ fn docker_component_digest(component_id: &str) -> Option<String> {
         })
 }
 
-fn docker_component_version(component_id: &str) -> Option<String> {
+fn runtime_component_present(component_id: &str) -> bool {
+    let Ok(binding) = windows_runtime::service(component_id) else {
+        return false;
+    };
+    docker_inspect(&[
+        "container".to_string(),
+        "inspect".to_string(),
+        binding.container_name,
+    ])
+    .is_ok()
+}
+
+fn runtime_component_version(component_id: &str) -> Option<String> {
+    let binding = windows_runtime::service(component_id).ok()?;
     let container = docker_inspect(&[
         "container".to_string(),
         "inspect".to_string(),
-        component_id.to_string(),
+        binding.container_name,
     ])
     .ok()?;
-    let labels = container.get("Config")?.get("Labels")?;
-    let version_label = if component_id == component_catalog::WINDOWS_MAINTENANCE_COMPONENT_ID {
-        "io.cyrene.component.version"
-    } else {
-        "org.opencontainers.image.version"
-    };
-    labels.get(version_label)?.as_str().map(str::to_string)
+    container
+        .get("Config")?
+        .get("Labels")?
+        .get("org.opencontainers.image.version")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn runtime_component_digest(catalog: &serde_json::Value, component_id: &str) -> Option<String> {
+    let binding = windows_runtime::service(component_id).ok()?;
+    let container = docker_inspect(&[
+        "container".to_string(),
+        "inspect".to_string(),
+        binding.container_name,
+    ])
+    .ok()?;
+    let image_id = container.get("Image")?.as_str()?;
+    let image = docker_inspect(&[
+        "image".to_string(),
+        "inspect".to_string(),
+        image_id.to_string(),
+    ])
+    .ok()?;
+    let expected_repository = catalog["components"]
+        .as_array()?
+        .iter()
+        .find(|component| component["componentId"].as_str() == Some(component_id))?
+        .get("ociImageRepository")?
+        .as_str()?;
+    image
+        .get("RepoDigests")?
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find_map(|reference| {
+            let (repository, digest) = reference.rsplit_once('@')?;
+            (repository == expected_repository && release_update::is_digest(digest))
+                .then(|| digest.to_string())
+        })
 }
 
 fn runtime_broker_version_range(manifest: &serde_json::Value) -> Result<&str, String> {
@@ -1257,7 +2192,7 @@ fn version_satisfies_range(version: &str, range: &str) -> bool {
     };
     match range {
         "=0.1.0" => version == (0, 1, 0),
-        ">=0.1.0, <0.2.0" => version >= (0, 1, 0) && version < (0, 2, 0),
+        ">=0.1.0, <0.2.0" => ((0, 1, 0)..(0, 2, 0)).contains(&version),
         _ => false,
     }
 }
@@ -1455,6 +2390,8 @@ struct StoredPlan {
     plan_digest: String,
     channel: String,
     phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authority_artifact_id: Option<String>,
     components: Vec<StoredPlanComponent>,
 }
 
@@ -1466,8 +2403,43 @@ struct StoredPlanComponent {
     manifest_digest: String,
     artifact_digest: String,
     restart_group: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_id: Option<String>,
     index_json: String,
     manifest_json: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WindowsRuntimeUpdateJournal {
+    schema_version: u32,
+    plan_id: String,
+    plan_digest: String,
+    authority_artifact_id: String,
+    phase: String,
+    previous_compose: String,
+    candidate_compose: String,
+    previous_images: BTreeMap<String, Option<String>>,
+    candidate_images: BTreeMap<String, String>,
+    previous_group_state: Option<InstalledWorkspaceGroupState>,
+    candidate_group_state: InstalledWorkspaceGroupState,
+    maintenance: ServiceUpdateJournal,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InstalledWorkspaceGroupState {
+    schema_version: u32,
+    group_id: String,
+    authority_artifact_id: String,
+    contract_api_version: String,
+    wire_api_version: String,
+    contract_lock: serde_json::Value,
+    component_digests: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1482,7 +2454,7 @@ struct ServicePlatformManifest {
     arch: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ServiceUpdateJournal {
     schema_version: u32,
@@ -1676,7 +2648,7 @@ fn apply_product_image(
         channel,
     )?;
 
-    println!("目标服务: {} ({})", tool.id, format!("cyrene-{}", tool.id));
+    println!("目标服务: {} (cyrene-{})", tool.id, tool.id);
     println!("候选版本: {version}");
     println!("候选镜像: {candidate_image}");
     println!("当前镜像回滚点: {previous_image}");
@@ -1895,7 +2867,7 @@ fn verify_service_image_attestation(
                 "verify",
                 &subject,
                 "--repo",
-                &repository,
+                repository,
                 "--signer-workflow",
                 &workflow,
                 "--source-ref",
@@ -2271,6 +3243,653 @@ fn update_journal_path(app_dir: &Path) -> PathBuf {
     app_dir.join("service-update-in-progress.json")
 }
 
+fn windows_runtime_journal_path(app_dir: &Path) -> PathBuf {
+    app_dir
+        .join("updates")
+        .join("windows-runtime-update-journal.json")
+}
+
+fn installed_workspace_group_state_path(app_dir: &Path) -> PathBuf {
+    app_dir
+        .join("updates")
+        .join("installed-workspace-group-state.json")
+}
+
+fn read_installed_workspace_group_state(
+    app_dir: &Path,
+) -> Result<Option<InstalledWorkspaceGroupState>, String> {
+    let path = installed_workspace_group_state_path(app_dir);
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let state: InstalledWorkspaceGroupState = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("本机 compatibility adoption state 无效: {error}"))?;
+            if state.schema_version != 1 || state.component_digests.is_empty() {
+                return Err("本机 compatibility adoption state schema/pins 无效。".to_string());
+            }
+            for digest in state.component_digests.values() {
+                if !maintenance::is_contract_digest(digest) {
+                    return Err("本机 compatibility adoption state 含无效组件 digest。".to_string());
+                }
+            }
+            Ok(Some(state))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "无法读取本机 compatibility adoption state: {error}"
+        )),
+    }
+}
+
+fn installed_workspace_group_matches(
+    app_dir: &Path,
+    catalog: &serde_json::Value,
+    group_id: &str,
+    state: &InstalledWorkspaceGroupState,
+) -> Result<bool, String> {
+    if state.group_id != group_id {
+        return Ok(false);
+    }
+    if !release_update::is_digest(&state.authority_artifact_id)
+        || selected_workspace_bundle_artifact_id(app_dir, catalog)? != state.authority_artifact_id
+    {
+        return Ok(false);
+    }
+    let group = catalog["compatibilityGroups"]
+        .as_array()
+        .and_then(|groups| {
+            groups
+                .iter()
+                .find(|group| group["groupId"].as_str() == Some(group_id))
+        })
+        .ok_or_else(|| format!("catalog 缺少 compatibility group `{group_id}`。"))?;
+    if state.schema_version != 1
+        || state.contract_api_version != group["contractApiVersion"].as_str().unwrap_or_default()
+        || state.wire_api_version != group["wireApiVersion"].as_str().unwrap_or_default()
+        || state.contract_lock != group["contractLock"]
+    {
+        return Ok(false);
+    }
+    let required = group["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|member| member["requiredForAdoption"].as_bool() == Some(true))
+        .filter_map(|member| member["componentId"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let recorded = state
+        .component_digests
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if required != recorded {
+        return Ok(false);
+    }
+    for component_id in required {
+        let Some(expected) = state.component_digests.get(&component_id) else {
+            return Ok(false);
+        };
+        if !release_update::is_digest(expected)
+            || runtime_component_digest(catalog, &component_id).as_deref()
+                != Some(expected.as_str())
+        {
+            return Ok(false);
+        }
+        let binding = windows_runtime::service(&component_id)?;
+        let container = docker_inspect(&[
+            "container".into(),
+            "inspect".into(),
+            binding.container_name.clone(),
+        ]);
+        if !container.as_ref().is_ok_and(|container| {
+            container["State"]["Health"]["Status"].as_str() == Some("healthy")
+                && container["Config"]["Labels"]["io.cyrene.component.id"].as_str()
+                    == Some(component_id.as_str())
+                && container["Config"]["Labels"]["io.cyrene.component.target-id"].as_str()
+                    == Some(WINDOWS_TARGET_ID)
+        }) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn manifest_compatibility_matches_state(
+    manifest: &serde_json::Value,
+    state: &InstalledWorkspaceGroupState,
+) -> bool {
+    let compatibility = &manifest["compatibility"];
+    compatibility["groupId"].as_str() == Some(&state.group_id)
+        && compatibility["contractApiVersion"].as_str() == Some(&state.contract_api_version)
+        && compatibility["wireApiVersion"].as_str() == Some(&state.wire_api_version)
+        && compatibility["contractLock"] == state.contract_lock
+}
+
+fn validate_windows_runtime_compose(compose: &str) -> Result<(), String> {
+    let services = windows_runtime::workspace_services()?;
+    let mut expected = WINDOWS_RUNTIME_COMPOSE_TEMPLATE.to_string();
+    for service in services {
+        let image = compose_service_image(compose, &service.compose_service)?;
+        if !image.contains("__CYRENE_IMMUTABLE_IMAGE_") {
+            let (repository, digest) = image.rsplit_once('@').ok_or_else(|| {
+                format!(
+                    "Compose service `{}` 镜像必须 pin sha256 digest。",
+                    service.compose_service
+                )
+            })?;
+            if repository.is_empty() || !release_update::is_digest(digest) {
+                return Err(format!(
+                    "Compose service `{}` 镜像不是不可变 OCI digest。",
+                    service.compose_service
+                ));
+            }
+        }
+        let token = format!("__CYRENE_IMMUTABLE_IMAGE_{}__", service.component_id);
+        expected = expected.replace(&token, &image);
+    }
+    if compose != expected {
+        return Err(
+            "Windows runtime Compose 文件不是安装器模板的精确版本；拒绝运行被改写的服务定义。"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_windows_runtime_configuration(app_dir: &Path) -> Result<(), String> {
+    let required: [(&str, &[&str]); 5] = [
+        (
+            "workspace-authority/authority.env",
+            &[
+                "CYRENE_AUTHORITY_AAD_TENANT_ID",
+                "CYRENE_AUTHORITY_AAD_AUDIENCE",
+                "CYRENE_AUTHORITY_SIGNING_KEY_ID",
+            ],
+        ),
+        (
+            "workspace-relay/relay.env",
+            &[
+                "CYRENE_RELAY_LISTEN_ADDR",
+                "CYRENE_RELAY_TLS_CA",
+                "CYRENE_RELAY_TLS_CERT",
+                "CYRENE_RELAY_TLS_KEY",
+                "CYRENE_RELAY_AUTHORITY_BRIDGE_SANS",
+                "CYRENE_RELAY_CONNECTOR_SANS",
+            ],
+        ),
+        (
+            "workspace-frontend-bridge/bridge.env",
+            &[
+                "CYRENE_BRIDGE_ALLOWED_UID",
+                "CYRENE_BRIDGE_RELAY_ENDPOINT",
+                "CYRENE_BRIDGE_RELAY_CA",
+                "CYRENE_BRIDGE_RELAY_SERVER_NAME",
+                "CYRENE_BRIDGE_RELAY_CLIENT_CERT",
+                "CYRENE_BRIDGE_RELAY_CLIENT_KEY",
+                "CYRENE_BRIDGE_AUTHORITY_UPSTREAM",
+            ],
+        ),
+        (
+            "workspace-connector/connector.env",
+            &[
+                "CYRENE_WORKSPACE_ID",
+                "CYRENE_CONNECTOR_COMPONENTS",
+                "CYRENE_CONNECTOR_RELAY_ENDPOINT",
+                "CYRENE_CONNECTOR_RELAY_CA",
+                "CYRENE_CONNECTOR_RELAY_SERVER_NAME",
+                "CYRENE_CONNECTOR_RELAY_CLIENT_CERT",
+                "CYRENE_CONNECTOR_RELAY_CLIENT_KEY",
+                "CYRENE_CONNECTOR_AUTHORITY_CA",
+                "CYRENE_CONNECTOR_AUTHORITY_SERVER_NAME",
+                "CYRENE_CONNECTOR_AUTHORITY_CLIENT_CERT",
+                "CYRENE_CONNECTOR_AUTHORITY_CLIENT_KEY",
+            ],
+        ),
+        (
+            "workspace-web-bff/bff.env",
+            &[
+                "CYRENE_WORKSPACE_WEB_BFF_CLIENT_ORIGIN",
+                "CYRENE_WORKSPACE_WEB_BFF_AAD_TENANT_ID",
+                "CYRENE_WORKSPACE_WEB_BFF_AAD_AUDIENCE",
+                "CYRENE_WORKSPACE_DIRECTORY_DATABASE_URL",
+                "CYRENE_WORKSPACE_DEVICE_AUTHORIZATION_DATABASE_URL",
+                "CYRENE_WORKSPACE_DEVICE_REGISTRY_DATABASE_URL",
+                "CYRENE_WORKSPACE_DEVICE_CA_DATABASE_URL",
+                "CYRENE_WORKSPACE_WEBAUTHN_DATABASE_URL",
+                "CYRENE_WORKSPACE_WEBAUTHN_HTTP_SESSION_BINDING_DATABASE_URL",
+                "CYRENE_WORKSPACE_DEVICE_CA_ISSUER_ID",
+                "CYRENE_WORKSPACE_DEVICE_AUTHORIZATION_VERIFICATION_URI",
+                "CYRENE_WORKSPACE_DEVICE_AUTHORIZATION_USER_CODE_KEY_VERSION",
+                "CYRENE_WORKSPACE_DEVICE_CA_SIGNING_KEY_FILE",
+                "CYRENE_WORKSPACE_DEVICE_CA_CERTIFICATE_FILE",
+                "CYRENE_WORKSPACE_WEB_BFF_PRODUCT_CONTRACT_ROOT_V2",
+                "CYRENE_WORKSPACE_WEB_BFF_RELAY_ENDPOINT",
+                "CYRENE_WORKSPACE_WEB_BFF_RELAY_SERVER_NAME",
+                "CYRENE_WORKSPACE_WEB_BFF_HANDOFF_ISSUER",
+                "CYRENE_WORKSPACE_WEB_BFF_HANDOFF_AUDIENCE",
+            ],
+        ),
+    ];
+    let mut missing = Vec::new();
+    let runtime_env_path = app_dir.join(WINDOWS_RUNTIME_ENV_FILE);
+    match fs::read_to_string(&runtime_env_path) {
+        Ok(content) => match parse_env_file(&content) {
+            Ok(values) => {
+                let valid = values.len() == 2
+                    && [
+                        "CYRENE_AUTHORITY_METADATA_GID",
+                        "CYRENE_PRODUCT_BUNDLE_READER_GID",
+                    ]
+                    .into_iter()
+                    .all(|key| {
+                        values
+                            .get(key)
+                            .is_some_and(|value| value.parse::<u32>().is_ok_and(|value| value > 0))
+                    });
+                if !valid {
+                    missing.push(format!(
+                        "{} (必须仅含两个非零 numeric metadata/reader GID)",
+                        runtime_env_path.display()
+                    ));
+                }
+            }
+            Err(error) => missing.push(format!(
+                "{} (env 格式无效: {error})",
+                runtime_env_path.display()
+            )),
+        },
+        Err(_) => missing.push(format!(
+            "{} (缺少 operator GID 映射配置)",
+            runtime_env_path.display()
+        )),
+    }
+    for (relative, keys) in required {
+        let path = app_dir.join("runtime-config").join(relative);
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(_) => {
+                missing.push(format!("{} (缺少 operator env file)", path.display()));
+                continue;
+            }
+        };
+        let values = parse_env_file(&content).map_err(|error| {
+            missing.push(format!("{} (env 格式无效: {error})", path.display()));
+            error
+        });
+        let Ok(values) = values else { continue };
+        for key in keys {
+            if !values
+                .get(*key)
+                .is_some_and(|value| !value.trim().is_empty() && !looks_like_placeholder(value))
+            {
+                missing.push(format!("{}:{key}", path.display()));
+            }
+        }
+    }
+    let required_files = [
+        "workspace-authority/trust.json",
+        "workspace-authority/database-url",
+        "workspace-authority/signing-key",
+        "workspace-authority/tls/server.crt",
+        "workspace-authority/tls/server.key",
+        "workspace-authority/tls/client-ca.crt",
+        "workspace-relay/tls/ca.crt",
+        "workspace-relay/tls/server.crt",
+        "workspace-relay/tls/server.key",
+        "workspace-frontend-bridge/tls/ca.crt",
+        "workspace-frontend-bridge/tls/client.crt",
+        "workspace-frontend-bridge/tls/client.key",
+        "workspace-connector/tls/relay-ca.crt",
+        "workspace-connector/tls/relay-client.crt",
+        "workspace-connector/tls/relay-client.key",
+        "workspace-connector/tls/authority-ca.crt",
+        "workspace-connector/tls/authority-client.crt",
+        "workspace-connector/tls/authority-client.key",
+        "workspace-web-bff/secrets/csrf-mac-key",
+        "workspace-web-bff/secrets/relay-ca.pem",
+        "workspace-web-bff/secrets/relay-client.crt",
+        "workspace-web-bff/secrets/relay-client.key",
+        "workspace-web-bff/secrets/handoff-signing-seed",
+        "workspace-web-bff/secrets/user-code-hmac-key",
+        "workspace-web-bff/secrets/device-ca-signing-key.pem",
+        "workspace-web-bff/secrets/device-ca-cert.pem",
+    ];
+    for relative in required_files {
+        let path = app_dir.join("runtime-config").join(relative);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                missing.push(format!("{} (缺少 operator 配置/secret)", path.display()));
+                continue;
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() == 0 {
+            missing.push(format!(
+                "{} (必须是非 symlink 非空普通文件)",
+                path.display()
+            ));
+        }
+    }
+    if let Err(error) =
+        selected_workspace_bundle_artifact_id(app_dir, &component_catalog::trusted_catalog()?)
+    {
+        missing.push(format!(
+            "Authority data-bundle bootstrap/activation: {error}"
+        ));
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Workspace compatibility group 配置未完成；apply 已拒绝。缺少/无效项: {}",
+            missing.join(", ")
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AuthorityAdminStatus {
+    status: String,
+    active_artifact_id: String,
+    current_generation: u64,
+    highest_generation: u64,
+    activation_epoch: u64,
+    identity: AuthorityBundleIdentity,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AuthorityBundleIdentity {
+    wire_api_version: String,
+    bundle_manifest_sha256: String,
+    policy_sha256: String,
+    content_digest: String,
+    policy_source_commit: String,
+    source_commits: BTreeMap<String, String>,
+    owner_catalog_digests: BTreeMap<String, String>,
+}
+
+fn selected_workspace_bundle_artifact_id(
+    app_dir: &Path,
+    catalog: &serde_json::Value,
+) -> Result<String, String> {
+    let binding = windows_runtime::service("cy-workspace-authority-host")?;
+    let artifact_id = if runtime_component_present(&binding.component_id) {
+        let status = read_authority_admin_status()?;
+        validate_authority_bundle_status(catalog, &status, None)?;
+        status.active_artifact_id
+    } else {
+        let path = app_dir.join("runtime-config/workspace-authority/initial-artifact-id");
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("缺少受保护的 Authority 初始 artifact ID 文件: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 128 {
+            return Err(
+                "Authority initial-artifact-id 必须是非 symlink 的短普通文件。".to_string(),
+            );
+        }
+        let value = fs::read_to_string(&path)
+            .map_err(|error| format!("无法读取 Authority 初始 artifact ID: {error}"))?;
+        let value = value.trim();
+        if !release_update::is_digest(value) {
+            return Err(
+                "Authority initial-artifact-id 必须为 sha256:<64 lowercase hex>。".to_string(),
+            );
+        }
+        value.to_string()
+    };
+    validate_workspace_bundle_artifact_files(app_dir, &artifact_id)?;
+    Ok(artifact_id)
+}
+
+fn validate_workspace_bundle_artifact_files(
+    app_dir: &Path,
+    artifact_id: &str,
+) -> Result<(), String> {
+    let hex = artifact_id
+        .strip_prefix("sha256:")
+        .filter(|hex| {
+            hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| "Authority data-bundle artifactId 格式无效。".to_string())?;
+    let root = app_dir.join("runtime-data/product-bundles");
+    let archives = root.join("archives");
+    let archive = archives.join(format!("sha256-{hex}.tar.zst"));
+    let versions = root.join("versions");
+    let version = versions.join(hex);
+    let metadata_root = root.join("metadata");
+    let metadata_dir = metadata_root.join(hex);
+    for directory in [
+        &root,
+        &archives,
+        &versions,
+        &version,
+        &metadata_root,
+        &metadata_dir,
+    ] {
+        let metadata = fs::symlink_metadata(directory).map_err(|error| {
+            format!(
+                "缺少 Authority data-bundle 目录 {}: {error}",
+                directory.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!(
+                "Authority data-bundle 路径 {} 必须是非 symlink 目录。",
+                directory.display()
+            ));
+        }
+    }
+    let metadata = fs::symlink_metadata(&archive)
+        .map_err(|error| format!("缺少所选 Authority data-bundle archive: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 64 * 1024 * 1024
+    {
+        return Err("Authority data-bundle archive 必须是 64 MiB 内的普通文件。".to_string());
+    }
+    let bytes = fs::read(&archive)
+        .map_err(|error| format!("无法读取所选 Authority data-bundle archive: {error}"))?;
+    let actual = format!("sha256:{}", sha256_hex(&bytes));
+    if actual != artifact_id {
+        return Err(
+            "所选 Authority data-bundle archive 原始字节摘要与 artifactId 不匹配。".to_string(),
+        );
+    }
+    let manifest_path = metadata_dir.join("component-manifest-v2.json");
+    let manifest_metadata = fs::symlink_metadata(&manifest_path)
+        .map_err(|error| format!("缺少 Authority 已验证的 V2 data-bundle manifest: {error}"))?;
+    if manifest_metadata.file_type().is_symlink()
+        || !manifest_metadata.is_file()
+        || manifest_metadata.len() > 2 * 1024 * 1024
+    {
+        return Err("Authority data-bundle manifest 必须是 2 MiB 内的普通文件。".to_string());
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .map_err(|error| format!("无法读取 Authority V2 data-bundle manifest: {error}"))?,
+    )
+    .map_err(|_| "Authority V2 data-bundle manifest JSON 无效。".to_string())?;
+    release_update::verify_self_digest(&manifest, "manifestDigest")?;
+    if manifest["schemaVersion"].as_u64() != Some(2)
+        || manifest["componentId"].as_str() != Some("cyrene-product-contract-bundle")
+        || manifest["artifact"]["sha256"].as_str() != Some(artifact_id)
+        || manifest["contentDigest"].as_str() != Some(artifact_id)
+        || manifest["dataBundle"]["proofPath"].as_str() != Some("data-bundle-proof-v1.json")
+        || !manifest["dataBundle"]["proofSha256"]
+            .as_str()
+            .is_some_and(release_update::is_digest)
+    {
+        return Err(
+            "Authority V2 data-bundle manifest identity/proof pins 与 archive 不匹配。".to_string(),
+        );
+    }
+    let import_path = metadata_dir.join("import-record-v1.json");
+    let import_metadata = fs::symlink_metadata(&import_path)
+        .map_err(|error| format!("缺少 Authority data-bundle import record: {error}"))?;
+    if import_metadata.file_type().is_symlink()
+        || !import_metadata.is_file()
+        || import_metadata.len() > 64 * 1024
+    {
+        return Err("Authority data-bundle import record 必须是 64 KiB 内的普通文件。".to_string());
+    }
+    let import: serde_json::Value = serde_json::from_slice(
+        &fs::read(&import_path)
+            .map_err(|error| format!("无法读取 Authority data-bundle import record: {error}"))?,
+    )
+    .map_err(|_| "Authority data-bundle import record JSON 无效。".to_string())?;
+    if import["schemaVersion"].as_u64() != Some(1)
+        || import["artifactId"].as_str() != Some(artifact_id)
+        || import["manifestDigest"] != manifest["manifestDigest"]
+        || import["componentId"].as_str() != Some("cyrene-product-contract-bundle")
+    {
+        return Err(
+            "Authority data-bundle import record 与已选 artifact/manifest 不匹配。".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn read_authority_admin_status() -> Result<AuthorityAdminStatus, String> {
+    let request = b"{\"action\":\"status\"}\n";
+    let mut child = docker_command()
+        .args([
+            "exec",
+            "-u",
+            "0",
+            "-i",
+            "cyrene-workspace-authority",
+            "/usr/local/bin/cy-workspace-authority-admin",
+            "status",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("无法启动固定 Authority status helper: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "Authority status helper stdin 未打开。".to_string())?
+        .write_all(request)
+        .map_err(|error| format!("无法向 Authority status helper 写入固定请求: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("无法读取 Authority status helper 响应: {error}"))?;
+    if !output.status.success() || output.stdout.len() > 64 * 1024 {
+        return Err("Authority status helper 未成功或响应超过大小限制。".to_string());
+    }
+    let response = output
+        .stdout
+        .strip_suffix(b"\n")
+        .ok_or_else(|| "Authority status helper 必须返回单行 JSON。".to_string())?;
+    serde_json::from_slice(response)
+        .map_err(|_| "Authority status helper 返回的状态 JSON 无效。".to_string())
+}
+
+fn validate_authority_bundle_status(
+    catalog: &serde_json::Value,
+    status: &AuthorityAdminStatus,
+    expected_artifact_id: Option<&str>,
+) -> Result<(), String> {
+    if status.status != "ok"
+        || !release_update::is_digest(&status.active_artifact_id)
+        || expected_artifact_id.is_some_and(|expected| expected != status.active_artifact_id)
+        || status.current_generation == 0
+        || status.highest_generation < status.current_generation
+        || status.activation_epoch != status.current_generation
+    {
+        return Err("Authority active artifact/generation 与受信更新计划不匹配。".to_string());
+    }
+    let trust = catalog
+        .get("dataBundleTrust")
+        .ok_or_else(|| "catalog 缺少受信 dataBundleTrust。".to_string())?;
+    let identity = &status.identity;
+    if identity.wire_api_version != trust["protocolVersion"].as_str().unwrap_or_default()
+        || !release_update::is_digest(&identity.bundle_manifest_sha256)
+        || !release_update::is_digest(&identity.policy_sha256)
+        || identity.content_digest != status.active_artifact_id
+        || !valid_git_commit(&identity.policy_source_commit)
+    {
+        return Err(
+            "Authority 激活 snapshot identity 与 catalog 协议/policy pin 不匹配。".to_string(),
+        );
+    }
+    let expected_owners = trust["owners"]
+        .as_array()
+        .ok_or_else(|| "catalog dataBundleTrust.owners 无效。".to_string())?
+        .iter()
+        .filter_map(|owner| owner["ownerId"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let source_owners = identity
+        .source_commits
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let catalog_owners = identity
+        .owner_catalog_digests
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if source_owners != expected_owners || catalog_owners != expected_owners {
+        return Err(
+            "Authority snapshot owner set 与 catalog 的 dataBundleTrust 不匹配。".to_string(),
+        );
+    }
+    for (owner_id, source_commit) in &identity.source_commits {
+        let catalog_digest = identity
+            .owner_catalog_digests
+            .get(owner_id)
+            .map(String::as_str)
+            .unwrap_or_default();
+        if !valid_git_commit(source_commit) || !release_update::is_digest(catalog_digest) {
+            return Err("Authority snapshot owner source/catalog pin 格式无效。".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn valid_git_commit(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn parse_env_file(content: &str) -> Result<BTreeMap<&str, &str>, String> {
+    let mut values = BTreeMap::new();
+    for (line_number, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("第 {} 行不是 KEY=VALUE。", line_number + 1))?;
+        let key = key.trim();
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(format!("第 {} 行的环境变量名无效。", line_number + 1));
+        }
+        if values.insert(key, value.trim()).is_some() {
+            return Err(format!("第 {} 行重复定义 `{key}`。", line_number + 1));
+        }
+    }
+    Ok(values)
+}
+
+fn looks_like_placeholder(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value.starts_with("replace-")
+        || value.starts_with('<')
+        || value.contains("changeme")
+        || value.contains("example.invalid")
+        || value.contains("placeholder")
+}
+
 fn finish_definitive_begin_refusal(
     app_dir: &Path,
     journal_path: &Path,
@@ -2484,6 +4103,7 @@ fn replace_file_atomically(source: &Path, destination: &Path) -> io::Result<()> 
 }
 
 fn recover_interrupted_update(app_dir: &Path) -> Result<(), String> {
+    recover_interrupted_windows_runtime_group(app_dir)?;
     let journal_path = update_journal_path(app_dir);
     if !journal_path.exists() {
         return Ok(());
@@ -2648,6 +4268,161 @@ fn recover_interrupted_update(app_dir: &Path) -> Result<(), String> {
         .map_err(|error| format!("无法清除已完成恢复的回滚记录: {error}"))?;
     println!("已恢复并验证 `{}` 的 Docker HEALTHCHECK。", tool.id);
     Ok(())
+}
+
+fn recover_interrupted_windows_runtime_group(app_dir: &Path) -> Result<(), String> {
+    let journal_path = windows_runtime_journal_path(app_dir);
+    let text = match fs::read_to_string(&journal_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "无法读取 Workspace group 恢复记录 {}: {error}",
+                journal_path.display()
+            ))
+        }
+    };
+    ensure_update_operator()?;
+    let mut journal: WindowsRuntimeUpdateJournal = serde_json::from_str(&text)
+        .map_err(|error| format!("Workspace group 恢复记录 JSON 无效: {error}"))?;
+    if journal.schema_version != 1
+        || !maintenance::is_contract_digest(&journal.plan_digest)
+        || journal.plan_id.is_empty()
+        || journal.candidate_images.is_empty()
+        || journal.candidate_images.len() != journal.previous_images.len()
+        || journal.maintenance.plan_id.as_deref() != Some(&journal.plan_id)
+        || journal.maintenance.plan_digest.as_deref() != Some(&journal.plan_digest)
+    {
+        return Err(
+            "Workspace group 恢复记录身份/字段校验失败，更新锁保持 fail closed。".to_string(),
+        );
+    }
+    let catalog = component_catalog::trusted_catalog()?;
+    let plan = load_stored_plan(app_dir, &journal.plan_id)?;
+    if plan.plan_digest != journal.plan_digest
+        || plan.authority_artifact_id.as_deref() != Some(journal.authority_artifact_id.as_str())
+        || plan.phase != "applying"
+    {
+        return Err(
+            "Workspace group journal 与原始已确认计划不匹配；恢复保持 fail closed。".to_string(),
+        );
+    }
+    validate_stored_plan_metadata(&catalog, &plan)?;
+    for (component_id, image_reference) in &journal.candidate_images {
+        let component = plan
+            .components
+            .iter()
+            .find(|component| component.component_id == *component_id)
+            .ok_or_else(|| "Workspace group journal 含不在原始计划中的候选容器。".to_string())?;
+        let verified = github_updates::verify_candidate_bytes_for_target(
+            &catalog,
+            &component.index_json,
+            &component.manifest_json,
+            component_id,
+            &plan.channel,
+            component.target_id.as_deref().unwrap_or(WINDOWS_TARGET_ID),
+        )?;
+        if &verified.image_reference != image_reference {
+            return Err(
+                "Workspace group journal 候选镜像与重新验证的 publisher manifest 不一致。"
+                    .to_string(),
+            );
+        }
+    }
+    validate_windows_runtime_compose(&journal.previous_compose)?;
+    validate_windows_runtime_compose(&journal.candidate_compose)?;
+    let token = match journal.maintenance.maintenance_token.clone() {
+        Some(token) => token,
+        None if journal.phase == "maintenance_pending" => {
+            let request_id = journal
+                .maintenance
+                .maintenance_request_id
+                .as_deref()
+                .ok_or_else(|| "Workspace group 恢复记录缺少 Begin request ID。".to_string())?;
+            let catalog_generation = journal
+                .maintenance
+                .expected_catalog_generation
+                .ok_or_else(|| "Workspace group 恢复记录缺少 catalog generation。".to_string())?;
+            let gate_generation = journal
+                .maintenance
+                .expected_gate_generation
+                .ok_or_else(|| "Workspace group 恢复记录缺少 gate generation。".to_string())?;
+            let token = maintenance::resume_workspace_group_maintenance(
+                request_id,
+                catalog_generation,
+                gate_generation,
+                &journal.plan_id,
+                &journal.plan_digest,
+                &journal.maintenance.component_artifact_digests,
+            )?;
+            journal.maintenance.maintenance_token = Some(token.clone());
+            journal.phase = "applying".to_string();
+            write_json_atomically(&journal_path, &journal)?;
+            token
+        }
+        None => {
+            return Err(
+                "Workspace group 更新中断且没有持久 maintenance token；拒绝无围栏恢复。"
+                    .to_string(),
+            )
+        }
+    };
+    if matches!(
+        journal.phase.as_str(),
+        "candidate_healthy" | "ending_success" | "completed"
+    ) {
+        for (component_id, image_reference) in &journal.candidate_images {
+            let binding = windows_runtime::service(component_id)?;
+            wait_for_container_health(&binding.container_name, Duration::from_secs(120))?;
+            verify_runtime_container_image_reference(&catalog, component_id, image_reference)?;
+        }
+        let status = read_authority_admin_status()?;
+        validate_authority_bundle_status(&catalog, &status, Some(&journal.authority_artifact_id))?;
+        write_json_atomically(
+            &installed_workspace_group_state_path(app_dir),
+            &journal.candidate_group_state,
+        )?;
+        if journal.phase != "completed" {
+            journal.phase = "ending_success".to_string();
+            journal.maintenance.phase = Some("ending_success".to_string());
+            write_json_atomically(&journal_path, &journal)?;
+            end_windows_group_maintenance(app_dir, &mut journal, "SUCCESS", true)?;
+            journal.phase = "completed".to_string();
+            journal.maintenance.phase = Some("completed".to_string());
+            write_json_atomically(&journal_path, &journal)?;
+        }
+        fs::remove_file(&journal_path).map_err(|error| {
+            format!("完成的 Workspace group transaction journal 无法清除: {error}")
+        })?;
+        if let Ok(mut plan) = load_stored_plan(app_dir, &journal.plan_id) {
+            if plan.plan_digest == journal.plan_digest && plan.phase == "applying" {
+                plan.phase = "succeeded".to_string();
+                save_stored_plan(app_dir, &plan)?;
+            }
+        }
+        return Ok(());
+    }
+    let compose_path = app_dir.join(WINDOWS_RUNTIME_COMPOSE_FILE);
+    match rollback_windows_runtime_group(
+        app_dir,
+        &compose_path,
+        &journal_path,
+        &mut journal,
+        &token,
+        "检测到上次 group apply 未完成",
+    ) {
+        Err(error) if error.contains("已恢复全部旧组件") => {
+            if let Ok(mut plan) = load_stored_plan(app_dir, &journal.plan_id) {
+                if plan.plan_digest == journal.plan_digest && plan.phase == "applying" {
+                    plan.phase = "rolled_back".to_string();
+                    save_stored_plan(app_dir, &plan)?;
+                }
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
+        Ok(()) => Err("Workspace group 意外完成回滚分支而未报告结果。".to_string()),
+    }
 }
 
 fn validate_journal_image(
@@ -3034,6 +4809,32 @@ fn deploy_selected_tools(
     fs::create_dir_all(app_dir).unwrap();
     fs::write(&compose_file, &content).expect("Failed to write docker-compose.yml");
     println!("   📄 已生成部署配置: {}", compose_file.display());
+    let runtime_compose_file = app_dir.join(WINDOWS_RUNTIME_COMPOSE_FILE);
+    if runtime_compose_file.exists() {
+        match fs::read_to_string(&runtime_compose_file).and_then(|text| {
+            validate_windows_runtime_compose(&text)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        }) {
+            Ok(()) => {}
+            Err(error) => {
+                eprintln!(
+                    "Windows runtime Compose 受信模板校验失败；保留现有文件且不启动服务: {error}"
+                );
+                return;
+            }
+        }
+    } else if let Err(error) = atomic_write(
+        &runtime_compose_file,
+        WINDOWS_RUNTIME_COMPOSE_TEMPLATE.as_bytes(),
+    ) {
+        eprintln!("无法创建 Windows runtime Compose 模板: {error}");
+        return;
+    }
+    println!(
+        "   📄 已生成安装器管理的 Workspace OCI runtime 配置模板: {}",
+        runtime_compose_file.display()
+    );
+    println!("   完成 workspace runtime-config/operator secret 文件后，使用 updater 检查、暂存并确认 compatibility group plan。模板不含 credentials。 ");
 
     println!("\n>> 正在检查本地 Docker 守护进程...");
     let docker_check = docker_command().arg("info").output();
