@@ -633,10 +633,10 @@ export class NavigatorApi {
    * Start one prepared training draft.
    * 中文：启动一个已准备好的训练草稿。
    */
-  async startTrainingDraft(id: string): Promise<JsonRecord> {
+  async startTrainingDraft(id: string, idempotencyKey?: string): Promise<JsonRecord> {
     return this.requestJson(
       `${NAVIGATOR_PROXY_PATHS.yield}/training-drafts/${encodeURIComponent(id)}/actions/start`,
-      jsonRequest("POST", {}, true),
+      jsonRequest("POST", {}, idempotencyKey ?? true),
       parseResource,
     );
   }
@@ -645,12 +645,45 @@ export class NavigatorApi {
    * Read a Yield training run by its owning Product identifier.
    * 中文：按其所属 Product 标识读取一项 Yield 训练运行。
    */
-  async getTrainingRun(id: string): Promise<JsonRecord> {
+  async getTrainingRun(id: string, signal?: AbortSignal): Promise<JsonRecord> {
     return this.requestJson(
       `${NAVIGATOR_PROXY_PATHS.yield}/training-runs/${encodeURIComponent(id)}`,
+      { method: "GET", signal },
+      parseResource,
+    );
+  }
+
+  /** Read the durable draft link before retrying a launch. 中文：重试启动前读取持久化草稿关联。 */
+  async getTrainingDraft(id: string): Promise<JsonRecord> {
+    return this.requestJson(
+      `${NAVIGATOR_PROXY_PATHS.yield}/training-drafts/${encodeURIComponent(id)}`,
       { method: "GET" },
       parseResource,
     );
+  }
+
+  /** Resume ordered events through the authenticated proxy. 中文：通过认证代理按游标续读事件。 */
+  async openTrainingRunEvents(id: string, afterSequence: number, signal: AbortSignal): Promise<Response> {
+    if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) {
+      throw new NavigatorContractError("Invalid training event cursor.");
+    }
+    const path = `${NAVIGATOR_PROXY_PATHS.yield}/training-runs/${encodeURIComponent(id)}/events/stream?after_sequence=${afterSequence}`;
+    const response = await this.requestResponse(path, {
+      method: "GET", signal,
+      headers: { Accept: "text/event-stream", "Last-Event-ID": String(afterSequence) },
+    });
+    if (!response.ok) {
+      // Keep the HTTP status even when a proxy returns a non-JSON error page.
+      // 中文：代理返回非 JSON 错误页时仍保留 HTTP 状态。
+      let problem: unknown;
+      try { problem = await response.json(); } catch { problem = undefined; }
+      throw toHttpError(response.status, problem);
+    }
+    if (!response.body || response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "text/event-stream") {
+      await response.body?.cancel();
+      throw new NavigatorContractError("Yield did not return an event stream.");
+    }
+    return response;
   }
 
   /**
@@ -665,11 +698,12 @@ export class NavigatorApi {
   async resumeTrainingRun(
     runId: string,
     checkpointName?: string,
+    idempotencyKey?: string,
   ): Promise<JsonRecord> {
     const body = checkpointName ? { checkpointName } : {};
     return this.requestJson(
       `${NAVIGATOR_PROXY_PATHS.yield}/training-runs/${encodeURIComponent(runId)}/actions/resume`,
-      jsonRequest("POST", body, true),
+      jsonRequest("POST", body, idempotencyKey ?? true),
       parseResource,
     );
   }
@@ -690,10 +724,10 @@ export class NavigatorApi {
    * Read public attempt diagnostics for one training run.
    * 中文：读取某次训练运行公开的尝试诊断信息。
    */
-  async getTrainingRunAttempts(id: string): Promise<JsonRecord[]> {
+  async getTrainingRunAttempts(id: string, signal?: AbortSignal): Promise<JsonRecord[]> {
     return this.requestJson(
       `${NAVIGATOR_PROXY_PATHS.yield}/training-runs/${encodeURIComponent(id)}/attempts`,
-      { method: "GET" },
+      { method: "GET", signal },
       parseResourceArray,
     );
   }
@@ -868,26 +902,38 @@ export class NavigatorApi {
     parser: ResponseParser<T>,
     retryAuth = true,
   ): Promise<T> {
+    const response = await this.requestResponse(path, init, retryAuth);
+    return readResponse(response, path, parser, this.acceptSession.bind(this));
+  }
+
+  private async requestResponse(path: string, init: RequestInit, retryAuth = true): Promise<Response> {
+    init.signal?.throwIfAborted();
     const response = await this.send(path, init);
     if (response.status === 401 && retryAuth && !path.startsWith("/api/v1/auth/")) {
+      let authenticated = false;
       try {
         const refreshed = await this.refreshSession();
-        if (refreshed.authenticated) {
-          return this.requestJson(path, init, parser, false);
-        }
+        authenticated = refreshed.authenticated;
       } catch {
         // The original response contains the useful Product/Web Host problem.
                 // 中文：原始响应包含有用的 Product/Web Host 错误信息。
       }
+      init.signal?.throwIfAborted();
+      if (authenticated) {
+        await response.body?.cancel();
+        return this.requestResponse(path, init, false);
+      }
+    }
+    if (response.status === 401 && !path.startsWith("/api/v1/auth/")) {
       this.sessionExpiredHandler?.();
       this.csrfToken = null;
     }
-    return readResponse(response, path, parser, this.acceptSession.bind(this));
+    return response;
   }
 
   private async send(path: string, init: RequestInit): Promise<Response> {
     const headers = new Headers(init.headers);
-    headers.set("Accept", "application/json");
+    if (!headers.has("Accept")) headers.set("Accept", "application/json");
     const method = (init.method || "GET").toUpperCase();
     const isMutation = method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
     if (isMutation && this.csrfToken && !headers.has("X-CSRF-Token")) {
@@ -920,15 +966,16 @@ export class NavigatorApi {
  * Create a JSON request and an idempotency key for a Product mutation.
  * 中文：为 Product mutation 创建 JSON 请求和幂等键。
  */
-function jsonRequest(method: string, body: unknown, idempotent = false): RequestInit {
+function jsonRequest(method: string, body: unknown, idempotent: boolean | string = false): RequestInit {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (idempotent) {
-    headers["Idempotency-Key"] = makeIdempotencyKey();
+    headers["Idempotency-Key"] = typeof idempotent === "string" ? idempotent : makeIdempotencyKey();
   }
   return { method, headers, body: JSON.stringify(body) };
 }
 
-function makeIdempotencyKey(): string {
+/** Keep one key for each explicit command and its retries. 中文：每次显式命令及其重试使用同一幂等键。 */
+export function makeIdempotencyKey(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
   }

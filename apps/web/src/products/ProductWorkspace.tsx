@@ -6,11 +6,15 @@ import type { RouteId } from "../../services/navigator/src/router";
 import { useI18n } from "../i18n";
 import { useTeamIdentity } from "../team/TeamGate";
 import { studioProductFetch } from "./transport";
+import { WorkspaceTrainingConsole } from "./WorkspaceTrainingConsole";
 import "./products.css";
 
 export default function ProductWorkspace({ route }: { route: RouteId }) {
   const locale = useI18n(), { actorId, workspaceId } = useTeamIdentity();
-  return <ControlledLocaleProvider locale={locale.locale} setLocale={locale.setLocale}><ProductSession key={`${actorId}:${workspaceId}`} route={route} /></ControlledLocaleProvider>;
+  const workspaceTraining = import.meta.env.VITE_WORKSPACE_BFF_ENABLED === "true" && (route === "training" || route === "runs");
+  return <ControlledLocaleProvider locale={locale.locale} setLocale={locale.setLocale}>{workspaceTraining
+    ? <WorkspaceTrainingConsole key={actorId} route={route} />
+    : <ProductSession key={`${actorId}:${workspaceId}`} route={route} />}</ControlledLocaleProvider>;
 }
 function ProductSession({ route }: { route: RouteId }) {
   const { locale } = useI18n(), { scopes } = useTeamIdentity();
@@ -52,6 +56,6 @@ function ProductSession({ route }: { route: RouteId }) {
       <div className="product-session-bar"><span>{tx("Product 服务已连接", "Product services connected")}</span><button onClick={() => { void api.logout().then(() => setSession(null), reason => setError(String(reason))); }}>{tx("断开 Product 会话", "Disconnect Product session")}</button></div>
       {!scopes.includes("products.write") && !scopes.includes("products.operate") && <p>{tx("当前账号仅可读取；提交操作需要编辑或执行权限。", "Read-only account. Changes require edit or execution permission.")}</p>}
     </>}
-    {session && connectedOnce && visited.map(id => <div key={id} hidden={id !== route || !session.authenticated}>{render(id)}</div>)}
+    {session?.authenticated && connectedOnce && visited.map(id => <div key={id} hidden={id !== route}>{render(id)}</div>)}
   </div>;
 }

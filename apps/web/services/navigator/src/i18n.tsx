@@ -5,6 +5,18 @@ export type AppLocale = "zh-CN" | "en-US";
 export const LOCALE_STORAGE_KEY = "cyrene.client.locale.v1";
 
 const chinese: Record<string, string> = {
+  "Reconnect stream": "重新连接日志",
+  "This connection supports observation. Cancel, resume and deployment actions are available in the owning service.": "此连接支持任务观察。取消、恢复和部署操作请在任务所属服务中执行。",
+  Connecting: "正在连接",
+  Connected: "已连接",
+  Reconnecting: "正在重连",
+  Offline: "网络已断开",
+  Finished: "已读完",
+  "All available events received": "已收到全部可用事件",
+  "Run state remains owned by Yield; reconnecting never restarts training.": "任务状态由 Yield 管理；重新连接不会重新启动训练。",
+  "Resume accepted. Yield is restarting from the selected checkpoint.": "恢复请求已接受，Yield 正在从所选检查点恢复。",
+  "Sent to Reactor. Continue on the Deployments page.": "已发送至 Reactor，请前往部署页面继续。",
+  "The previous launch outcome is unknown. Restore its parameters and retry this draft before changing them.": "上次启动结果尚不确定。请恢复原参数并重试此草稿，确认结果后再修改参数。",
   Language: "语言",
   "Simplified Chinese": "简体中文",
   English: "English",

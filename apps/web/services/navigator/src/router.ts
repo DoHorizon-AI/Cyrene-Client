@@ -120,6 +120,26 @@ export function pushRoute(route: RouteId): void {
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
+/** Navigate to the run accepted by Yield. 中文：跳转到 Yield 已接受的任务。 */
+export function pushRunRoute(runId: string, workspaceId?: string): void {
+  const query = new URLSearchParams({ runId });
+  const workspace = workspaceId ?? new URLSearchParams(window.location.search).get("workspaceId");
+  if (workspace) query.set("workspaceId", workspace);
+  window.history.pushState({}, "", `${pathForRoute("runs")}?${query}`);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+/** Read a bookmarked run without treating malformed URLs as application errors.
+ * 中文：读取书签任务；错误编码的地址不会导致整个页面崩溃。
+ */
+export function runIdForLocation(location: Pick<Location, "pathname" | "search">): string {
+  if (routeForPath(location.pathname) !== "runs") return "";
+  const query = new URLSearchParams(location.search).get("runId");
+  if (query !== null) return query.trim();
+  try { return decodeURIComponent(location.pathname.match(/^\/runs\/([^/]+)\/?$/)?.[1] ?? "").trim(); }
+  catch { return ""; }
+}
+
 function normalizePath(pathname: string): string {
   const pathOnly = pathname.split(/[?#]/, 1)[0] ?? "/";
   const withoutTrailingSlash = pathOnly.replace(/\/+$/, "");

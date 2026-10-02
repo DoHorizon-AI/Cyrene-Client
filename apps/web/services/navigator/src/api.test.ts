@@ -15,6 +15,54 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("NavigatorApi", () => {
+  it("refreshes an event stream once and preserves the cursor, Accept header and cancellation", async () => {
+    const calls: Array<{ path: string; init: RequestInit }> = [];
+    let opened = 0;
+    const signal = new AbortController().signal;
+    const api = new NavigatorApi(async (input, init) => {
+      const path = String(input);
+      calls.push({ path, init: init ?? {} });
+      if (path === "/api/v1/auth/session/refresh") return response({
+        authenticated: true, state: "AUTHENTICATED", sessionId: "session-1",
+        expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "new", refreshed: true,
+      });
+      if (opened++ === 0) return response({ code: "EXPIRED", detail: "expired" }, 401);
+      return new Response("id: 7\nevent: done\ndata: {}\n\n", { headers: { "Content-Type": "text/event-stream; charset=utf-8" } });
+    });
+    const result = await api.openTrainingRunEvents("run-1", 7, signal);
+    expect(result.ok).toBe(true);
+    expect(calls.map((call) => call.path)).toEqual([
+      "/api/v1/yield/training-runs/run-1/events/stream?after_sequence=7",
+      "/api/v1/auth/session/refresh",
+      "/api/v1/yield/training-runs/run-1/events/stream?after_sequence=7",
+    ]);
+    const retried = calls[2]?.init;
+    expect(new Headers(retried?.headers).get("Accept")).toBe("text/event-stream");
+    expect(new Headers(retried?.headers).get("Last-Event-ID")).toBe("7");
+    expect(retried?.signal).toBe(signal);
+    await result.body?.cancel();
+  });
+
+  it("preserves an explicit start or resume idempotency key across user retries", async () => {
+    const keys: Array<string | null> = [];
+    const api = new NavigatorApi(async (_input, init) => {
+      keys.push(new Headers(init?.headers).get("Idempotency-Key"));
+      return response({ id: "run-1" });
+    });
+    await api.startTrainingDraft("draft-1", "start-key");
+    await api.startTrainingDraft("draft-1", "start-key");
+    await api.resumeTrainingRun("run-1", "checkpoint-1", "resume-key");
+    expect(keys).toEqual(["start-key", "start-key", "resume-key"]);
+  });
+
+  it("keeps proxy HTTP error status and rejects a non-stream success", async () => {
+    const signal = new AbortController().signal;
+    const denied = new NavigatorApi(async () => new Response("Forbidden", { status: 403 }));
+    await expect(denied.openTrainingRunEvents("run-1", 0, signal)).rejects.toMatchObject({ status: 403 });
+    const html = new NavigatorApi(async () => new Response("<html/>", { headers: { "Content-Type": "text/html" } }));
+    await expect(html.openTrainingRunEvents("run-1", 0, signal)).rejects.toMatchObject({ name: "NavigatorContractError" });
+  });
+
   it("refreshes once after an expired access session and retries the Product read", async () => {
     const calls: Array<{ path: string; init: RequestInit }> = [];
     let modelRead = 0;

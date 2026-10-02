@@ -32,12 +32,14 @@ import {
   NavigatorApi,
   NavigatorContractError,
   NavigatorHttpError,
+  makeIdempotencyKey,
   type SessionPayload,
   type SystemStatus,
   type TrainingParametersInput,
 } from "./api";
 import { studioProductFetch } from "../../../src/products/transport";
-import { pushRoute } from "./router";
+import { pushRoute, pushRunRoute, runIdForLocation, routeForPath } from "./router";
+import { useTrainingRun, type TrainingRunClient } from "./use-training-run";
 import { useI18n } from "./i18n";
 
 export interface PageProps {
@@ -1073,6 +1075,13 @@ export function TrainingPage({ api }: PageProps) {
   const [error, setError] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const launchLock = useRef(false);
+  const launchActive = useRef(true);
+  const pendingLaunches = useRef(new Map<string, { spec: string; key: string }>());
+  useEffect(() => {
+    launchActive.current = true;
+    return () => { launchActive.current = false; };
+  }, [api]);
 
   // Hyperparameter fields state
   // 中文：超参数字段状态。
@@ -1207,9 +1216,18 @@ export function TrainingPage({ api }: PageProps) {
    * 如果没有 PATCH 就启动，训练会静默使用草稿原有的参数，因此这里编辑的所有值都会无错误地丢失。
    */
   const startDraft = async (id: string, row: JsonRecord) => {
+    if (launchLock.current) return;
+    launchLock.current = true;
     setActionId(id);
     setActionError(null);
     try {
+      // Recover an accepted launch before validating edits or submitting again.
+      // 中文：校验编辑内容或再次提交前，先找回可能已经接受的训练任务。
+      const draft = await api.getTrainingDraft(id);
+      if (!launchActive.current) return;
+      if (draft["id"] !== id) throw new NavigatorContractError("Yield returned a different training draft.");
+      const acceptedId = text(nestedRecord(draft, "trainingRun")?.["id"], "");
+      if (acceptedId) { pendingLaunches.current.delete(id); pushRunRoute(acceptedId); return; }
       const parameters = collectParameters();
       const invalid = Object.entries(parameters)
         .filter(([, value]) => !Number.isFinite(value))
@@ -1217,17 +1235,41 @@ export function TrainingPage({ api }: PageProps) {
       if (invalid.length > 0) {
         throw new Error(`Invalid hyperparameter value(s): ${invalid.join(", ")}`);
       }
-      const baseModel = selectedBaseModel ?? draftBaseModel(row);
+      const baseModel = selectedBaseModel ?? draftBaseModel(draft) ?? draftBaseModel(row);
       if (!baseModel) {
         throw new Error("This draft has no base model configured; prepare it in Yield first.");
       }
-      await api.updateTrainingDraft(id, { baseModel, parameters });
-      await api.startTrainingDraft(id);
+      const spec = { baseModel, parameters };
+      const serialized = JSON.stringify(spec);
+      let pending = pendingLaunches.current.get(id);
+      if (pending && pending.spec !== serialized) {
+        throw new Error(t("The previous launch outcome is unknown. Restore its parameters and retry this draft before changing them."));
+      }
+      if (!pending) {
+        await api.updateTrainingDraft(id, spec);
+        if (!launchActive.current) return;
+        pending = { spec: serialized, key: makeIdempotencyKey() };
+        pendingLaunches.current.set(id, pending);
+      }
+      const started = await api.startTrainingDraft(id, pending.key).catch((failure: unknown) => {
+        // A definitive input rejection permits edits; uncertain outcomes keep the key.
+        // 中文：明确的输入拒绝允许修改参数；不确定的结果继续保留原命令键。
+        if (failure instanceof NavigatorHttpError && !failure.retryable && [400, 422].includes(failure.status)) {
+          pendingLaunches.current.delete(id);
+        }
+        throw failure;
+      });
+      if (!launchActive.current) return;
+      const acceptedRunId = text(started["id"], "");
+      if (!acceptedRunId) throw new NavigatorContractError("Yield accepted the launch without returning a run id.");
+      pendingLaunches.current.delete(id);
       setReloadKey((value) => value + 1);
+      pushRunRoute(acceptedRunId);
     } catch (launchError) {
-      setActionError(errorMessage(launchError));
+      if (launchActive.current) setActionError(errorMessage(launchError));
     } finally {
-      setActionId(null);
+      launchLock.current = false;
+      if (launchActive.current) setActionId(null);
     }
   };
 
@@ -1546,259 +1588,117 @@ function formatDuration(seconds: number): string {
   return `${secs}s`;
 }
 
-export function RunsPage({ api }: PageProps) {
+export function RunsPage({ api }: { api: TrainingRunClient }) {
   const { t } = useI18n();
   const [runId, setRunId] = useState(() => initialRunId());
-  const [run, setRun] = useState<JsonRecord | null>(null);
-  const [attempts, setAttempts] = useState<JsonRecord[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [attemptError, setAttemptError] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState(() => initialRunId());
+  const observation = useTrainingRun(api, selectedRunId);
+  const { run: observedRun, attempts, loading, attemptError, events, latestLoss, currentStep, totalSteps,
+    lossSeries, etaSeconds, latestCheckpoint, streamState, streamError } = observation;
+  const run = observedRun?.["id"] === selectedRunId ? observedRun : null;
+  const [actionError, setActionError] = useState<string | null>(null);
   const [canceling, setCanceling] = useState(false);
-
-  // SSE Realtime events stream state
-  // 中文：SSE 实时事件流状态。
-  const [events, setEvents] = useState<JsonRecord[]>([]);
-  const [latestLoss, setLatestLoss] = useState<number | null>(null);
-  const [currentStep, setCurrentStep] = useState<number | null>(null);
-  const [totalSteps, setTotalSteps] = useState<number | null>(null);
-  const [streamActive, setStreamActive] = useState(false);
-  const [streamDone, setStreamDone] = useState(false);
-  const [lossSeries, setLossSeries] = useState<number[]>([]);
-  const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
-  const [latestCheckpoint, setLatestCheckpoint] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const actionScope = useRef(0);
+  const actionLock = useRef(false);
+  const resumeKeys = useRef(new Map<string, string>());
 
   useEffect(() => {
-    const value = initialRunId();
-    if (!value) {
-      return;
-    }
-    let active = true;
-    setLoading(true);
-    void api.getTrainingRun(value).then(
-      (result) => {
-        if (!active) {
-          return;
-        }
-        setRun(result);
-        setError(null);
-        setLoading(false);
-        void api.getTrainingRunAttempts(value).then(
-          (attemptResult) => active && setAttempts(attemptResult),
-          (attemptReason: unknown) => active && setAttemptError(errorMessage(attemptReason)),
-        );
-      },
-      (reason: unknown) => {
-        if (active) {
-          setRun(null);
-          setError(errorMessage(reason));
-          setLoading(false);
-        }
-      },
-    );
-    return () => {
-      active = false;
+    const navigate = () => {
+      if (routeForPath(window.location.pathname) !== "runs") return;
+      const id = initialRunId();
+      setRunId(id);
+      setSelectedRunId(id);
     };
-  }, [api]);
+    window.addEventListener("popstate", navigate);
+    return () => window.removeEventListener("popstate", navigate);
+  }, []);
+  useEffect(() => {
+    actionScope.current += 1;
+    actionLock.current = false;
+    setCanceling(false);
+    setActionBusy(false);
+    setActionNotice(null);
+    setActionError(null);
+    resumeKeys.current.clear();
+    return () => { actionScope.current += 1; };
+  }, [api, selectedRunId]);
 
-  const currentRunId = run ? text(run["id"], "") : "";
-  const runState = text(run?.["state"], "");
-  const canCancel = ["QUEUED", "RUNNING", "AWAITING_RETRY"].includes(runState);
-  const resultRecord = (run?.["result"] ?? null) as JsonRecord | null;
-  const resultId = resultRecord ? text(resultRecord["id"], "") : "";
-  // Resume needs both a terminal failure state and the checkpoint to resume from.
-  // 中文：恢复运行必须同时具备终态失败状态和待恢复的检查点。
-  const canResume = ["FAILED", "CANCELLED"].includes(runState) && latestCheckpoint !== null;
-  const canDeploy = Boolean(resultId);
+  const currentRunId = run && run["id"] === selectedRunId ? selectedRunId : "";
+  const runState = currentRunId ? text(run?.["state"], "") : "";
+  const canCancel = api.capabilities?.cancel !== false && ["QUEUED", "RUNNING", "AWAITING_RETRY"].includes(runState);
+  const resultId = text(nestedRecord(run ?? {}, "result")?.["id"], "");
+  const canResume = api.capabilities?.resume !== false && ["FAILED", "CANCELLED"].includes(runState) && latestCheckpoint !== null;
+  const canDeploy = api.capabilities?.deploy !== false && Boolean(resultId);
+  const error = actionError ?? observation.error;
+  const streamActive = streamState === "connected";
+  const streamDone = streamState === "finished";
 
   const resumeRun = async () => {
-    if (!currentRunId) return;
+    if (!currentRunId || !latestCheckpoint || !canResume || actionLock.current) return;
+    actionLock.current = true;
+    const scope = actionScope.current;
+    const identity = JSON.stringify([currentRunId, latestCheckpoint, run?.["attemptCount"]]);
+    let key = resumeKeys.current.get(identity);
+    if (!key) { key = makeIdempotencyKey(); resumeKeys.current.set(identity, key); }
     setActionBusy(true);
+    setActionError(null);
     setActionNotice(null);
     try {
-      await api.resumeTrainingRun(currentRunId, latestCheckpoint ?? undefined);
-      setActionNotice("Resume accepted. Yield is restarting from the latest checkpoint.");
-      setStreamDone(false);
-      setRun(await api.getTrainingRun(currentRunId));
+      await api.resumeTrainingRun(currentRunId, latestCheckpoint, key);
+      if (scope !== actionScope.current) return;
+      setActionNotice(t("Resume accepted. Yield is restarting from the selected checkpoint."));
+      observation.reconnect();
     } catch (resumeError) {
-      setError(errorMessage(resumeError));
+      if (scope === actionScope.current) setActionError(errorMessage(resumeError));
     } finally {
-      setActionBusy(false);
+      if (scope === actionScope.current) { actionLock.current = false; setActionBusy(false); }
     }
   };
 
   const deployResult = async () => {
-    if (!resultId) return;
+    if (!resultId || !currentRunId || actionLock.current) return;
+    actionLock.current = true;
+    const scope = actionScope.current;
     setActionBusy(true);
     setActionNotice(null);
+    setActionError(null);
     try {
       await api.sendResultToReactor(resultId);
-      setActionNotice("Sent to Reactor. Continue on the Deployments page.");
+      if (scope === actionScope.current) setActionNotice(t("Sent to Reactor. Continue on the Deployments page."));
     } catch (deployError) {
-      setError(errorMessage(deployError));
+      if (scope === actionScope.current) setActionError(errorMessage(deployError));
     } finally {
-      setActionBusy(false);
+      if (scope === actionScope.current) { actionLock.current = false; setActionBusy(false); }
     }
   };
 
-  useEffect(() => {
-    if (!currentRunId || !["RUNNING", "QUEUED"].includes(runState)) {
-      return;
-    }
-
-    let canceled = false;
-    let retryCount = 0;
-    let controller = new AbortController();
-
-    const connect = async () => {
-      if (canceled) return;
-      controller = new AbortController();
-      const url = `${NAVIGATOR_PROXY_PATHS.yield}/api/v1/training-runs/${currentRunId}/events/stream`;
-      try {
-        setStreamActive(true);
-        const response = await studioProductFetch(url, {
-          signal: controller.signal,
-          headers: { Accept: "text/event-stream" },
-          credentials: "same-origin",
-        });
-        if (!response.ok || !response.body) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        retryCount = 0;
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (!canceled) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            if (trimmed.startsWith("event:")) {
-              const eventKind = trimmed.substring(6).trim();
-              if (eventKind === "done") {
-                setStreamDone(true);
-                setStreamActive(false);
-                void api.getTrainingRun(currentRunId).then((updated) => setRun(updated));
-                return;
-              }
-            } else if (trimmed.startsWith("data:")) {
-              const jsonStr = trimmed.substring(5).trim();
-              try {
-                const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
-                setEvents((prev) => [...prev.slice(-49), parsed]);
-                const payload = (parsed["payload"] ?? parsed) as Record<string, unknown>;
-                if (typeof payload["loss"] === "number") {
-                  const loss = payload["loss"];
-                  setLatestLoss(loss);
-                  setLossSeries((prev) => [...prev.slice(-199), loss]);
-                }
-                const step = payload["step"] ?? payload["currentStep"] ?? payload["current_step"];
-                if (typeof step === "number") {
-                  setCurrentStep(Number(step));
-                }
-                const total = payload["totalSteps"] ?? payload["total_steps"] ?? payload["total"];
-                if (typeof total === "number") {
-                  setTotalSteps(Number(total));
-                }
-                const eta = payload["etaSeconds"] ?? payload["eta_seconds"];
-                if (typeof eta === "number") {
-                  setEtaSeconds(eta);
-                }
-                const checkpoint = payload["checkpoint"];
-                if (checkpoint && typeof checkpoint === "object") {
-                  const record = checkpoint as Record<string, unknown>;
-                  const label =
-                    record["name"] ?? record["checkpointName"] ?? record["artifact"] ?? record["digest"];
-                  if (typeof label === "string") {
-                    setLatestCheckpoint(label);
-                  } else if (typeof label === "object" && label !== null) {
-                    const digest = (label as Record<string, unknown>)["digest"];
-                    if (typeof digest === "string") setLatestCheckpoint(digest);
-                  }
-                }
-              } catch {
-                // Ignore parse errors
-                // 中文：忽略解析错误。
-              }
-            }
-          }
-        }
-      } catch {
-        if (canceled) return;
-        setStreamActive(false);
-        if (retryCount < 3) {
-          retryCount += 1;
-          setTimeout(() => {
-            if (!canceled) {
-              void connect();
-            }
-          }, 5000);
-        }
-      }
-    };
-
-    void connect();
-
-    return () => {
-      canceled = true;
-      controller.abort();
-    };
-  }, [currentRunId, runState, api]);
-
-  const lookupRun = async (event: FormEvent<HTMLFormElement>) => {
+  const lookupRun = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const value = runId.trim();
     if (!value) {
-      setError("Enter a training run id to read its owning Product projection.");
+      setActionError(t("Enter a training run id to read its owning Product projection."));
       return;
     }
-    updateRunQuery(value);
-    setLoading(true);
-    setError(null);
-    setAttemptError(null);
-    setRun(null);
-    setAttempts(null);
-    setEvents([]);
-    setLatestLoss(null);
-    setCurrentStep(null);
-    setTotalSteps(null);
-    setStreamDone(false);
-    try {
-      const result = await api.getTrainingRun(value);
-      setRun(result);
-      try {
-        setAttempts(await api.getTrainingRunAttempts(value));
-      } catch (attemptReason) {
-        setAttemptError(errorMessage(attemptReason));
-      }
-    } catch (lookupError) {
-      setError(errorMessage(lookupError));
-    } finally {
-      setLoading(false);
-    }
+    setActionError(null);
+    if (value === selectedRunId) observation.reconnect();
+    else pushRunRoute(value);
   };
 
   const cancelRun = async () => {
-    const id = run ? text(run["id"], "") : "";
-    if (!id) {
-      return;
-    }
+    if (!currentRunId || !canCancel || actionLock.current) return;
+    actionLock.current = true;
+    const scope = actionScope.current;
     setCanceling(true);
-    setError(null);
+    setActionError(null);
     try {
-      setRun(await api.cancelTrainingRun(id));
+      await api.cancelTrainingRun(currentRunId);
+      if (scope === actionScope.current) observation.refresh();
     } catch (cancelError) {
-      setError(errorMessage(cancelError));
+      if (scope === actionScope.current) setActionError(errorMessage(cancelError));
     } finally {
-      setCanceling(false);
+      if (scope === actionScope.current) { actionLock.current = false; setCanceling(false); }
     }
   };
 
@@ -1828,7 +1728,7 @@ export function RunsPage({ api }: PageProps) {
             meta={
               <div className="panel-actions">
                 <StatusPill value={runState || "UNKNOWN"} />
-                {canCancel ? <Button tone="danger" onClick={() => void cancelRun()} disabled={canceling}>{canceling ? "Canceling..." : "Request cancel"}</Button> : null}
+                {canCancel ? <Button tone="danger" onClick={() => void cancelRun()} disabled={canceling || actionBusy}>{canceling ? "Canceling..." : "Request cancel"}</Button> : null}
               </div>
             }
           >
@@ -1852,13 +1752,15 @@ export function RunsPage({ api }: PageProps) {
             title={t("Realtime execution stream")}
             meta={
               <div className="panel-actions">
-                <StatusPill value={streamActive ? "STREAMING" : streamDone || ["SUCCEEDED", "FAILED", "CANCELLED"].includes(runState) ? "FINISHED" : "IDLE"} />
-                {(streamDone || ["SUCCEEDED", "FAILED", "CANCELLED"].includes(runState)) && (
-                  <Button onClick={() => void api.getTrainingRun(currentRunId).then((res) => setRun(res))}>{t("查看结果")}</Button>
+                <StatusPill value={streamState.toUpperCase()} />
+                {(streamDone || ["COMPLETED", "FAILED", "CANCELLED"].includes(runState)) && (
+                  <Button onClick={observation.refresh}>{t("查看结果")}</Button>
                 )}
+                <Button onClick={observation.reconnect}>{t("Reconnect stream")}</Button>
               </div>
             }
           >
+            {streamError ? <p role="alert" className="form-message form-message--error">{streamError}</p> : null}
             <div className="metric-grid">
               <MetricCard
                 label="Loss"
@@ -1874,8 +1776,8 @@ export function RunsPage({ api }: PageProps) {
               />
               <MetricCard
                 label="Stream status"
-                value={streamActive ? "Active" : streamDone ? "Finished" : "Standby"}
-                detail={streamActive ? "SSE live connection" : "Stream completed or disconnected"}
+                value={t(streamState[0]!.toUpperCase() + streamState.slice(1))}
+                detail={streamDone ? t("All available events received") : streamActive ? t("SSE live connection") : t("Run state remains owned by Yield; reconnecting never restarts training.")}
                 accent={streamActive ? "lime" : "gray"}
               />
               <MetricCard
@@ -1917,11 +1819,14 @@ export function RunsPage({ api }: PageProps) {
             </div>
 
             <div className="form-actions" style={{ marginTop: "16px" }}>
-              <Button disabled={!canResume || actionBusy} onClick={() => void resumeRun()}>
+              <Button disabled={!canResume || actionBusy || canceling} onClick={() => void resumeRun()}>
                 {actionBusy ? "Working..." : "Resume from checkpoint"}
               </Button>
-              <Button disabled={!canDeploy || actionBusy} onClick={() => void deployResult()}>{t("Deploy this model")}</Button>
+              <Button disabled={!canDeploy || actionBusy || canceling} onClick={() => void deployResult()}>{t("Deploy this model")}</Button>
             </div>
+            {api.capabilities?.cancel === false && api.capabilities.resume === false && api.capabilities.deploy === false ? (
+              <p>{t("This connection supports observation. Cancel, resume and deployment actions are available in the owning service.")}</p>
+            ) : null}
             {actionNotice ? <p className="form-message form-message--success">{actionNotice}</p> : null}
 
             <div style={{ marginTop: "16px" }}>
@@ -1935,7 +1840,7 @@ export function RunsPage({ api }: PageProps) {
                     const kind = String(evt["kind"] ?? evt["event"] ?? "event");
                     const payload = evt["payload"] ? JSON.stringify(evt["payload"]) : evt["message"] ?? JSON.stringify(evt);
                     return (
-                      <div key={idx} style={{ marginBottom: "4px", lineHeight: "1.4" }}>
+                      <div key={seq} style={{ marginBottom: "4px", lineHeight: "1.4" }}>
                         <span style={{ color: "var(--muted, #888)", marginRight: "8px" }}>#{seq}</span>
                         <span style={{ color: "var(--blue, #64B5F6)", marginRight: "8px" }}>[{kind}]</span>
                         <span>{String(payload)}</span>
@@ -3230,16 +3135,7 @@ function initialRunId(): string {
   if (typeof window === "undefined") {
     return "";
   }
-  return new URLSearchParams(window.location.search).get("runId") ?? decodeURIComponent(window.location.pathname.match(/^\/runs\/([^/]+)$/)?.[1] ?? "");
-}
-
-function updateRunQuery(runId: string): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  const url = new URL(window.location.href);
-  url.searchParams.set("runId", runId);
-  window.history.replaceState({}, "", url);
+  return runIdForLocation(window.location);
 }
 
 function errorMessage(error: unknown): string {

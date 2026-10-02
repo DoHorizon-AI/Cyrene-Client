@@ -4,10 +4,16 @@
 // -----------------------------------------------------------------------------
 // 中文：// 中文：模块职责：测试 Navigator 控制台导航栏的路由解析。
 
-import { pathForRoute, routeForPath } from "./router";
+import { pathForRoute, routeForPath, runIdForLocation } from "./router";
 import { describe, expect, it } from "vitest";
 
 describe("Navigator routes", () => {
+  it("restores bookmarked runs and rejects malformed path encoding", () => {
+    expect(runIdForLocation({ pathname: "/runs", search: "?runId=run-1" })).toBe("run-1");
+    expect(runIdForLocation({ pathname: "/runs/run-2", search: "" })).toBe("run-2");
+    expect(runIdForLocation({ pathname: "/runs/%E0%A4%A", search: "" })).toBe("");
+    expect(runIdForLocation({ pathname: "/training", search: "?runId=run-1" })).toBe("");
+  });
   it("resolves all page paths", () => {
     expect(routeForPath("/")).toBe("overview");
     expect(routeForPath("/models")).toBe("models");
