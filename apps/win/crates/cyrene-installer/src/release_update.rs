@@ -556,6 +556,7 @@ fn validate_manifest_protocol_and_content(
                     || compatibility.get("groupId").and_then(Value::as_str) != Some(group_id)
                     || compatibility.get("contractApiVersion") != group.get("contractApiVersion")
                     || compatibility.get("wireApiVersion") != group.get("wireApiVersion")
+                    || compatibility.get("contractLock") != group.get("contractLock")
                 {
                     return Err(format!(
                         "`{component_id}` manifest compatibility 与 catalog 不匹配。"

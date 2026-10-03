@@ -3,6 +3,10 @@ name: cd-containerapp
 on:
   push:
     branches: [main, release, develop]
+    paths-ignore:
+      - '.github/workflows/deploy-containerapp.yml'
+      - 'apps/win/crates/cyrene-installer/src/github_updates.rs'
+      - 'apps/win/crates/cyrene-installer/src/release_update.rs'
   workflow_dispatch:
     inputs:
       image_tag:
