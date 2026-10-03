@@ -1,18 +1,37 @@
 //! ┌─────────────────────────────────────────────────────────────────────┐
 //! │  📄 component_catalog.rs                                             │
 //! │  Module: installer::component_catalog                               │
-//! │  Role: Load the Windows installer’s pinned Workspace catalog.       │
+//! │  Role: Load and validate the active Windows Workspace catalog.      │
 //! │                                                                      │
-//! │  模块职责：读取安装器固定的 Workspace 组件目录并限定本机更新身份。      │
+//! │  模块职责：读取可信动态目录，并限定本机支持的平台更新身份。            │
 //! └─────────────────────────────────────────────────────────────────────┘
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::ops::Deref;
+use std::path::Path;
 
 const EMBEDDED_CATALOG: &str = include_str!("component-catalog-v1.json");
 const CATALOG_RAW_SHA256: &str = "f12f5cd1243d16b6ec6a5194efacbdf7a8bf9dffcf8d9525c35183c45a7c7816";
 const WINDOWS_TARGET_ID: &str = "windows-10.0-x86_64-docker-linux";
+
+/// A validated catalog and the signed release identity that supplied its raw bytes.
+#[derive(Clone, Debug)]
+pub struct TrustedCatalog {
+    pub document: Value,
+    pub generation: u64,
+    pub digest: String,
+    pub metadata: Option<crate::catalog_metadata::CatalogMetadata>,
+}
+
+impl Deref for TrustedCatalog {
+    type Target = Value;
+
+    fn deref(&self) -> &Self::Target {
+        &self.document
+    }
+}
 
 /// Product components that this Windows installer is authorized to restart.
 pub const WINDOWS_PRODUCT_COMPONENT_IDS: &[&str] = &[
@@ -26,12 +45,151 @@ pub const WINDOWS_PRODUCT_COMPONENT_IDS: &[&str] = &[
 /// The broker is cataloged and pinned, but is not a normal Product container update target.
 pub const WINDOWS_MAINTENANCE_COMPONENT_ID: &str = "cyrene-runtime-maintenance";
 
-/// Parse and validate the immutable catalog embedded in this installer build.
-pub fn trusted_catalog() -> Result<Value, String> {
-    parse_catalog(EMBEDDED_CATALOG.as_bytes(), CATALOG_RAW_SHA256)
+const PLUGINS_CONNECTION_COMPONENT_IDS: &[&str] = &[
+    "cy-workspace-connector",
+    "cy-workspace-frontend-bridge",
+    "cy-workspace-relay",
+    "cy-workspace-sidecar",
+];
+
+/// Load the active catalog after re-verifying its detached GitHub attestation.
+///
+/// The embedded catalog is used only when no catalog state has ever been imported.
+pub fn trusted_catalog_at(app_dir: &Path) -> Result<TrustedCatalog, String> {
+    if let Some(package) = crate::catalog_metadata::load_active(app_dir)? {
+        return catalog_from_package(&package);
+    }
+
+    let document = parse_catalog(EMBEDDED_CATALOG.as_bytes(), CATALOG_RAW_SHA256)?;
+    let generation = document["generation"]
+        .as_u64()
+        .ok_or_else(|| "嵌入的 Workspace catalog generation 无效。".to_string())?;
+    Ok(TrustedCatalog {
+        document,
+        generation,
+        digest: format!("sha256:{CATALOG_RAW_SHA256}"),
+        metadata: None,
+    })
 }
 
-/// Verify catalog bytes against the source-controlled raw SHA-256 pin before parsing them.
+/// Recover an interrupted cache activation while the caller holds the shared updater lock.
+///
+/// Ordinary catalog reads never write state; callers that coordinate update operations must
+/// recover first under the same cross-process lock used by imports and service updates.
+pub fn recover_active_catalog(app_dir: &Path) -> Result<(), String> {
+    crate::catalog_metadata::recover_active(app_dir).map(|_| ())
+}
+
+/// Verify, validate, and explicitly activate one immutable Workspace catalog release.
+pub fn import_catalog_release(
+    app_dir: &Path,
+    channel: &str,
+    release_id: &str,
+) -> Result<TrustedCatalog, String> {
+    let package = crate::catalog_metadata::fetch_release(channel, release_id)?;
+    let candidate = catalog_from_package(&package)?;
+    let current = match trusted_catalog_at(app_dir) {
+        Ok(current) => Some(current),
+        Err(error)
+            if error
+                .starts_with(crate::catalog_metadata::CATALOG_ROOT_MISSING_COMMITTED_PREFIX)
+                || error
+                    .starts_with(crate::catalog_metadata::CATALOG_ROOT_MISSING_PENDING_PREFIX) =>
+        {
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(current) = current.as_ref() {
+        ensure_not_older_catalog(current, &candidate)?;
+    }
+    let (bootstrap_generation, bootstrap_digest) = match current.as_ref() {
+        Some(current) => (current.generation, current.digest.as_str()),
+        None => {
+            let embedded = parse_catalog(EMBEDDED_CATALOG.as_bytes(), CATALOG_RAW_SHA256)?;
+            let generation = embedded["generation"]
+                .as_u64()
+                .ok_or_else(|| "嵌入的 Workspace catalog generation 无效。".to_string())?;
+            (generation, CATALOG_RAW_SHA256)
+        }
+    };
+    crate::catalog_metadata::activate(app_dir, &package, bootstrap_generation, bootstrap_digest)?;
+    trusted_catalog_at(app_dir)
+}
+
+/// Discover and verify the latest channel catalog without changing the active catalog.
+pub fn latest_catalog_candidate(
+    app_dir: &Path,
+    channel: &str,
+) -> Result<Option<TrustedCatalog>, String> {
+    let Some(release_id) = crate::catalog_metadata::latest_release_id(channel)? else {
+        return Ok(None);
+    };
+    let package = crate::catalog_metadata::fetch_release(channel, &release_id)?;
+    let candidate = catalog_from_package(&package)?;
+    let current = trusted_catalog_at(app_dir)?;
+    ensure_not_older_catalog(&current, &candidate)?;
+    Ok(Some(candidate))
+}
+
+fn catalog_from_package(
+    package: &crate::catalog_metadata::CatalogPackage,
+) -> Result<TrustedCatalog, String> {
+    crate::catalog_metadata::verify_package(package)?;
+    let digest = package
+        .metadata
+        .catalog_sha256
+        .strip_prefix("sha256:")
+        .ok_or_else(|| "catalog receipt catalogSha256 格式无效。".to_string())?;
+    let document = parse_catalog(&package.raw, digest)?;
+    validate_plugins_connection_discovery(&document)?;
+    let generation = document
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "受信 Workspace catalog generation 无效。".to_string())?;
+    if generation != package.metadata.generation {
+        return Err("受信 Workspace catalog generation 与 release receipt 不一致。".to_string());
+    }
+    Ok(TrustedCatalog {
+        document,
+        generation,
+        digest: package.metadata.catalog_sha256.clone(),
+        metadata: Some(package.metadata.clone()),
+    })
+}
+
+fn ensure_not_older_catalog(
+    current: &TrustedCatalog,
+    candidate: &TrustedCatalog,
+) -> Result<(), String> {
+    if candidate.generation < current.generation {
+        return Err(format!(
+            "Workspace catalog generation 回退：active={} candidate={}。",
+            current.generation, candidate.generation
+        ));
+    }
+    if candidate.generation == current.generation && candidate.digest != current.digest {
+        return Err("同一 Workspace catalog generation 不得对应不同 SHA-256。".to_string());
+    }
+    Ok(())
+}
+
+/// Return the immutable bootstrap catalog for source-level validation.
+#[cfg(test)]
+pub fn trusted_catalog() -> Result<TrustedCatalog, String> {
+    let document = parse_catalog(EMBEDDED_CATALOG.as_bytes(), CATALOG_RAW_SHA256)?;
+    let generation = document["generation"]
+        .as_u64()
+        .ok_or_else(|| "嵌入的 Workspace catalog generation 无效。".to_string())?;
+    Ok(TrustedCatalog {
+        document,
+        generation,
+        digest: format!("sha256:{CATALOG_RAW_SHA256}"),
+        metadata: None,
+    })
+}
+
+/// Verify raw catalog bytes against their expected SHA-256 before parsing them.
 pub fn parse_catalog(bytes: &[u8], expected_sha256: &str) -> Result<Value, String> {
     let actual_sha256 = Sha256::digest(bytes)
         .iter()
@@ -39,11 +197,11 @@ pub fn parse_catalog(bytes: &[u8], expected_sha256: &str) -> Result<Value, Strin
         .collect::<String>();
     if actual_sha256 != expected_sha256 {
         return Err(format!(
-            "嵌入的 Workspace component catalog SHA-256 不匹配（expected {expected_sha256}, actual {actual_sha256}）。"
+            "Workspace component catalog SHA-256 不匹配（expected {expected_sha256}, actual {actual_sha256}）。"
         ));
     }
     let catalog: Value = serde_json::from_slice(bytes)
-        .map_err(|error| format!("嵌入的 Workspace component catalog JSON 无效: {error}"))?;
+        .map_err(|error| format!("Workspace component catalog JSON 无效: {error}"))?;
     validate_catalog(&catalog)?;
     Ok(catalog)
 }
@@ -57,11 +215,12 @@ fn validate_catalog(catalog: &Value) -> Result<(), String> {
             "Workspace component catalog schemaVersion/defaultChannel 不受支持。".to_string(),
         );
     }
-    if catalog.get("generation").and_then(Value::as_u64) != Some(5)
-        || catalog["activitySourceCatalog"]["path"].as_str()
-            != Some("/var/lib/cyrene/runtime/activity-sources.json")
+    if catalog
+        .get("generation")
+        .and_then(Value::as_u64)
+        .is_none_or(|value| value == 0)
     {
-        return Err("Workspace catalog generation/activity source location 与 Client broker bridge 不匹配。".to_string());
+        return Err("Workspace catalog generation 无效。".to_string());
     }
     validate_channel(
         catalog,
@@ -105,20 +264,24 @@ fn validate_catalog(catalog: &Value) -> Result<(), String> {
         if !publisher_ids.insert(repository.to_ascii_lowercase()) {
             return Err(format!("Workspace catalog publisher `{repository}` 重复。"));
         }
-        let workflow_name = if repository == "DoHorizon-AI/Cyrene-Workspace" {
-            "data-bundle-release.yml"
-        } else {
-            "component-release.yml"
-        };
-        let expected_workflow = format!("{repository}/.github/workflows/{workflow_name}");
-        if publisher.get("workflow").and_then(Value::as_str) != Some(expected_workflow.as_str()) {
+        let workflow = publisher
+            .get("workflow")
+            .and_then(Value::as_str)
+            .filter(|workflow| valid_publisher_workflow(workflow, repository))
+            .ok_or_else(|| {
+                format!("Workspace publisher `{repository}` workflow identity 无效。")
+            })?;
+        if workflow.len() > 256 {
             return Err(format!(
-                "Workspace publisher `{repository}` workflow 不匹配固定 release workflow。"
+                "Workspace publisher `{repository}` workflow identity 超出长度限制。"
             ));
         }
         let expected_api =
             format!("https://api.github.com/repos/{repository}/releases?per_page=100");
-        if publisher["releaseDiscovery"]["apiUri"].as_str() != Some(expected_api.as_str())
+        if publisher["releaseDiscovery"]
+            .as_object()
+            .is_none_or(|value| value.len() != 2)
+            || publisher["releaseDiscovery"]["apiUri"].as_str() != Some(expected_api.as_str())
             || publisher["releaseDiscovery"]["indexAssetName"].as_str()
                 != Some("component-release-index-v1.json")
         {
@@ -148,6 +311,29 @@ fn validate_catalog(catalog: &Value) -> Result<(), String> {
             return Err(format!(
                 "Workspace component `{component_id}` publisher 未固定。"
             ));
+        }
+        if let Some(discovery) = component.get("releaseDiscovery") {
+            if discovery.as_object().is_none_or(|value| value.len() != 1) {
+                return Err(format!(
+                    "Workspace component `{component_id}` releaseDiscovery 格式无效。"
+                ));
+            }
+            let prefixes = discovery.get("tagPrefixes").ok_or_else(|| {
+                format!("Workspace component `{component_id}` releaseDiscovery 缺少 tagPrefixes。")
+            })?;
+            if prefixes.as_object().is_none_or(|value| value.len() != 2) {
+                return Err(format!(
+                    "Workspace component `{component_id}` tagPrefixes 必须仅包含 preview/stable。"
+                ));
+            }
+            for channel in ["preview", "stable"] {
+                let expected = format!("{channel}-{component_id}-");
+                if prefixes.get(channel).and_then(Value::as_str) != Some(expected.as_str()) {
+                    return Err(format!(
+                        "Workspace component `{component_id}` 的 `{channel}` release tag prefix 不匹配。"
+                    ));
+                }
+            }
         }
     }
     let groups = catalog
@@ -265,6 +451,68 @@ fn validate_catalog(catalog: &Value) -> Result<(), String> {
     }
     crate::windows_runtime::validate_catalog_bindings(catalog)?;
     Ok(())
+}
+
+/// Require component-scoped release tags before accepting a dynamically imported catalog.
+///
+/// The embedded generation-5 bootstrap predates this field and remains usable for its other
+/// pinned targets. Imported catalogs follow the shared metadata contract and must declare all
+/// four Plugins connection components explicitly so another component's release cannot mask
+/// their candidates.
+fn validate_plugins_connection_discovery(catalog: &Value) -> Result<(), String> {
+    let components = catalog
+        .get("components")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Workspace component catalog 缺少 components。".to_string())?;
+    for component_id in PLUGINS_CONNECTION_COMPONENT_IDS {
+        let component = components
+            .iter()
+            .find(|component| {
+                component.get("componentId").and_then(Value::as_str) == Some(component_id)
+            })
+            .ok_or_else(|| {
+                format!("动态 Workspace catalog 缺少 Plugins component `{component_id}`。")
+            })?;
+        let discovery = component
+            .get("releaseDiscovery")
+            .and_then(Value::as_object)
+            .filter(|discovery| discovery.len() == 1)
+            .ok_or_else(|| {
+                format!("动态 Workspace component `{component_id}` 缺少 releaseDiscovery。")
+            })?;
+        let prefixes = discovery
+            .get("tagPrefixes")
+            .and_then(Value::as_object)
+            .filter(|prefixes| prefixes.len() == 2)
+            .ok_or_else(|| {
+                format!("动态 Workspace component `{component_id}` tagPrefixes 无效。")
+            })?;
+        for channel in ["preview", "stable"] {
+            let expected = format!("{channel}-{component_id}-");
+            if prefixes.get(channel).and_then(Value::as_str) != Some(expected.as_str()) {
+                return Err(format!(
+                    "动态 Workspace component `{component_id}` 的 `{channel}` tag prefix 不匹配。"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn valid_publisher_workflow(workflow: &str, repository: &str) -> bool {
+    let prefix = format!("{repository}/.github/workflows/");
+    let Some(path) = workflow.strip_prefix(&prefix) else {
+        return false;
+    };
+    !path.is_empty()
+        && path.len() <= 192
+        && !path.starts_with('/')
+        && !path.contains("..")
+        && !path.contains('\\')
+        && path
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
+        && (path.ends_with(".yml") || path.ends_with(".yaml"))
 }
 
 fn validate_channel(
