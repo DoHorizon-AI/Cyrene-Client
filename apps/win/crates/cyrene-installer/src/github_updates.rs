@@ -278,10 +278,21 @@ pub fn discover_windows_compatibility_group(
         if compatibility.get("groupId").and_then(Value::as_str) != Some(group_id)
             || compatibility.get("contractApiVersion") != group.get("contractApiVersion")
             || compatibility.get("wireApiVersion") != group.get("wireApiVersion")
-            || compatibility.get("contractLock") != group.get("contractLock")
         {
             return Err(format!(
-                "required member `{component_id}` compatibility pins 与受信 group 不匹配。"
+                "required member `{component_id}` compatibility tuple 与受信 group 不匹配。"
+            ));
+        }
+        if candidate
+            .verified
+            .manifest
+            .get("schemaVersion")
+            .and_then(Value::as_u64)
+            == Some(2)
+            && compatibility.get("contractLock") != group.get("contractLock")
+        {
+            return Err(format!(
+                "required V2 member `{component_id}` contractLock 与受信 group 不匹配。"
             ));
         }
         if let Some(expected) = &expected_compatibility {
