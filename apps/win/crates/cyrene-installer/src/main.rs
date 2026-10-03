@@ -19,6 +19,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod catalog_metadata;
 mod component_catalog;
 mod github_updates;
 mod maintenance;
@@ -129,6 +130,17 @@ const TOOLS: &[ToolSpec] = &[
 fn main() {
     let args: Vec<String> = env::args().collect();
 
+    if args
+        .iter()
+        .any(|arg| arg == "--check-component-catalog" || arg == "--import-component-catalog")
+    {
+        if let Err(error) = run_component_catalog_command(&args, &get_cyrene_home()) {
+            eprintln!("\n❌ Workspace catalog 操作失败: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if args.iter().any(|arg| arg == "--updates-stdio") {
         run_updates_stdio(&args, &get_cyrene_home());
         return;
@@ -212,6 +224,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Err(error) = component_catalog::recover_active_catalog(&app_dir) {
+        eprintln!("\n❌ 无法恢复上次未完成的 Workspace catalog 导入: {error}");
+        std::process::exit(1);
+    }
     if let Err(error) = recover_interrupted_update(&app_dir) {
         eprintln!("\n❌ 无法恢复上次未完成的服务更新: {error}");
         std::process::exit(1);
@@ -339,13 +355,6 @@ fn dispatch_update_request(
                     false,
                 ));
             }
-            let catalog = component_catalog::trusted_catalog().map_err(|error| {
-                (
-                    "UPDATE_CATALOG_INVALID",
-                    format!("无法载入受信 Workspace component catalog: {error}"),
-                    false,
-                )
-            })?;
             let requested = request.get("componentIds");
             if let Some(component_ids) = requested {
                 let Some(component_ids) = component_ids.as_array() else {
@@ -392,8 +401,17 @@ fn dispatch_update_request(
             }
             let _lock = acquire_service_update_lock(app_dir)
                 .map_err(|error| ("UPDATE_LOCKED", error, true))?;
+            component_catalog::recover_active_catalog(app_dir)
+                .map_err(|error| ("UPDATE_CATALOG_RECOVERY_REQUIRED", error, false))?;
             recover_interrupted_update(app_dir)
                 .map_err(|error| ("UPDATE_RECOVERY_REQUIRED", error, false))?;
+            let catalog = component_catalog::trusted_catalog_at(app_dir).map_err(|error| {
+                (
+                    "UPDATE_CATALOG_INVALID",
+                    format!("无法载入受信 Workspace component catalog: {error}"),
+                    false,
+                )
+            })?;
             check_product_updates(app_dir, &catalog, channel, requested)
                 .map_err(|error| ("UPDATE_CHECK_FAILED", error, true))
         }
@@ -439,9 +457,11 @@ fn dispatch_update_request(
             };
             let _lock = acquire_service_update_lock(app_dir)
                 .map_err(|error| ("UPDATE_LOCKED", error, true))?;
+            component_catalog::recover_active_catalog(app_dir)
+                .map_err(|error| ("UPDATE_CATALOG_RECOVERY_REQUIRED", error, false))?;
             recover_interrupted_update(app_dir)
                 .map_err(|error| ("UPDATE_RECOVERY_REQUIRED", error, false))?;
-            let catalog = component_catalog::trusted_catalog()
+            let catalog = component_catalog::trusted_catalog_at(app_dir)
                 .map_err(|error| ("UPDATE_CATALOG_INVALID", error, false))?;
             stage_update_plan(app_dir, &catalog, plan_id, plan_digest, channel)
                 .map_err(|error| ("UPDATE_STAGE_FAILED", error, true))
@@ -514,9 +534,11 @@ fn dispatch_update_request(
             };
             let _lock = acquire_service_update_lock(app_dir)
                 .map_err(|error| ("UPDATE_LOCKED", error, true))?;
+            component_catalog::recover_active_catalog(app_dir)
+                .map_err(|error| ("UPDATE_CATALOG_RECOVERY_REQUIRED", error, false))?;
             recover_interrupted_update(app_dir)
                 .map_err(|error| ("UPDATE_RECOVERY_REQUIRED", error, false))?;
-            let catalog = component_catalog::trusted_catalog()
+            let catalog = component_catalog::trusted_catalog_at(app_dir)
                 .map_err(|error| ("UPDATE_CATALOG_INVALID", error, false))?;
             apply_update_plan(app_dir, &catalog, plan_id, plan_digest, channel)
                 .map_err(|error| ("UPDATE_APPLY_FAILED", error, false))
@@ -536,11 +558,25 @@ fn has_only_keys(value: &serde_json::Value, allowed: &[&str]) -> bool {
 }
 
 fn windows_update_status(app_dir: &Path) -> serde_json::Value {
-    let catalog = match component_catalog::trusted_catalog() {
+    let catalog = match component_catalog::trusted_catalog_at(app_dir) {
         Ok(catalog) => catalog,
         Err(error) => {
             eprintln!("trusted component catalog is unavailable: {error}");
-            return serde_json::json!({"status": "unconfigured", "components": [], "plans": []});
+            let root_missing = error
+                .starts_with(catalog_metadata::CATALOG_ROOT_MISSING_COMMITTED_PREFIX)
+                || error.starts_with(catalog_metadata::CATALOG_ROOT_MISSING_PENDING_PREFIX);
+            let recovery_hint = if root_missing {
+                "Run `installer.exe --import-component-catalog --channel <stable|preview> --release-id <exact catalog tag>`; the installer will verify the release and enforce the protected pending/high-water tuple before rebuilding cache state."
+            } else {
+                "Retry with `installer.exe --check-component-catalog --channel stable` to attempt lock-protected recovery. The installer will not substitute the embedded bootstrap catalog when cache state is incomplete or corrupt."
+            };
+            return serde_json::json!({
+                "status": "unconfigured",
+                "components": [],
+                "plans": [],
+                "catalogError": error,
+                "catalogRecoveryHint": recovery_hint
+            });
         }
     };
     let check_report = read_check_report(app_dir).ok();
@@ -729,6 +765,12 @@ fn windows_update_status(app_dir: &Path) -> serde_json::Value {
     let plans = plans.iter().map(stored_plan_contract).collect::<Vec<_>>();
     serde_json::json!({
         "status": if readiness.is_ok() { "ready" } else { "unknown" },
+        "catalog": {
+            "generation": catalog.generation,
+            "digest": catalog.digest,
+            "releaseId": catalog.metadata.as_ref().map(|metadata| metadata.release_id.as_str()),
+            "channel": catalog.metadata.as_ref().map(|metadata| metadata.channel.as_str()),
+        },
         "components": components,
         "plans": plans
     })
@@ -736,7 +778,7 @@ fn windows_update_status(app_dir: &Path) -> serde_json::Value {
 
 fn check_product_updates(
     app_dir: &Path,
-    catalog: &serde_json::Value,
+    catalog: &component_catalog::TrustedCatalog,
     channel: &str,
     requested: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
@@ -860,10 +902,12 @@ fn check_product_updates(
                             })
                             .collect::<Vec<_>>();
                         let (plan_id, plan_digest) =
-                            release_update::plan_id_and_digest_with_authority_artifact(
+                            release_update::plan_id_and_digest_with_catalog(
                                 channel,
                                 &component_digests,
                                 Some(&authority_artifact_id),
+                                catalog.generation,
+                                &catalog.digest,
                             )?;
                         let stored_components = candidates_for_plan
                             .into_iter()
@@ -888,6 +932,8 @@ fn check_product_updates(
                                 plan_digest,
                                 channel: channel.to_string(),
                                 phase: "checked".to_string(),
+                                catalog_generation: catalog.generation,
+                                catalog_digest: catalog.digest.clone(),
                                 authority_artifact_id: Some(authority_artifact_id),
                                 components: stored_components,
                             },
@@ -970,13 +1016,21 @@ fn check_product_updates(
                             .as_ref()
                             .map(|_| candidate.verified.target_id.clone()),
                     };
-                    let (plan_id, plan_digest) = release_update::plan_id_and_digest(channel, &[component_digest])?;
+                    let (plan_id, plan_digest) = release_update::plan_id_and_digest_with_catalog(
+                        channel,
+                        &[component_digest],
+                        None,
+                        catalog.generation,
+                        &catalog.digest,
+                    )?;
                     let stored = StoredPlan {
                         schema_version: 1,
                         plan_id,
                         plan_digest,
                         channel: channel.to_string(),
                         phase: "checked".to_string(),
+                        catalog_generation: catalog.generation,
+                        catalog_digest: catalog.digest.clone(),
                         authority_artifact_id: None,
                         components: vec![StoredPlanComponent {
                             component_id: candidate.verified.component_id.clone(),
@@ -1032,7 +1086,7 @@ fn check_product_updates(
 
 fn stage_update_plan(
     app_dir: &Path,
-    catalog: &serde_json::Value,
+    catalog: &component_catalog::TrustedCatalog,
     plan_id: &str,
     plan_digest: &str,
     channel: Option<&str>,
@@ -1092,7 +1146,7 @@ fn stage_update_plan(
 
 fn apply_update_plan(
     app_dir: &Path,
-    catalog: &serde_json::Value,
+    catalog: &component_catalog::TrustedCatalog,
     plan_id: &str,
     plan_digest: &str,
     channel: Option<&str>,
@@ -1657,7 +1711,7 @@ fn rollback_windows_runtime_group(
         .get("cy-workspace-authority-host")
         .is_some_and(Option::is_some)
     {
-        let catalog = component_catalog::trusted_catalog()?;
+        let catalog = component_catalog::trusted_catalog_at(app_dir)?;
         let status = read_authority_admin_status()?;
         validate_authority_bundle_status(&catalog, &status, Some(&journal.authority_artifact_id))?;
     }
@@ -1669,7 +1723,7 @@ fn rollback_windows_runtime_group(
         let binding = windows_runtime::service(component_id)?;
         if let Some(expected) = previous_image {
             wait_for_container_health(&binding.container_name, Duration::from_secs(120))?;
-            let catalog = component_catalog::trusted_catalog()?;
+            let catalog = component_catalog::trusted_catalog_at(app_dir)?;
             verify_runtime_container_image_reference(&catalog, component_id, expected)?;
         } else if runtime_component_present(component_id) {
             return Err(format!(
@@ -1868,6 +1922,8 @@ fn stored_plan_contract(plan: &StoredPlan) -> serde_json::Value {
         "planDigest": plan.plan_digest,
         "channel": plan.channel,
         "phase": plan.phase,
+        "catalogGeneration": plan.catalog_generation,
+        "catalogDigest": plan.catalog_digest,
         "authorityArtifactId": plan.authority_artifact_id,
         "components": plan.components.iter().map(|component| serde_json::json!({
             "componentId": component.component_id,
@@ -1956,7 +2012,7 @@ fn save_stored_plan(app_dir: &Path, plan: &StoredPlan) -> Result<(), String> {
 }
 
 fn validate_stored_plan_metadata(
-    catalog: &serde_json::Value,
+    catalog: &component_catalog::TrustedCatalog,
     plan: &StoredPlan,
 ) -> Result<(), String> {
     if plan.schema_version != 1
@@ -1968,6 +2024,12 @@ fn validate_stored_plan_metadata(
         )
     {
         return Err("本机计划 schema、组件数或 phase 无效。".to_string());
+    }
+    if plan.catalog_generation != catalog.generation || plan.catalog_digest != catalog.digest {
+        return Err(
+            "本机更新计划属于另一 Workspace catalog generation/digest；必须重新检查发布。"
+                .to_string(),
+        );
     }
     let component_digests = plan
         .components
@@ -1998,10 +2060,12 @@ fn validate_stored_plan_metadata(
             "兼容组计划必须精确绑定 Authority 当前或初始 data-bundle artifactId。".to_string(),
         );
     }
-    let (plan_id, plan_digest) = release_update::plan_id_and_digest_with_authority_artifact(
+    let (plan_id, plan_digest) = release_update::plan_id_and_digest_with_catalog(
         &plan.channel,
         &component_digests,
         plan.authority_artifact_id.as_deref(),
+        plan.catalog_generation,
+        &plan.catalog_digest,
     )?;
     if plan_id != plan.plan_id || plan_digest != plan.plan_digest {
         return Err("本机计划 planId/planDigest 与组件集合不匹配。".to_string());
@@ -2367,8 +2431,107 @@ fn print_usage(prog: &str) {
     println!("  --update-service <NAME> 按不可变 digest 更新单个容器: exchange,reactor,yield,catalyst,echo");
     println!("  --manifest <PATH>       指向发布工作流产出的 service-update-manifest.json");
     println!("  --initialize-runtime-maintenance  验证已 pin broker release 并初始化本机五个 Product 活动源");
+    println!("  --check-component-catalog --channel <stable|preview>  校验最新目录候选但不激活");
+    println!("  --import-component-catalog --channel <stable|preview> --release-id <catalog-tag>  显式激活已验证目录");
     println!("  --generate-compose <PATH> 生成统一 docker-compose.yml 部署清单");
     println!("  -h, --help              显示帮助信息\n");
+}
+
+/// Inspect or explicitly activate a signed catalog release without installing services.
+fn run_component_catalog_command(args: &[String], app_dir: &Path) -> Result<(), String> {
+    let command = args
+        .get(1)
+        .map(String::as_str)
+        .ok_or_else(|| "缺少 Workspace catalog 命令。".to_string())?;
+    let channel = args
+        .get(3)
+        .filter(|value| !value.starts_with('-'))
+        .map(String::as_str)
+        .filter(|channel| matches!(*channel, "stable" | "preview"))
+        .ok_or_else(|| "必须指定 --channel stable|preview。".to_string())?;
+    let importing = command == "--import-component-catalog";
+    let checking = command == "--check-component-catalog";
+    if !importing && !checking {
+        return Err("Workspace catalog 命令不受支持。".to_string());
+    }
+    if (checking && (args.len() != 4 || args.get(2).map(String::as_str) != Some("--channel")))
+        || (importing
+            && (args.len() != 6
+                || args.get(2).map(String::as_str) != Some("--channel")
+                || args.get(4).map(String::as_str) != Some("--release-id")
+                || args.get(5).is_none_or(String::is_empty)))
+    {
+        return Err("catalog 命令参数无效；请使用 --help 查看完整格式。".to_string());
+    }
+
+    if importing {
+        ensure_update_operator()?;
+    }
+    let _lock = acquire_service_update_lock(app_dir)?;
+    if importing {
+        ensure_catalog_import_is_safe(app_dir)?;
+    }
+    if let Err(error) = component_catalog::recover_active_catalog(app_dir) {
+        let is_reimport_after_root_loss = importing
+            && (error.starts_with(catalog_metadata::CATALOG_ROOT_MISSING_COMMITTED_PREFIX)
+                || error.starts_with(catalog_metadata::CATALOG_ROOT_MISSING_PENDING_PREFIX));
+        if !is_reimport_after_root_loss {
+            return Err(error);
+        }
+    }
+    if importing {
+        let release_id = args[5].as_str();
+        let catalog = component_catalog::import_catalog_release(app_dir, channel, release_id)?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "active": true,
+                "channel": channel,
+                "generation": catalog.generation,
+                "digest": catalog.digest,
+                "releaseId": catalog.metadata.as_ref().map(|metadata| metadata.release_id.as_str()),
+            })
+        );
+    } else {
+        let active = component_catalog::trusted_catalog_at(app_dir)?;
+        let candidate = component_catalog::latest_catalog_candidate(app_dir, channel)?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "active": {
+                    "generation": active.generation,
+                    "digest": active.digest,
+                    "releaseId": active.metadata.as_ref().map(|metadata| metadata.release_id.as_str()),
+                },
+                "candidate": candidate.as_ref().map(|catalog| serde_json::json!({
+                    "channel": channel,
+                    "generation": catalog.generation,
+                    "digest": catalog.digest,
+                    "releaseId": catalog.metadata.as_ref().map(|metadata| metadata.release_id.as_str()),
+                    "alreadyActive": catalog.generation == active.generation && catalog.digest == active.digest,
+                })),
+                "activated": false,
+            })
+        );
+    }
+    Ok(())
+}
+
+/// Prevent catalog activation while a durable service update or recovery is unfinished.
+fn ensure_catalog_import_is_safe(app_dir: &Path) -> Result<(), String> {
+    if update_journal_path(app_dir).exists() || windows_runtime_journal_path(app_dir).exists() {
+        return Err(
+            "存在未完成的服务更新 journal；先完成或恢复该操作，再导入 catalog。".to_string(),
+        );
+    }
+    if read_stored_plans(app_dir)
+        .map_err(|error| format!("无法确认本机更新计划状态: {error}"))?
+        .iter()
+        .any(|plan| plan.phase == "applying")
+    {
+        return Err("存在 applying 更新计划；拒绝在事务中切换 catalog。".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Deserialize, Serialize)]
@@ -2390,6 +2553,10 @@ struct StoredPlan {
     plan_digest: String,
     channel: String,
     phase: String,
+    #[serde(default)]
+    catalog_generation: u64,
+    #[serde(default)]
+    catalog_digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     authority_artifact_id: Option<String>,
     components: Vec<StoredPlanComponent>,
@@ -2547,6 +2714,7 @@ fn update_service_from_manifest(
     ensure_update_operator()?;
 
     let _update_lock = acquire_service_update_lock(app_dir)?;
+    component_catalog::recover_active_catalog(app_dir)?;
     recover_interrupted_update(app_dir)?;
 
     let expected_repository = format!("ghcr.io/dohorizon-ai/cyrene-{}", tool.id);
@@ -2618,7 +2786,7 @@ fn apply_product_image(
         .ok_or_else(|| format!("无法从容器 `{container_name}` 读取当前镜像引用。"))?;
     let previous_image = immutable_repo_digest(image_id, &configured_image, container_image)?;
 
-    let catalog = component_catalog::trusted_catalog()?;
+    let catalog = component_catalog::trusted_catalog_at(app_dir)?;
     let component_id = format!("cyrene-{}", tool.id);
     let candidate_digest = candidate_image
         .rsplit_once('@')
@@ -3569,9 +3737,8 @@ fn validate_windows_runtime_configuration(app_dir: &Path) -> Result<(), String> 
             ));
         }
     }
-    if let Err(error) =
-        selected_workspace_bundle_artifact_id(app_dir, &component_catalog::trusted_catalog()?)
-    {
+    let trusted_catalog = component_catalog::trusted_catalog_at(app_dir)?;
+    if let Err(error) = selected_workspace_bundle_artifact_id(app_dir, &trusted_catalog.document) {
         missing.push(format!(
             "Authority data-bundle bootstrap/activation: {error}"
         ));
@@ -4297,7 +4464,7 @@ fn recover_interrupted_windows_runtime_group(app_dir: &Path) -> Result<(), Strin
             "Workspace group 恢复记录身份/字段校验失败，更新锁保持 fail closed。".to_string(),
         );
     }
-    let catalog = component_catalog::trusted_catalog()?;
+    let catalog = component_catalog::trusted_catalog_at(app_dir)?;
     let plan = load_stored_plan(app_dir, &journal.plan_id)?;
     if plan.plan_digest != journal.plan_digest
         || plan.authority_artifact_id.as_deref() != Some(journal.authority_artifact_id.as_str())
@@ -4739,6 +4906,10 @@ fn deploy_selected_tools(
             return;
         }
     };
+    if let Err(error) = component_catalog::recover_active_catalog(app_dir) {
+        eprintln!("\n❌ 无法恢复上次未完成的 Workspace catalog 导入，已取消部署: {error}");
+        return;
+    }
     if let Err(error) = recover_interrupted_update(app_dir) {
         eprintln!("\n❌ 无法恢复上次未完成的服务更新，已取消部署: {error}");
         return;
@@ -4770,7 +4941,7 @@ fn deploy_selected_tools(
         "\n>> [2/2] 正在编排 {} 个后端容器服务...",
         container_indices.len()
     );
-    let catalog = match component_catalog::trusted_catalog() {
+    let catalog = match component_catalog::trusted_catalog_at(app_dir) {
         Ok(catalog) => catalog,
         Err(error) => {
             eprintln!(
@@ -4933,8 +5104,9 @@ fn generate_docker_compose(indices: &[usize], broker_image: &str) -> String {
 fn initialize_runtime_maintenance_from_compose(app_dir: &Path) -> Result<(), String> {
     ensure_update_operator()?;
     let _lock = acquire_service_update_lock(app_dir)?;
+    component_catalog::recover_active_catalog(app_dir)?;
     recover_interrupted_update(app_dir)?;
-    let catalog = component_catalog::trusted_catalog()?;
+    let catalog = component_catalog::trusted_catalog_at(app_dir)?;
     let compose_file = app_dir.join("docker-compose.yml");
     let compose = fs::read_to_string(&compose_file)
         .map_err(|error| format!("无法读取 Compose 配置 {}: {error}", compose_file.display()))?;
@@ -5355,6 +5527,10 @@ fn perform_clean_uninstall(app_dir: &Path, force: bool) {
             return;
         }
     };
+    if let Err(error) = component_catalog::recover_active_catalog(app_dir) {
+        eprintln!("\n❌ 无法恢复上次未完成的 Workspace catalog 导入，已取消卸载: {error}");
+        return;
+    }
     if let Err(error) = recover_interrupted_update(app_dir) {
         eprintln!("\n❌ 无法恢复上次未完成的服务更新，已取消卸载: {error}");
         return;

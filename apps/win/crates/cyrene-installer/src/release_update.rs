@@ -36,6 +36,10 @@ struct PlanDigestMaterial {
     components: Vec<PlanComponentDigest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     authority_artifact_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog_generation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog_digest: Option<String>,
 }
 
 /// Compute the cross-platform plan ID/digest using the shared RFC 8785 material.
@@ -51,6 +55,36 @@ pub fn plan_id_and_digest_with_authority_artifact(
     channel: &str,
     components: &[PlanComponentDigest],
     authority_artifact_id: Option<&str>,
+) -> Result<(String, String), String> {
+    plan_id_and_digest_bound(channel, components, authority_artifact_id, None, None)
+}
+
+/// Bind a plan to the exact trusted catalog generation and raw-byte digest.
+pub fn plan_id_and_digest_with_catalog(
+    channel: &str,
+    components: &[PlanComponentDigest],
+    authority_artifact_id: Option<&str>,
+    catalog_generation: u64,
+    catalog_digest: &str,
+) -> Result<(String, String), String> {
+    if catalog_generation == 0 || !is_digest(catalog_digest) {
+        return Err("更新计划 Workspace catalog generation/digest 无效。".to_string());
+    }
+    plan_id_and_digest_bound(
+        channel,
+        components,
+        authority_artifact_id,
+        Some(catalog_generation),
+        Some(catalog_digest),
+    )
+}
+
+fn plan_id_and_digest_bound(
+    channel: &str,
+    components: &[PlanComponentDigest],
+    authority_artifact_id: Option<&str>,
+    catalog_generation: Option<u64>,
+    catalog_digest: Option<&str>,
 ) -> Result<(String, String), String> {
     if !matches!(channel, "stable" | "preview") || components.is_empty() {
         return Err("更新计划 channel 或 components 无效。".to_string());
@@ -73,6 +107,8 @@ pub fn plan_id_and_digest_with_authority_artifact(
         channel: channel.to_string(),
         components,
         authority_artifact_id: authority_artifact_id.map(str::to_string),
+        catalog_generation,
+        catalog_digest: catalog_digest.map(str::to_string),
     };
     let bytes = serde_jcs::to_vec(&material)
         .map_err(|error| format!("无法按 RFC 8785 编码更新计划: {error}"))?;

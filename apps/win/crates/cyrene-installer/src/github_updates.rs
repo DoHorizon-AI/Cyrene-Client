@@ -108,10 +108,14 @@ pub fn discover_windows_candidate_for_target(
     if releases.is_empty() {
         return Ok(None);
     }
+    let tag_prefix = component_release_tag_prefix(component, channel)?;
     let expected_prerelease = channel == "preview";
     let temporary = create_temp_directory(app_dir)?;
 
     for release in releases {
+        let Some(tag_commit) = release_tag_commit(&release, tag_prefix.as_deref()) else {
+            continue;
+        };
         if release.get("draft").and_then(Value::as_bool) != Some(false)
             || release.get("prerelease").and_then(Value::as_bool) != Some(expected_prerelease)
         {
@@ -140,6 +144,12 @@ pub fn discover_windows_candidate_for_target(
         let index: Value = serde_json::from_str(&index_json)
             .map_err(|error| format!("release index JSON 無效: {error}"))?;
         validate_release_index(&index, catalog, publisher, channel)?;
+        if tag_commit
+            .as_deref()
+            .is_some_and(|commit| index["source"]["commit"].as_str() != Some(commit))
+        {
+            continue;
+        }
         let candidate_entry = index
             .get("releases")
             .and_then(Value::as_array)
@@ -320,10 +330,14 @@ pub fn verify_windows_image_digest(
         .ok_or_else(|| format!("catalog publisher `{publisher}` 缺少 release API URI。"))?;
     let endpoint = github_api_route(api_uri)?;
     let releases = fetch_release_list(&endpoint)?;
+    let tag_prefix = component_release_tag_prefix(component, channel)?;
     let expected_prerelease = channel == "preview";
     let target_id = "windows-10.0-x86_64-docker-linux";
 
     for release in releases {
+        let Some(tag_commit) = release_tag_commit(&release, tag_prefix.as_deref()) else {
+            continue;
+        };
         if release.get("draft").and_then(Value::as_bool) != Some(false)
             || release.get("prerelease").and_then(Value::as_bool) != Some(expected_prerelease)
         {
@@ -352,6 +366,12 @@ pub fn verify_windows_image_digest(
         let index: Value = serde_json::from_str(&index_json)
             .map_err(|error| format!("release index JSON 无效: {error}"))?;
         validate_release_index(&index, catalog, publisher, channel)?;
+        if tag_commit
+            .as_deref()
+            .is_some_and(|commit| index["source"]["commit"].as_str() != Some(commit))
+        {
+            continue;
+        }
         let entries = index
             .get("releases")
             .and_then(Value::as_array)
@@ -657,13 +677,62 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 fn fetch_release_list(endpoint: &str) -> Result<Vec<Value>, String> {
-    let jq = "[.[] | {draft, prerelease, assets: [.assets[]? | select(.name == \"component-release-index-v1.json\") | {name, url, digest}]}]";
+    let jq = "[.[] | {tag_name, draft, prerelease, assets: [.assets[]? | select(.name == \"component-release-index-v1.json\") | {name, url, digest}]}]";
     let output = run_gh_capture(
         ["api", "--hostname", "github.com", "--jq", jq, endpoint],
         MAX_JSON_BYTES,
     )?;
     serde_json::from_slice(&output)
         .map_err(|error| format!("GitHub releases API JSON 无效: {error}"))
+}
+
+/// Resolve the optional component-specific release tag prefix from trusted catalog metadata.
+fn component_release_tag_prefix(
+    component: &Value,
+    channel: &str,
+) -> Result<Option<String>, String> {
+    let Some(discovery) = component.get("releaseDiscovery") else {
+        let component_id = component.get("componentId").and_then(Value::as_str);
+        if component.get("publisher").and_then(Value::as_str)
+            == Some("DoHorizon-AI/Cyrene-Plugins-Official")
+            && matches!(
+                component_id,
+                Some(
+                    "cy-workspace-connector"
+                        | "cy-workspace-frontend-bridge"
+                        | "cy-workspace-relay"
+                        | "cy-workspace-sidecar"
+                )
+            )
+        {
+            return Err(format!(
+                "Plugins component `{}` 缺少 component-scoped releaseDiscovery；请先显式导入新目录。",
+                component_id.unwrap_or_default()
+            ));
+        }
+        return Ok(None);
+    };
+    let prefix = discovery
+        .get("tagPrefixes")
+        .and_then(|value| value.get(channel))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 256)
+        .ok_or_else(|| "component releaseDiscovery 缺少有效 channel tag prefix。".to_string())?;
+    Ok(Some(prefix.to_string()))
+}
+
+/// Return the source SHA encoded by a component-scoped release tag, if required.
+fn release_tag_commit(release: &Value, prefix: Option<&str>) -> Option<Option<String>> {
+    let Some(prefix) = prefix else {
+        return Some(None);
+    };
+    let tag = release.get("tag_name").and_then(Value::as_str)?;
+    let commit = tag.strip_prefix(prefix)?;
+    (commit.len() == 40
+        && commit
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then(|| Some(commit.to_string()))
 }
 
 fn fetch_release_asset(uri: &str, publisher: &str) -> Result<Vec<u8>, String> {
