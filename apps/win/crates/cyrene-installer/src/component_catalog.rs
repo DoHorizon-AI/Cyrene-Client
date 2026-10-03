@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 const EMBEDDED_CATALOG: &str = include_str!("component-catalog-v1.json");
-const CATALOG_RAW_SHA256: &str = "28fc1ef65a38658aeabb2bf23b7a35e91cb64774612f387936a971dfec2bd3dc";
+const CATALOG_RAW_SHA256: &str = "f12f5cd1243d16b6ec6a5194efacbdf7a8bf9dffcf8d9525c35183c45a7c7816";
 const WINDOWS_TARGET_ID: &str = "windows-10.0-x86_64-docker-linux";
 
 /// Product components that this Windows installer is authorized to restart.
@@ -57,7 +57,7 @@ fn validate_catalog(catalog: &Value) -> Result<(), String> {
             "Workspace component catalog schemaVersion/defaultChannel 不受支持。".to_string(),
         );
     }
-    if catalog.get("generation").and_then(Value::as_u64) != Some(4)
+    if catalog.get("generation").and_then(Value::as_u64) != Some(5)
         || catalog["activitySourceCatalog"]["path"].as_str()
             != Some("/var/lib/cyrene/runtime/activity-sources.json")
     {
