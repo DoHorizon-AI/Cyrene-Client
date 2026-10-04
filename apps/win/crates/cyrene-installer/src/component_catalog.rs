@@ -13,7 +13,7 @@ use std::ops::Deref;
 use std::path::Path;
 
 const EMBEDDED_CATALOG: &str = include_str!("component-catalog-v1.json");
-const CATALOG_RAW_SHA256: &str = "f12f5cd1243d16b6ec6a5194efacbdf7a8bf9dffcf8d9525c35183c45a7c7816";
+const CATALOG_RAW_SHA256: &str = "9908229d8abee4cb3f1b5a55d8be5264310939e4b43700de0dfd37be7318c701";
 const WINDOWS_TARGET_ID: &str = "windows-10.0-x86_64-docker-linux";
 
 /// A validated catalog and the signed release identity that supplied its raw bytes.
@@ -551,6 +551,65 @@ mod tests {
     fn embedded_catalog_matches_its_exact_raw_hash_pin() {
         let catalog = trusted_catalog().expect("embedded catalog pin should match");
         assert_eq!(catalog["schemaVersion"], Value::from(1));
+        assert_eq!(catalog["generation"], Value::from(9));
+    }
+
+    #[test]
+    fn embedded_catalog_supports_only_the_five_linux22_python_products() {
+        let catalog = trusted_catalog().expect("embedded catalog pin should match");
+        let target_id = "linux-ubuntu-22.04-x86_64-python-3.12";
+        let target = catalog["targets"]
+            .as_array()
+            .expect("catalog targets should be an array")
+            .iter()
+            .find(|target| target["id"] == target_id)
+            .expect("Ubuntu 22.04 Python target should be present");
+
+        assert_eq!(target["hostSupport"], "supported");
+        assert_eq!(target["target"]["osVersion"], "22.04");
+        assert_eq!(target["target"]["distributionVersion"], "22.04");
+        assert_eq!(target["target"]["architecture"], "x86_64");
+        assert_eq!(target["target"]["abi"], "glibc-2.35");
+        assert_eq!(target["target"]["runtime"], "python:3.12");
+
+        let components = catalog["components"]
+            .as_array()
+            .expect("catalog components should be an array");
+        for component_id in [
+            "cyrene-catalyst",
+            "cyrene-exchange",
+            "cyrene-navigator",
+            "cyrene-reactor",
+            "cyrene-yield",
+        ] {
+            let component = components
+                .iter()
+                .find(|component| component["componentId"] == component_id)
+                .expect("Product component should be present");
+            assert!(component["targets"].as_array().is_some_and(|targets| {
+                targets.iter().any(|item| {
+                    item["targetId"] == target_id
+                        && item["artifactKind"] == "python-bundle"
+                        && item["support"] == "supported"
+                })
+            }));
+        }
+
+        let echo = components
+            .iter()
+            .find(|component| component["componentId"] == "cyrene-echo")
+            .expect("Echo component should be present");
+        assert!(!echo["targets"]
+            .as_array()
+            .is_some_and(|targets| { targets.iter().any(|item| item["targetId"] == target_id) }));
+
+        let navigator = components
+            .iter()
+            .find(|component| component["componentId"] == "cyrene-navigator")
+            .expect("Navigator component should be present");
+        assert!(!navigator["artifactKinds"]
+            .as_array()
+            .is_some_and(|kinds| kinds.iter().any(|kind| kind == "oci-image")));
     }
 
     #[test]
