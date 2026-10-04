@@ -1260,6 +1260,7 @@ mod tests {
                 "groupId": group_id,
                 "contractApiVersion": "0.1.0",
                 "wireApiVersion": wire_version,
+                "contractLock": lock,
                 "members": [{
                     "componentId": "cy-workspace-authority-host",
                     "protocolVersion": protocol_version,
