@@ -50,7 +50,8 @@ describe("independent control service", () => {
       const chunks: Buffer[] = [];
       req.on("data", chunk => chunks.push(Buffer.from(chunk)));
       req.on("end", () => {
-        forwarded.push({ url: req.url, method: req.method, authorization: req.headers.authorization, lastEventId: req.headers["last-event-id"], body: Buffer.concat(chunks).toString("utf8") });
+        const lastEventId = req.headers["last-event-id"];
+        forwarded.push({ url: req.url, method: req.method, authorization: req.headers.authorization, lastEventId: Array.isArray(lastEventId) ? lastEventId[0] : lastEventId, body: Buffer.concat(chunks).toString("utf8") });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ items: [], nextCursor: null }));
       });
