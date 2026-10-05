@@ -96,6 +96,127 @@ export interface DeploymentEventsResponse {
 }
 
 /**
+ * Server-owned assistant task returned by Navigator's task API.
+ * 中文：由 Navigator task API 管理并返回的助手任务。
+ */
+export interface NavigatorTaskRecord extends JsonRecord {
+  id: string;
+  workspaceId: string;
+  sessionId: string;
+  prompt: string;
+  status: "queued" | "running" | "completed" | "failed" | "aborted" | "waiting_approval" | "waiting_input";
+  createdAt: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  output: string;
+  reasoning: string;
+  error: string | null;
+  durationMs: number;
+  sequence: number;
+  title?: string | null;
+  description?: string | null;
+  metadata: JsonRecord;
+}
+
+/** A durable task event with its server-assigned sequence. 中文：带服务端序号的持久任务事件。 */
+export interface NavigatorTaskEvent {
+  sequence: number;
+  name: string;
+  data: JsonRecord;
+}
+
+export interface NavigatorTaskPage {
+  items: NavigatorTaskRecord[];
+  nextCursor: string | null;
+}
+
+export interface WorkApproval extends JsonRecord {
+  id: string;
+  taskId: string;
+  kind: string;
+  summary: string;
+  details: JsonRecord;
+  status: "pending" | "approved" | "rejected";
+}
+
+export interface WorkInput extends JsonRecord {
+  id: string;
+  taskId: string;
+  summary: string;
+  details: JsonRecord;
+  status: "pending" | "answered";
+  createdAt: number;
+  answeredAt: number | null;
+  answeredBy: string | null;
+  answer?: JsonRecord;
+  messageId?: string;
+}
+
+export interface MemoryFact extends JsonRecord {
+  id: string;
+  namespace: string;
+  key: string;
+  value: JsonRecord;
+  observedAt: number;
+  freshUntil: number | null;
+  missing: boolean;
+  stale: boolean;
+  sourceId: string | null;
+}
+
+export interface WorkNotification extends JsonRecord {
+  id: string;
+  type: string;
+  status: "queued" | "leased" | "started" | "uncertain" | "delivered" | "failed";
+  payload: JsonRecord;
+  createdAt: number;
+}
+
+export interface WorkAttachment extends JsonRecord {
+  id: string;
+  sha256: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  createdAt: number;
+}
+
+export interface WorkConnector extends JsonRecord {
+  connectorId: string;
+  status: "unknown" | "disconnected" | "authenticating" | "login_required" | "connected" | "degraded" | "error";
+  configured?: boolean;
+  accountId: string | null;
+  detail: string | null;
+  updatedAt: number;
+  lastEventAt: number | null;
+}
+
+export interface QqConnectorHealth extends JsonRecord {
+  status: string;
+  hostState: string;
+  apiReady: boolean;
+  accountConfirmed: boolean;
+  generation: number | null;
+  clientVersion: string | null;
+  hostAbi: string | null;
+  failureCode: string | null;
+}
+
+export interface QqLoginChallenge {
+  loginId: string;
+  qrPayload: string;
+  expiresAtUtc: string;
+  state: "pending" | "scanned" | "authorized" | "expired" | "failed";
+  accountId?: string;
+}
+
+export interface QqLoginState {
+  loginId: string;
+  state: "pending" | "scanned" | "authorized" | "expired" | "failed";
+  accountId?: string;
+}
+
+/**
  * Safe host status; it intentionally contains no credential material.
  * 中文：安全的 Host 状态；其中有意不包含任何凭据材料。
  */
@@ -103,6 +224,7 @@ export interface SystemStatus {
   service: string;
   status: string;
   version: string;
+  workspaceId?: string;
   authenticated: boolean;
   proxyPrefixes: string[];
   credentials: {
@@ -896,6 +1018,187 @@ export class NavigatorApi {
     );
   }
 
+  /**
+   * Read the server-owned assistant task ledger through Control and Web Host.
+   * 中文：经 Control 与 Web Host 读取服务端管理的助手任务记录。
+   */
+  async getAssistantTasks(cursor?: string, limit = 50): Promise<NavigatorTaskPage> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set("cursor", cursor);
+    return this.requestJson(
+      `/api/v1/navigator/tasks?${query}`,
+      { method: "GET" },
+      parseTaskPage,
+    );
+  }
+
+  /**
+   * Submit a prompt; omitting sessionId asks Navigator to create a fresh agent session.
+   * 中文：提交提示词；省略 sessionId 时由 Navigator 创建新的 agent 会话。
+   */
+  async createAssistantTask(input: {
+    prompt: string;
+    sessionId?: string;
+    title?: string;
+    description?: string;
+    metadata?: JsonRecord;
+  }): Promise<NavigatorTaskRecord> {
+    return this.requestJson(
+      "/api/v1/navigator/tasks",
+      jsonRequest("POST", input, true),
+      parseTaskRecord,
+    );
+  }
+
+  /** Read the latest server-owned projection for one task. 中文：读取单项任务的最新服务端投影。 */
+  async getAssistantTask(id: string, signal?: AbortSignal): Promise<NavigatorTaskRecord> {
+    return this.requestJson(
+      `/api/v1/navigator/tasks/${encodeURIComponent(id)}`,
+      { method: "GET", signal },
+      parseTaskRecord,
+    );
+  }
+
+  /** Request cancellation and let the owner publish the resulting status. 中文：请求取消，并由所属服务发布最终状态。 */
+  async cancelAssistantTask(id: string): Promise<{ taskId: string; cancelled: boolean }> {
+    return this.requestJson(
+      `/api/v1/navigator/tasks/${encodeURIComponent(id)}/cancel`,
+      jsonRequest("POST", {}, true),
+      parseTaskCancellation,
+    );
+  }
+
+  /**
+   * Open the resumable event stream for one task without making the browser its state owner.
+   * 中文：打开单项任务的可续传事件流；浏览器不会因此成为任务状态权威。
+   */
+  async openAssistantTaskEvents(id: string, afterSequence: number, signal: AbortSignal): Promise<Response> {
+    if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) {
+      throw new NavigatorContractError("Invalid assistant task event cursor.");
+    }
+    const path = `/api/v1/navigator/tasks/${encodeURIComponent(id)}/events?after=${afterSequence}`;
+    const response = await this.requestResponse(path, {
+      method: "GET",
+      signal,
+      headers: { Accept: "text/event-stream", "Last-Event-ID": String(afterSequence) },
+    });
+    if (!response.ok) {
+      let problem: unknown;
+      try { problem = await response.json(); } catch { problem = undefined; }
+      throw toHttpError(response.status, problem);
+    }
+    if (!response.body || response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "text/event-stream") {
+      await response.body?.cancel();
+      throw new NavigatorContractError("Navigator did not return an assistant task event stream.");
+    }
+    return response;
+  }
+
+  /** Read pending approval records from the configured durable workspace. 中文：读取工作空间中的待审批记录。 */
+  async getWorkApprovals(workspaceId: string): Promise<WorkApproval[]> {
+    const query = new URLSearchParams({ status: "pending", limit: "100" });
+    return this.requestJson(workPath(workspaceId, `approvals?${query}`), { method: "GET" }, parseApprovalList);
+  }
+
+  /** Resolve an approval exactly once through its owning work service. 中文：通过所属工作服务一次性完成审批。 */
+  async resolveWorkApproval(workspaceId: string, approvalId: string, decision: "approved" | "rejected"): Promise<JsonRecord> {
+    return this.requestJson(
+      workPath(workspaceId, `approvals/${workId(approvalId)}/resolve`),
+      jsonRequest("POST", { decision, messageId: makeIdempotencyKey() }, true),
+      parseResource,
+    );
+  }
+
+  /** Read pending user-input requests owned by the configured workspace. 中文：读取当前工作空间中的待补充信息请求。 */
+  async getWorkInputs(workspaceId: string): Promise<WorkInput[]> {
+    const query = new URLSearchParams({ status: "pending", limit: "100" });
+    return this.requestJson(workPath(workspaceId, `inputs?${query}`), { method: "GET" }, parseWorkInputList);
+  }
+
+  /** Answer one durable user-input request through its workspace owner. 中文：通过工作空间服务回答一项持久化的信息请求。 */
+  async resolveWorkInput(workspaceId: string, inputId: string, answer: string, messageId = makeIdempotencyKey()): Promise<JsonRecord> {
+    return this.requestJson(
+      workPath(workspaceId, `inputs/${workId(inputId)}/resolve`),
+      jsonRequest("POST", { answer: { text: answer }, messageId }, messageId),
+      parseResource,
+    );
+  }
+
+  /** Read fresh and stale structured facts with provenance metadata. 中文：读取带来源信息的新旧结构化事实。 */
+  async getMemoryFacts(workspaceId: string): Promise<MemoryFact[]> {
+    const query = new URLSearchParams({ includeStale: "true", limit: "100" });
+    return this.requestJson(workPath(workspaceId, `memory/facts?${query}`), { method: "GET" }, parseMemoryFacts);
+  }
+
+  /** Search durable memory using the Work API's explicit text query. 中文：按明确查询读取持久记忆。 */
+  async queryMemory(workspaceId: string, queryText: string): Promise<MemoryFact[]> {
+    return this.requestJson(
+      workPath(workspaceId, "memory/query"),
+      jsonRequest("POST", { query: queryText, limit: 100, includeStale: true }),
+      parseMemoryFacts,
+    );
+  }
+
+  /** Store one user-provided fact with an explicit provenance label. 中文：以明确来源标签保存用户提供的事实。 */
+  async saveMemoryFact(workspaceId: string, input: { namespace: string; key: string; value: JsonRecord; sourceId?: string }): Promise<MemoryFact> {
+    return this.requestJson(
+      workPath(workspaceId, "memory/facts"),
+      jsonRequest("POST", input, true),
+      parseMemoryFact,
+    );
+  }
+
+  /** Read the workspace notification outbox without claiming or sending anything. 中文：只读通知发件箱，不租用或发送通知。 */
+  async getWorkNotifications(workspaceId: string): Promise<WorkNotification[]> {
+    const query = new URLSearchParams({ limit: "100" });
+    return this.requestJson(workPath(workspaceId, `notifications?${query}`), { method: "GET" }, parseNotificationList);
+  }
+
+  /** Upload one bounded attachment as base64 through the same-origin work proxy. 中文：通过同源 work 代理上传有大小上限的附件。 */
+  async uploadWorkAttachment(workspaceId: string, input: { name: string; mediaType: string; contentBase64: string }): Promise<WorkAttachment> {
+    return this.requestJson(workPath(workspaceId, "attachments"), jsonRequest("POST", input, true), parseAttachment);
+  }
+
+  /** Download by content digest; no arbitrary URL can be supplied. 中文：按内容摘要下载，不接受任意 URL。 */
+  async downloadWorkAttachment(workspaceId: string, sha256: string): Promise<Response> {
+    if (!/^[a-f0-9]{64}$/i.test(sha256)) throw new NavigatorContractError("Invalid attachment digest.");
+    const response = await this.requestResponse(workPath(workspaceId, `attachments/${sha256}`), { method: "GET" });
+    if (!response.ok) {
+      let problem: unknown;
+      try { problem = await response.json(); } catch { problem = undefined; }
+      throw toHttpError(response.status, problem);
+    }
+    return response;
+  }
+
+  /** Read safe connector projections without exposing host credentials. 中文：读取安全连接器投影，不暴露主机凭据。 */
+  async getWorkConnectors(workspaceId: string): Promise<WorkConnector[]> {
+    return this.requestJson(workPath(workspaceId, "connectors"), { method: "GET" }, parseConnectorList);
+  }
+
+  /** Probe the configured QQ binding on the Navigator host. 中文：检查 Navigator 主机上配置的 QQ binding。 */
+  async getQqHealth(workspaceId: string, bindingId: string): Promise<QqConnectorHealth> {
+    return this.requestJson(workPath(workspaceId, `connectors/${workId(bindingId)}/health`), { method: "GET" }, parseQqHealth);
+  }
+
+  /** Request a short-lived QR challenge for the configured QQ binding. 中文：为已配置 QQ binding 请求短时二维码。 */
+  async startQqLogin(workspaceId: string, bindingId: string): Promise<QqLoginChallenge> {
+    return this.requestJson(
+      workPath(workspaceId, `connectors/${workId(bindingId)}/login/qr`),
+      jsonRequest("POST", {}, true),
+      parseQqLoginChallenge,
+    );
+  }
+
+  /** Poll the binding-local login state without resubmitting QR data. 中文：查询 binding 本地登录状态，不重传二维码内容。 */
+  async pollQqLogin(workspaceId: string, bindingId: string, loginId: string): Promise<QqLoginState> {
+    return this.requestJson(
+      workPath(workspaceId, `connectors/${workId(bindingId)}/login/poll`),
+      jsonRequest("POST", { loginId }, true),
+      parseQqLoginState,
+    );
+  }
+
   private async requestJson<T>(
     path: string,
     init: RequestInit,
@@ -1116,6 +1419,7 @@ function parseSystemStatus(value: unknown): SystemStatus {
     service: requireString(record, "service", "system status"),
     status: requireString(record, "status", "system status"),
     version: requireString(record, "version", "system status"),
+    workspaceId: typeof record.workspaceId === "string" ? record.workspaceId : typeof record.workspace_id === "string" ? record.workspace_id : undefined,
     authenticated: requireBoolean(record, "authenticated", "system status"),
     proxyPrefixes: prefixes,
     credentials: {
@@ -1233,6 +1537,241 @@ function parseResource(value: unknown): JsonRecord {
   return requireRecord(value, "Product resource");
 }
 
+function parseTaskRecord(value: unknown): NavigatorTaskRecord {
+  const record = requireRecord(value, "assistant task");
+  const metadata = requireRecord(record.metadata, "assistant task metadata");
+  const status = requireString(record, "status", "assistant task");
+  const statuses: NavigatorTaskRecord["status"][] = ["queued", "running", "completed", "failed", "aborted", "waiting_approval", "waiting_input"];
+  if (!statuses.includes(status as NavigatorTaskRecord["status"])) {
+    throw new NavigatorContractError("Navigator returned an unknown assistant task status.");
+  }
+  return {
+    ...record,
+    id: requireString(record, "id", "assistant task"),
+    workspaceId: requireString(record, "workspaceId", "assistant task"),
+    sessionId: requireString(record, "sessionId", "assistant task"),
+    prompt: requireString(record, "prompt", "assistant task"),
+    status: status as NavigatorTaskRecord["status"],
+    createdAt: requireNumber(record, "createdAt", "assistant task"),
+    startedAt: readNullableNumber(record, "startedAt", "assistant task"),
+    endedAt: readNullableNumber(record, "endedAt", "assistant task"),
+    output: requireString(record, "output", "assistant task"),
+    reasoning: requireString(record, "reasoning", "assistant task"),
+    error: readNullableString(record, "error"),
+    durationMs: requireNumber(record, "durationMs", "assistant task"),
+    sequence: requireNumber(record, "sequence", "assistant task"),
+    title: readNullableString(record, "title"),
+    description: readNullableString(record, "description"),
+    metadata,
+  };
+}
+
+function parseTaskPage(value: unknown): NavigatorTaskPage {
+  const record = requireRecord(value, "assistant task page");
+  return {
+    items: requireArray(record.items, "assistant tasks").map(parseTaskRecord),
+    nextCursor: typeof record.nextCursor === "string" ? record.nextCursor : null,
+  };
+}
+
+function parseTaskCancellation(value: unknown): { taskId: string; cancelled: boolean } {
+  const record = requireRecord(value, "assistant task cancellation");
+  return {
+    taskId: requireString(record, "taskId", "assistant task cancellation"),
+    cancelled: requireBoolean(record, "cancelled", "assistant task cancellation"),
+  };
+}
+
+function parseApprovalList(value: unknown): WorkApproval[] {
+  const record = requireRecord(value, "approval list");
+  return requireArray(record.items, "approvals").map(parseApproval);
+}
+
+function parseApproval(value: unknown): WorkApproval {
+  const record = requireRecord(value, "approval");
+  const status = requireString(record, "status", "approval");
+  if (status !== "pending" && status !== "approved" && status !== "rejected") {
+    throw new NavigatorContractError("Navigator returned an unknown approval status.");
+  }
+  return {
+    ...record,
+    id: requireString(record, "id", "approval"),
+    taskId: requireString(record, "taskId", "approval"),
+    kind: requireString(record, "kind", "approval"),
+    summary: requireString(record, "summary", "approval"),
+    details: isRecord(record.details) ? record.details : {},
+    status,
+  };
+}
+
+function parseWorkInputList(value: unknown): WorkInput[] {
+  const record = requireRecord(value, "user-input list");
+  return requireArray(record.items, "user-input requests").map(parseWorkInput);
+}
+
+function parseWorkInput(value: unknown): WorkInput {
+  const record = requireRecord(value, "user-input request");
+  const status = requireString(record, "status", "user-input request");
+  if (status !== "pending" && status !== "answered") {
+    throw new NavigatorContractError("Navigator returned an unknown user-input status.");
+  }
+  return {
+    ...record,
+    id: requireString(record, "id", "user-input request"),
+    taskId: requireString(record, "taskId", "user-input request"),
+    summary: requireString(record, "summary", "user-input request"),
+    details: isRecord(record.details) ? record.details : {},
+    status,
+    createdAt: requireNumber(record, "createdAt", "user-input request"),
+    answeredAt: typeof record.answeredAt === "number" ? record.answeredAt : null,
+    answeredBy: readNullableString(record, "answeredBy"),
+    ...(isRecord(record.answer) ? { answer: record.answer } : {}),
+    ...(typeof record.messageId === "string" ? { messageId: record.messageId } : {}),
+  };
+}
+
+function parseMemoryFacts(value: unknown): MemoryFact[] {
+  const record = requireRecord(value, "memory facts");
+  return requireArray(record.items, "memory facts").map(parseMemoryFact);
+}
+
+function parseMemoryFact(value: unknown): MemoryFact {
+  const record = requireRecord(value, "memory fact");
+  return {
+    ...record,
+    id: requireString(record, "id", "memory fact"),
+    namespace: requireString(record, "namespace", "memory fact"),
+    key: requireString(record, "key", "memory fact"),
+    value: isRecord(record.value) ? record.value : {},
+    observedAt: requireNumber(record, "observedAt", "memory fact"),
+    freshUntil: typeof record.freshUntil === "number" ? record.freshUntil : null,
+    missing: requireBoolean(record, "missing", "memory fact"),
+    stale: requireBoolean(record, "stale", "memory fact"),
+    sourceId: readNullableString(record, "sourceId"),
+  };
+}
+
+function parseNotificationList(value: unknown): WorkNotification[] {
+  const record = requireRecord(value, "notifications");
+  return requireArray(record.items, "notifications").map((value) => {
+    const notification = requireRecord(value, "notification");
+    const status = requireString(notification, "status", "notification");
+    const statuses: WorkNotification["status"][] = ["queued", "leased", "started", "uncertain", "delivered", "failed"];
+    if (!statuses.includes(status as WorkNotification["status"])) throw new NavigatorContractError("Navigator returned an unknown notification status.");
+    return {
+      ...notification,
+      id: requireString(notification, "id", "notification"),
+      type: requireString(notification, "type", "notification"),
+      status: status as WorkNotification["status"],
+      payload: isRecord(notification.payload) ? notification.payload : {},
+      createdAt: requireNumber(notification, "createdAt", "notification"),
+    };
+  });
+}
+
+function parseAttachment(value: unknown): WorkAttachment {
+  const record = requireRecord(value, "attachment");
+  return {
+    ...record,
+    id: requireString(record, "id", "attachment"),
+    sha256: requireString(record, "sha256", "attachment"),
+    name: requireString(record, "name", "attachment"),
+    mediaType: requireString(record, "mediaType", "attachment"),
+    size: requireNumber(record, "size", "attachment"),
+    createdAt: requireNumber(record, "createdAt", "attachment"),
+  };
+}
+
+function parseConnectorList(value: unknown): WorkConnector[] {
+  const record = requireRecord(value, "connector list");
+  return requireArray(record.items, "connectors").map((value) => {
+    const connector = requireRecord(value, "connector");
+    const status = requireString(connector, "status", "connector");
+    const statuses: WorkConnector["status"][] = ["unknown", "disconnected", "authenticating", "login_required", "connected", "degraded", "error"];
+    if (!statuses.includes(status as WorkConnector["status"])) throw new NavigatorContractError("Navigator returned an unknown connector status.");
+    return {
+      ...connector,
+      connectorId: requireString(connector, "connectorId", "connector"),
+      status: status as WorkConnector["status"],
+      ...(typeof connector.configured === "boolean" ? { configured: connector.configured } : {}),
+      accountId: readNullableString(connector, "accountId"),
+      detail: readNullableString(connector, "detail"),
+      updatedAt: requireNumber(connector, "updatedAt", "connector"),
+      lastEventAt: typeof connector.lastEventAt === "number" ? connector.lastEventAt : null,
+    };
+  });
+}
+
+function parseQqHealth(value: unknown): QqConnectorHealth {
+  const record = requireRecord(value, "QQ connector health");
+  return {
+    ...record,
+    status: readString(record, "status", "UNKNOWN"),
+    hostState: readString(record, "hostState", readString(record, "host_state", "UNKNOWN")),
+    apiReady: readBoolean(record, "apiReady", readBoolean(record, "api_ready", false)),
+    accountConfirmed: readBoolean(record, "accountConfirmed", readBoolean(record, "dedicated_account_confirmed", readBoolean(record, "account_confirmed", false))),
+    generation: typeof record.generation === "number" ? record.generation : null,
+    clientVersion: typeof record.clientVersion === "string" ? record.clientVersion : typeof record.client_version === "string" ? record.client_version : null,
+    hostAbi: typeof record.hostAbi === "string" ? record.hostAbi : typeof record.host_abi === "string" ? record.host_abi : null,
+    failureCode: typeof record.failureCode === "string" ? record.failureCode : typeof record.failure_code === "string" ? record.failure_code : null,
+  };
+}
+
+function parseQqLoginChallenge(value: unknown): QqLoginChallenge {
+  const record = requireRecord(value, "QQ login challenge");
+  const payload = isRecord(record.result) ? record.result : record;
+  const qrPayload = readString(payload, "qrPayload", readString(payload, "qr_payload", ""));
+  const expiresAtUtc = readString(payload, "expiresAtUtc", readString(payload, "expires_at_utc", ""));
+  const loginId = readString(payload, "loginId", readString(payload, "login_id", ""));
+  const expiry = Date.parse(expiresAtUtc);
+  if (!loginId || !qrPayload || qrPayload.length > 4096 || /[\u0000-\u001f\u007f]/.test(qrPayload) ||
+      !/(?:Z|\+00:00)$/i.test(expiresAtUtc) || !Number.isFinite(expiry) || expiry <= Date.now()) {
+    throw new NavigatorContractError("Navigator returned an invalid or expired QQ login QR.");
+  }
+  const state = parseQqLoginStatus(payload.state);
+  return {
+    loginId,
+    qrPayload,
+    expiresAtUtc,
+    state,
+    ...(state === "authorized" && typeof (payload.accountId ?? payload.account_id) === "string"
+      ? { accountId: String(payload.accountId ?? payload.account_id) }
+      : {}),
+  };
+}
+
+function parseQqLoginState(value: unknown): QqLoginState {
+  const record = requireRecord(value, "QQ login state");
+  const payload = isRecord(record.result) ? record.result : isRecord(record.payload) ? record.payload : record;
+  const loginId = readString(payload, "loginId", readString(payload, "login_id", ""));
+  if (!loginId) throw new NavigatorContractError("Navigator returned an invalid QQ login id.");
+  const state = parseQqLoginStatus(payload.state);
+  return {
+    loginId,
+    state,
+    ...(state === "authorized" && typeof (payload.accountId ?? payload.account_id) === "string"
+      ? { accountId: String(payload.accountId ?? payload.account_id) }
+      : {}),
+  };
+}
+
+function parseQqLoginStatus(value: unknown): QqLoginChallenge["state"] {
+  if (value === "pending" || value === "scanned" || value === "authorized" || value === "expired" || value === "failed") return value;
+  throw new NavigatorContractError("Navigator returned an unknown QQ login state.");
+}
+
+function workId(value: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,511}$/.test(normalized) || normalized.includes("..")) {
+    throw new NavigatorContractError("Invalid workspace resource identifier.");
+  }
+  return normalized;
+}
+
+function workPath(workspaceId: string, suffix: string): string {
+  return `/api/v1/workspaces/${workId(workspaceId)}/work/${suffix}`;
+}
+
 function requireRecord(value: unknown, label: string): JsonRecord {
   if (!isRecord(value)) {
     throw new NavigatorContractError(`Navigator returned an invalid ${label}.`);
@@ -1257,6 +1796,15 @@ function requireString(record: JsonRecord, key: string, label: string): string {
 
 function requireNumber(record: JsonRecord, key: string, label: string): number {
   const value = record[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new NavigatorContractError(`Navigator returned an invalid ${key} in ${label}.`);
+  }
+  return value;
+}
+
+function readNullableNumber(record: JsonRecord, key: string, label: string): number | null {
+  const value = record[key];
+  if (value === null) return null;
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new NavigatorContractError(`Navigator returned an invalid ${key} in ${label}.`);
   }

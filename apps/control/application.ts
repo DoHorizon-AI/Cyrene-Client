@@ -64,6 +64,21 @@ export async function readJson(req: IncomingMessage, limit = 1_048_576) {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; } catch { throw new ControlError("INVALID_JSON", "请求不是有效 JSON。"); }
 }
 
+function navigatorUpstreamPath(requestUrl: string, workspaceId: string): string {
+  const queryIndex = requestUrl.indexOf("?");
+  const pathname = queryIndex < 0 ? requestUrl : requestUrl.slice(0, queryIndex);
+  const query = queryIndex < 0 ? "" : requestUrl.slice(queryIndex);
+  const tasksPrefix = "/api/v1/navigator/tasks";
+  if (pathname === tasksPrefix || pathname.startsWith(`${tasksPrefix}/`)) {
+    return `/api/v1/tasks${pathname.slice(tasksPrefix.length)}${query}`;
+  }
+  const approvalsPrefix = "/api/v1/navigator/approvals";
+  if (pathname === approvalsPrefix || pathname.startsWith(`${approvalsPrefix}/`)) {
+    return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/work/approvals${pathname.slice(approvalsPrefix.length)}${query}`;
+  }
+  return requestUrl;
+}
+
 export function createControlApplication(options: ControlOptions) {
   const origins = options.publicOrigins.map(raw => new URL(raw).origin);
   if (!origins.length) throw new Error("At least one public origin is required");
@@ -239,6 +254,12 @@ export function createControlApplication(options: ControlOptions) {
         if (!permission && !path.startsWith("/api/v1/auth/") && req.method !== "GET" && !actor.scopes.includes("pipelines.write")) throw new ControlError("FORBIDDEN", "没有设置编辑权限。", 403);
         const productWorkspace = path.match(/^\/api\/v1\/navigator\/harness\/workspaces\/([^/]+)\/sessions$/)?.[1];
         if (productWorkspace && !actor.workspaceIds.includes(productWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
+        const workWorkspace = path.match(/^\/api\/v1\/workspaces\/([^/]+)\/work\//)?.[1];
+        if (workWorkspace && !actor.workspaceIds.includes(workWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
+        if (path === "/api/v1/navigator/approvals" || path.startsWith("/api/v1/navigator/approvals/")
+          || path === "/api/v1/navigator/tasks" || path.startsWith("/api/v1/navigator/tasks/")) {
+          if (!actor.workspaceIds.includes(workspaceId)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
+        }
         if (!options.navigatorUrl) throw new ControlError("STUDIO_HOST_NOT_CONFIGURED", "尚未配置 Navigator。", 503);
         const headers = new Headers();
         for (const name of ["content-type", "accept", "last-event-id", "x-csrf-token", "idempotency-key", "origin", "host"]) {
@@ -249,7 +270,9 @@ export function createControlApplication(options: ControlOptions) {
         if (path === "/api/proxy/exchange-gateway/v1/chat/completions" && typeof req.headers["x-product-authorization"] === "string") headers.set("authorization", req.headers["x-product-authorization"]);
         let body: Buffer | undefined;
         if (req.method !== "GET" && req.method !== "HEAD") {
-          const limit = /^\/api\/v1\/catalyst\/datasets\/[^/]+\/preparations$/.test(path) ? 32 * 1024 * 1024 : 1_048_576;
+          const limit = /^\/api\/v1\/catalyst\/datasets\/[^/]+\/preparations$/.test(path) ? 32 * 1024 * 1024
+            : /^\/api\/v1\/workspaces\/[^/]+\/work\/attachments$/.test(path) ? 16 * 1024 * 1024
+              : 1_048_576;
           let bytes = 0; const chunks: Buffer[] = [];
           for await (const chunk of req) { const part = Buffer.from(chunk); bytes += part.length; if (bytes > limit) throw new ControlError("TOO_LARGE", "请求超过大小限制。", 413); chunks.push(part); }
           if (chunks.length) body = Buffer.concat(chunks);
@@ -258,7 +281,7 @@ export function createControlApplication(options: ControlOptions) {
         const closed = () => abort.abort(); res.once("close", closed);
         const deadline = setTimeout(() => abort.abort(), 10000);
         let upstream: Response;
-        try { upstream = await fetch(`${options.navigatorUrl}${req.url}`, { method: req.method, headers, body: body ? new Uint8Array(body) : undefined, redirect: "manual", signal: abort.signal }); }
+        try { upstream = await fetch(`${options.navigatorUrl}${navigatorUpstreamPath(req.url ?? path, workspaceId)}`, { method: req.method, headers, body: body ? new Uint8Array(body) : undefined, redirect: "manual", signal: abort.signal }); }
         catch (error) { res.off("close", closed); throw error; }
         finally { clearTimeout(deadline); }
         res.statusCode = upstream.status;

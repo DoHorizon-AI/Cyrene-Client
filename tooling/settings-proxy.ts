@@ -16,6 +16,10 @@ export function allowedSettingsRequest(method: string, pathname: string) {
     ["GET", /^\/api\/v1\/echo\/evaluation-suites\/[A-Za-z0-9-]+$/],
     ["POST", /^\/api\/v1\/echo\/evaluation-suites$/],
     ["GET", /^\/api\/v1\/navigator\/harness\/workspaces\/[^/]+\/sessions$/],
+    ["GET", /^\/api\/v1\/navigator\/tasks(?:\/[A-Za-z0-9_-]+(?:\/events)?)?$/],
+    ["GET", /^\/api\/v1\/navigator\/approvals$/],
+    ["GET", /^\/api\/v1\/workspaces\/[A-Za-z0-9_.:-]+\/work\/(?:tasks(?:\/[A-Za-z0-9_.:-]+(?:\/events)?)?|approvals(?:\/[A-Za-z0-9_.:-]+)?|inputs(?:\/[A-Za-z0-9_.:-]+)?|memory\/facts|notifications|attachments\/[A-Fa-f0-9]{64}|connectors(?:\/[A-Za-z0-9_.:-]+(?:\/(?:health|events))?)?)$/],
+    ["POST", /^\/api\/v1\/workspaces\/[A-Za-z0-9_.:-]+\/work\/memory\/query$/],
   ];
   if (/%(?:2f|5c|2e|25|00)/i.test(pathname) || pathname.includes("..") || pathname.includes("\\")) return false;
   return rules.some(([m, path]) => m === method && path.test(pathname));

@@ -1,8 +1,8 @@
 // -----------------------------------------------------------------------------
 // Module: src/router.ts
-// Role: Minimal history router for the seven Navigator console surfaces.
+// Role: Minimal history router for the Navigator management surfaces.
 // -----------------------------------------------------------------------------
-// 中文：// 中文：模块职责：为 Navigator 的七个控制台页面提供轻量级 history 路由。
+// 中文：模块职责：为 Navigator 管理页面提供轻量级 history 路由。
 
 /**
  * The pages intentionally exposed by the Navigator WebUI navigation rail.
@@ -17,7 +17,8 @@ export type RouteId =
   | "deployments"
   | "gateway"
   | "settings"
-  | "chat";
+  | "chat"
+  | "assistant";
 
 /**
  * Navigation metadata used by both the shell and the route resolver.
@@ -78,6 +79,12 @@ export const ROUTES: readonly RouteDefinition[] = [
     label: "Chat",
     path: "/chat",
     description: "Exchange model testing with active route",
+  },
+  {
+    id: "assistant",
+    label: "Work Assistant",
+    path: "/assistant",
+    description: "Tasks, approvals, memory, and host connectors",
   },
   {
     id: "settings",

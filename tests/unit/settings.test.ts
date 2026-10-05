@@ -182,6 +182,17 @@ describe("development settings proxy boundary", () => {
   it("allows settings, and rejects run/deploy and encoded traversal", () => {
     expect(allowedSettingsRequest("PATCH", `/api/v1/yield/training-drafts/${draft.id}`)).toBe(true);
     expect(allowedSettingsRequest("POST", "/api/v1/echo/evaluation-suites")).toBe(true);
+    expect(allowedSettingsRequest("GET", "/api/v1/navigator/tasks")).toBe(true);
+    expect(allowedSettingsRequest("GET", "/api/v1/navigator/tasks/task-1/events")).toBe(true);
+    expect(allowedSettingsRequest("GET", "/api/v1/navigator/approvals")).toBe(true);
+    expect(allowedSettingsRequest("GET", "/api/v1/workspaces/local/work/approvals")).toBe(true);
+    expect(allowedSettingsRequest("GET", "/api/v1/workspaces/local/work/inputs")).toBe(true);
+    expect(allowedSettingsRequest("GET", "/api/v1/workspaces/local/work/inputs/input-1")).toBe(true);
+    expect(allowedSettingsRequest("POST", "/api/v1/workspaces/local/work/inputs/input-1/resolve")).toBe(false);
+    expect(allowedSettingsRequest("GET", "/api/v1/workspaces/local/work/connectors/qq-main/health")).toBe(true);
+    expect(allowedSettingsRequest("POST", "/api/v1/workspaces/local/work/memory/query")).toBe(true);
+    expect(allowedSettingsRequest("POST", "/api/v1/navigator/tasks")).toBe(false);
+    expect(allowedSettingsRequest("POST", "/api/v1/navigator/tasks/task-1/cancel")).toBe(false);
     expect(allowedSettingsRequest("POST", `/api/v1/yield/training-drafts/${draft.id}/actions/start`)).toBe(false);
     expect(allowedSettingsRequest("POST", "/api/v1/reactor/deployments")).toBe(false);
     expect(allowedSettingsRequest("GET", "/api/v1/navigator/harness/workspaces/%252e%252e/sessions")).toBe(false);
