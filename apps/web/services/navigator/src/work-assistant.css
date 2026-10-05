@@ -1,0 +1,289 @@
+/* ---------------------------------------------------------------------------
+ * Module: src/work-assistant.css
+ * Role: Keep the Work Assistant panels readable across desktop and mobile.
+ * 中文：模块职责：在桌面和移动布局中保持工作助手面板清晰易读。
+ * --------------------------------------------------------------------------- */
+
+.product-workspace .work-assistant__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.product-workspace .work-assistant__grid > .panel {
+  min-width: 0;
+}
+
+.product-workspace .work-assistant__detail {
+  grid-row: span 2;
+}
+
+.product-workspace .work-assistant label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.product-workspace .work-assistant input,
+.product-workspace .work-assistant select,
+.product-workspace .work-assistant textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--ink-soft);
+  font-size: 12px;
+}
+
+.product-workspace .work-assistant textarea {
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.product-workspace .work-assistant__form,
+.product-workspace .work-assistant__inline-form {
+  display: grid;
+  gap: 10px;
+}
+
+.product-workspace .work-assistant__form--compact {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.product-workspace .work-assistant__inline-form {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+}
+
+.product-workspace .work-assistant__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.product-workspace .work-assistant__actions > span,
+.product-workspace .work-assistant__muted,
+.product-workspace .work-assistant__rows small,
+.product-workspace .work-assistant__task-list small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.product-workspace .work-assistant__task-list,
+.product-workspace .work-assistant__rows {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-workspace .work-assistant__task-list button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--ink-soft);
+  text-align: left;
+}
+
+.product-workspace .work-assistant__task-list button.is-selected {
+  border-color: #5876ac;
+  background: #303b50;
+}
+
+.product-workspace .work-assistant__task-list button > span,
+.product-workspace .work-assistant__rows li > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.product-workspace .work-assistant__task-list strong,
+.product-workspace .work-assistant__rows strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.product-workspace .work-assistant__task-list small,
+.product-workspace .work-assistant__rows small,
+.product-workspace .work-assistant__facts dd,
+.product-workspace .work-assistant__event-list code {
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+}
+
+.product-workspace .work-assistant__rows li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.product-workspace .work-assistant__rows li:last-child {
+  border-bottom: 0;
+}
+
+.product-workspace .work-assistant__rows--stacked li {
+  align-items: flex-start;
+}
+
+.product-workspace .work-assistant__rows p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.product-workspace .work-assistant__facts {
+  display: grid;
+  grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0 0 14px;
+  font-size: 11px;
+}
+
+.product-workspace .work-assistant__facts dt {
+  color: var(--muted);
+}
+
+.product-workspace .work-assistant__facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.product-workspace .work-assistant__text {
+  max-height: 360px;
+  overflow: auto;
+  margin: 6px 0 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.product-workspace .work-assistant__text--error,
+.product-workspace .work-assistant__notice--error {
+  color: var(--red);
+}
+
+.product-workspace .work-assistant__event-list {
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.product-workspace .work-assistant__event-list h3,
+.product-workspace .work-assistant h3 {
+  margin: 8px 0 5px;
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.product-workspace .work-assistant__event-list p {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.product-workspace .work-assistant__notice {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--orange);
+  background: rgba(201, 166, 107, 0.06);
+  font-size: 12px;
+}
+
+.product-workspace .work-assistant__qr {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.product-workspace .work-assistant__qr > div:first-child {
+  display: grid;
+  width: 160px;
+  min-height: 110px;
+  flex: 0 0 160px;
+  place-items: center;
+  padding: 8px;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.product-workspace .work-assistant__qr img {
+  display: block;
+  width: min(100%, 144px);
+  height: auto;
+}
+
+.product-workspace .work-assistant__qr p {
+  margin: 4px 0;
+  color: var(--muted);
+}
+
+.product-workspace .work-assistant__binding-input {
+  margin-top: 8px;
+}
+
+.product-workspace .work-assistant__file input {
+  padding: 6px;
+}
+
+@media (max-width: 900px) {
+  .product-workspace .work-assistant__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .product-workspace .work-assistant__detail {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 540px) {
+  .product-workspace .work-assistant__inline-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .product-workspace .work-assistant__inline-form label {
+    grid-column: 1 / -1;
+  }
+
+  .product-workspace .work-assistant__qr {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

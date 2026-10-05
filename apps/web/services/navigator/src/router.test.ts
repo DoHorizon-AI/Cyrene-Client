@@ -23,6 +23,7 @@ describe("Navigator routes", () => {
     expect(routeForPath("/deployments")).toBe("deployments");
     expect(routeForPath("/gateway")).toBe("gateway");
     expect(routeForPath("/chat")).toBe("chat");
+    expect(routeForPath("/assistant")).toBe("assistant");
     expect(routeForPath("/settings")).toBe("settings");
   });
 
@@ -37,6 +38,7 @@ describe("Navigator routes", () => {
     expect(pathForRoute("deployments")).toBe("/deployments");
     expect(pathForRoute("gateway")).toBe("/gateway");
     expect(pathForRoute("chat")).toBe("/chat");
+    expect(pathForRoute("assistant")).toBe("/assistant");
     expect(pathForRoute("settings")).toBe("/settings");
   });
 });

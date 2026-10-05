@@ -326,6 +326,155 @@ describe("NavigatorApi", () => {
     expect(setRes.modelId).toBe("qwen-2.5");
   });
 
+  it("lists, creates, reads, and cancels server-owned assistant tasks through Control", async () => {
+    const calls: Array<{ path: string; method: string; headers: Headers; body?: unknown }> = [];
+    const task = {
+      id: "task-1", workspaceId: "workspace-1", sessionId: "agent-session-1", prompt: "check status", status: "queued",
+      createdAt: 1_000, startedAt: null, endedAt: null, output: "", reasoning: "", error: null, durationMs: 0,
+      sequence: 1, title: null, description: null, metadata: {},
+    };
+    const api = new NavigatorApi(async (input, init) => {
+      const path = String(input), method = init?.method ?? "GET", headers = new Headers(init?.headers);
+      calls.push({ path, method, headers, body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined });
+      if (path.startsWith("/api/v1/navigator/tasks?") && method === "GET") return response({ items: [task], nextCursor: null });
+      if (path === "/api/v1/navigator/tasks" && method === "POST") return response(task, 202);
+      if (path === "/api/v1/navigator/tasks/task-2" && method === "GET") return response({ ...task, id: "task-2" });
+      if (path === "/api/v1/navigator/tasks/task-1/cancel" && method === "POST") return response({ taskId: "task-1", cancelled: true });
+      throw new Error(`Unexpected request: ${method} ${path}`);
+    });
+
+    const page = await api.getAssistantTasks(undefined, 20);
+    const created = await api.createAssistantTask({ prompt: "check status" });
+    const detail = await api.getAssistantTask("task-2");
+    const cancelled = await api.cancelAssistantTask("task-1");
+
+    expect(page.items[0]?.status).toBe("queued");
+    expect(created.sessionId).toBe("agent-session-1");
+    expect(detail.id).toBe("task-2");
+    expect(cancelled).toEqual({ taskId: "task-1", cancelled: true });
+    expect(calls[0]?.path).toBe("/api/v1/navigator/tasks?limit=20");
+    expect(calls[1]?.body).toEqual({ prompt: "check status" });
+    expect(calls[1]?.headers.get("Idempotency-Key")).toBeTruthy();
+    expect(calls[2]?.path).toBe("/api/v1/navigator/tasks/task-2");
+    expect(calls[3]?.headers.get("Idempotency-Key")).toBeTruthy();
+  });
+
+  it("resumes assistant task events with the sequence cursor and rejects non-stream replies", async () => {
+    let call: { path: string; headers: Headers; signal?: AbortSignal } | undefined;
+    const controller = new AbortController();
+    const api = new NavigatorApi(async (input, init) => {
+      call = { path: String(input), headers: new Headers(init?.headers), signal: init?.signal ?? undefined };
+      return new Response("id: 11\nevent: task.status_changed\ndata: {\"status\":\"running\"}\n\n", {
+        headers: { "Content-Type": "text/event-stream; charset=utf-8" },
+      });
+    });
+    const stream = await api.openAssistantTaskEvents("task-1", 10, controller.signal);
+    expect(call?.path).toBe("/api/v1/navigator/tasks/task-1/events?after=10");
+    expect(call?.headers.get("Last-Event-ID")).toBe("10");
+    expect(call?.headers.get("Accept")).toBe("text/event-stream");
+    expect(call?.signal).toBe(controller.signal);
+    await stream.body?.cancel();
+
+    const invalid = new NavigatorApi(async () => response({ status: "ok" }));
+    await expect(invalid.openAssistantTaskEvents("task-1", 0, controller.signal)).rejects.toMatchObject({ name: "NavigatorContractError" });
+  });
+
+  it("rejects unknown assistant task states instead of guessing the current state", async () => {
+    const api = new NavigatorApi(async () => response({ items: [{
+      id: "task-1", workspaceId: "workspace-1", sessionId: "session-1", prompt: "p", status: "maybe",
+      createdAt: 1_000, startedAt: null, endedAt: null, output: "", reasoning: "", error: null, durationMs: 0,
+      sequence: 1, title: null, description: null, metadata: {},
+    }], nextCursor: null }));
+    await expect(api.getAssistantTasks()).rejects.toMatchObject({ name: "NavigatorContractError" });
+  });
+
+  it("uses the configured workspace API for approvals, memory, notifications, attachments, and QQ", async () => {
+    const calls: Array<{ path: string; method: string; body?: unknown; headers: Headers }> = [];
+    const digest = "a".repeat(64);
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const api = new NavigatorApi(async (input, init) => {
+      const path = String(input), method = init?.method ?? "GET";
+      calls.push({ path, method, body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined, headers: new Headers(init?.headers) });
+      if (path.endsWith("/approvals?status=pending&limit=100")) return response({ items: [] });
+      if (path.endsWith("/approvals/approval-1/resolve")) return response({ id: "approval-1", status: "approved" });
+      if (path.endsWith("/inputs?status=pending&limit=100")) return response({ items: [{ id: "input-1", taskId: "task-1", summary: "Choose a deployment region", details: { options: ["east", "west"] }, status: "pending", createdAt: 1, answeredAt: null, answeredBy: null, answer: null, messageId: "input-request-1" }] });
+      if (path.endsWith("/inputs/input-1/resolve")) return response({ input: { id: "input-1", taskId: "task-1", status: "answered" }, task: { id: "task-1" }, duplicate: false });
+      if (path.endsWith("/memory/facts?includeStale=true&limit=100")) return response({ items: [] });
+      if (path.endsWith("/memory/query")) return response({ items: [] });
+      if (path.endsWith("/memory/facts") && method === "POST") return response({ id: "fact-1", namespace: "work", key: "k", value: { text: "v" }, observedAt: Date.now(), freshUntil: null, missing: false, stale: false, sourceId: "manual" });
+      if (path.endsWith("/notifications?limit=100")) return response({ items: [] });
+      if (path.endsWith("/attachments") && method === "POST") return response({ id: "attachment-1", sha256: digest, name: "note.txt", mediaType: "text/plain", size: 1, createdAt: Date.now() });
+      if (path.endsWith(`/attachments/${digest}`)) return new Response("x", { headers: { "Content-Type": "application/octet-stream" } });
+      if (path.endsWith("/connectors")) return response({ items: [{ connectorId: "qq-main", status: "unknown", configured: true, accountId: null, detail: "Health has not been probed.", updatedAt: 1, lastEventAt: null }] });
+      if (path.endsWith("/connectors/qq-main/health")) return response({ status: "READY", host_state: "NATIVE_READY", api_ready: true, dedicated_account_confirmed: true, generation: 4, client_version: "1.2.3", host_abi: "v1", failure_code: null });
+      if (path.endsWith("/connectors/qq-main/login/qr")) return response({ operation: "qq.login.qr", status: "accepted", result: { login_id: "login-1", qr_payload: "local-opaque-payload", expires_at_utc: future, state: "pending" } });
+      if (path.endsWith("/connectors/qq-main/login/poll")) {
+        const body = typeof init?.body === "string" ? JSON.parse(init.body) as { loginId?: string } : {};
+        return response(body.loginId === "login-1"
+          ? { login_id: "login-1", state: "authorized", account_id: "confirmed-account" }
+          : { login_id: body.loginId, state: "scanned", account_id: "unconfirmed-account" });
+      }
+      throw new Error(`Unexpected request: ${method} ${path}`);
+    });
+
+    await api.getWorkApprovals("workspace-1");
+    await api.resolveWorkApproval("workspace-1", "approval-1", "approved");
+    const inputs = await api.getWorkInputs("workspace-1");
+    await api.resolveWorkInput("workspace-1", "input-1", "east", "input-message-1");
+    await api.getMemoryFacts("workspace-1");
+    await api.queryMemory("workspace-1", "query text");
+    await api.saveMemoryFact("workspace-1", { namespace: "work", key: "k", value: { text: "v" }, sourceId: "manual" });
+    await api.getWorkNotifications("workspace-1");
+    const connectors = await api.getWorkConnectors("workspace-1");
+    const health = await api.getQqHealth("workspace-1", "qq-main");
+    const challenge = await api.startQqLogin("workspace-1", "qq-main");
+    const login = await api.pollQqLogin("workspace-1", "qq-main", challenge.loginId);
+    const scannedLogin = await api.pollQqLogin("workspace-1", "qq-main", "login-scanned");
+    const attachment = await api.uploadWorkAttachment("workspace-1", { name: "note.txt", mediaType: "text/plain", contentBase64: "eA==" });
+    await api.downloadWorkAttachment("workspace-1", attachment.sha256);
+
+    expect(health).toMatchObject({ hostState: "NATIVE_READY", accountConfirmed: true });
+    expect(connectors[0]).toMatchObject({ connectorId: "qq-main", status: "unknown", configured: true });
+    expect(inputs[0]).toMatchObject({ id: "input-1", status: "pending", summary: "Choose a deployment region" });
+    expect(challenge.qrPayload).toBe("local-opaque-payload");
+    expect(login).toMatchObject({ state: "authorized", accountId: "confirmed-account" });
+    expect(scannedLogin).toMatchObject({ state: "scanned" });
+    expect(scannedLogin).not.toHaveProperty("accountId");
+    expect(calls.map(call => call.path)).toEqual([
+      "/api/v1/workspaces/workspace-1/work/approvals?status=pending&limit=100",
+      "/api/v1/workspaces/workspace-1/work/approvals/approval-1/resolve",
+      "/api/v1/workspaces/workspace-1/work/inputs?status=pending&limit=100",
+      "/api/v1/workspaces/workspace-1/work/inputs/input-1/resolve",
+      "/api/v1/workspaces/workspace-1/work/memory/facts?includeStale=true&limit=100",
+      "/api/v1/workspaces/workspace-1/work/memory/query",
+      "/api/v1/workspaces/workspace-1/work/memory/facts",
+      "/api/v1/workspaces/workspace-1/work/notifications?limit=100",
+      "/api/v1/workspaces/workspace-1/work/connectors",
+      "/api/v1/workspaces/workspace-1/work/connectors/qq-main/health",
+      "/api/v1/workspaces/workspace-1/work/connectors/qq-main/login/qr",
+      "/api/v1/workspaces/workspace-1/work/connectors/qq-main/login/poll",
+      "/api/v1/workspaces/workspace-1/work/connectors/qq-main/login/poll",
+      "/api/v1/workspaces/workspace-1/work/attachments",
+      `/api/v1/workspaces/workspace-1/work/attachments/${digest}`,
+    ]);
+    expect(calls[3]?.body).toMatchObject({ answer: { text: "east" }, messageId: "input-message-1" });
+    expect(calls[3]?.headers.get("Idempotency-Key")).toBe("input-message-1");
+    expect(calls[10]?.body).toEqual({});
+    expect(calls[11]?.body).toEqual({ loginId: "login-1" });
+    expect(calls.every(call => call.headers.get("Authorization") === null)).toBe(true);
+    expect(calls[13]?.headers.get("Idempotency-Key")).toBeTruthy();
+  });
+
+  it("rejects an expired QQ QR challenge without including its payload in the error", async () => {
+    const payload = "private-qr-content";
+    const api = new NavigatorApi(async () => response({ result: { login_id: "login-1", qr_payload: payload, expires_at_utc: new Date(Date.now() - 1000).toISOString(), state: "pending" } }));
+    let message = "";
+    try { await api.startQqLogin("workspace-1", "qq-main"); }
+    catch (error) { message = error instanceof Error ? error.message : String(error); }
+    expect(message).toContain("expired");
+    expect(message).not.toContain(payload);
+  });
+
   it("handles Gateway API routes, endpoints, and API key management", async () => {
     const calls: Array<{ path: string; method?: string }> = [];
     const api = new NavigatorApi(async (input, init) => {

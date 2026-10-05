@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { request as httpRequest } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { z } from "zod";
 import { SqliteStoreFactory } from "../../tooling/sqlite-store";
 import { createControlApplication } from "../../apps/control/application";
@@ -13,9 +13,9 @@ import { importState } from "../../packages/control-storage/migration";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
-async function app(mode: "local" | "team" = "local", file = ":memory:") {
+async function app(mode: "local" | "team" = "local", file = ":memory:", navigatorUrl?: string) {
   const stores = new SqliteStoreFactory(file);
-  const application = createControlApplication({ stores, mode, publicOrigins: ["http://127.0.0.1:5180"], localApiToken: "test-dedicated-api-token" });
+  const application = createControlApplication({ stores, mode, publicOrigins: ["http://127.0.0.1:5180"], localApiToken: "test-dedicated-api-token", navigatorUrl });
   await application.ready;
   await new Promise<void>(resolve => application.server.listen(0, "127.0.0.1", resolve));
   cleanup.push(async () => { application.server.closeAllConnections(); await new Promise<void>(resolve => application.server.close(() => resolve())); await stores.close(); });
@@ -28,6 +28,58 @@ async function app(mode: "local" | "team" = "local", file = ":memory:") {
   return { ...application, origin, request };
 }
 describe("independent control service", () => {
+  it("denies task aliases when the member does not own the configured Navigator workspace", async () => {
+    const a = await app("team", ":memory:", "http://127.0.0.1:9");
+    await a.team.bootstrap("other-owner", "other-long-test-password", "other");
+    const login = await a.request("/studio-team/v1/login", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "other-owner", password: "other-long-test-password" }),
+    });
+    const cookie = login.headers.get("set-cookie")!.split(";")[0];
+    const session = await login.json();
+    const headers = { cookie, "content-type": "application/json", "x-studio-control-token": session.token };
+    for (const path of ["/api/v1/navigator/tasks", "/api/v1/navigator/tasks/t1/events", "/api/v1/navigator/approvals"]) {
+      expect((await a.request(path, { headers })).status).toBe(403);
+    }
+    expect((await a.request("/api/v1/navigator/tasks", { method: "POST", headers, body: JSON.stringify({ prompt: "inspect" }) })).status).toBe(403);
+    expect((await a.request("/api/v1/navigator/tasks/t1/cancel", { method: "POST", headers })).status).toBe(403);
+  });
+  it("maps assistant task and approval routes through the paired Navigator origin", async () => {
+    const forwarded: Array<{ url?: string; method?: string; authorization?: string; lastEventId?: string; body: string }> = [];
+    const navigator = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", chunk => chunks.push(Buffer.from(chunk)));
+      req.on("end", () => {
+        const lastEventId = req.headers["last-event-id"];
+        forwarded.push({ url: req.url, method: req.method, authorization: req.headers.authorization, lastEventId: Array.isArray(lastEventId) ? lastEventId[0] : lastEventId, body: Buffer.concat(chunks).toString("utf8") });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ items: [], nextCursor: null }));
+      });
+    });
+    await new Promise<void>(resolve => navigator.listen(0, "127.0.0.1", resolve));
+    cleanup.push(async () => { navigator.closeAllConnections(); await new Promise<void>(resolve => navigator.close(() => resolve())); });
+    const navigatorUrl = `http://127.0.0.1:${(navigator.address() as AddressInfo).port}`;
+    const a = await app("local", ":memory:", navigatorUrl);
+    const session = await (await a.request("/studio-pipelines/v1/session")).json();
+
+    expect((await a.request("/api/v1/navigator/tasks?limit=20")).status).toBe(200);
+    const created = await a.request("/api/v1/navigator/tasks", { method: "POST", headers: { "content-type": "application/json", "x-studio-control-token": session.token }, body: JSON.stringify({ prompt: "inspect" }) });
+    expect(created.status).toBe(200);
+    expect((await a.request("/api/v1/navigator/tasks/task-1/events?after=7", { headers: { accept: "text/event-stream", "last-event-id": "7" } })).status).toBe(200);
+    expect((await a.request("/api/v1/navigator/approvals?limit=20")).status).toBe(200);
+    expect((await a.request("/api/v1/navigator/tasks/task-1/actions/retry")).status).toBe(403);
+    expect((await a.request("/api/v1/workspaces/other/work/memory/facts")).status).toBe(403);
+    expect(forwarded.map(item => [item.method, item.url])).toEqual([
+      ["GET", "/api/v1/tasks?limit=20"],
+      ["POST", "/api/v1/tasks"],
+      ["GET", "/api/v1/tasks/task-1/events?after=7"],
+      ["GET", "/api/v1/workspaces/local/work/approvals?limit=20"],
+    ]);
+    expect(forwarded.some(item => item.authorization)).toBe(false);
+    expect(forwarded[2]?.lastEventId).toBe("7");
+    expect(forwarded[1]?.body).toBe(JSON.stringify({ prompt: "inspect" }));
+  });
+
   it("shares HTTP state with authenticated MCP remote commands without exposing its API credential", async () => {
     const a = await app();
     const session = await (await a.request("/studio-pipelines/v1/session")).json();

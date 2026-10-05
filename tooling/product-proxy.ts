@@ -2,6 +2,7 @@
 export function productPermission(method: string, path: string): string | null {
   if (/%(?:2f|5c|2e|25|00)/i.test(path) || path.includes("..") || path.includes("\\")) return null;
   const id = "[A-Za-z0-9_-]+";
+  const workId = "[A-Za-z0-9_.:-]+";
   const rules: [string, string, string][] = [
     ["GET", "system/status", "read"],
     ["GET", "credentials", "admin"], ["POST", "credentials", "admin"], ["DELETE", `credentials/${id}`, "admin"],
@@ -28,6 +29,31 @@ export function productPermission(method: string, path: string): string | null {
     ["POST", `exchange/api/v1/gateway-route-drafts/${id}/actions/confirm`, "admin"],
     ["GET", "navigator/active-route", "read"], ["POST", "navigator/active-route", "operate"],
     ["GET", `navigator/harness/workspaces/${id}/sessions`, "read"],
+    ["GET", "navigator/tasks", "read"],
+    ["POST", "navigator/tasks", "operate"],
+    ["GET", `navigator/tasks/${id}(?:/events)?`, "read"],
+    ["POST", `navigator/tasks/${id}/cancel`, "operate"],
+    ["GET", "navigator/approvals", "read"],
+    ["POST", `navigator/approvals/${id}/resolve`, "operate"],
+    ["GET", `workspaces/${workId}/work/approvals(?:/${workId})?`, "read"],
+    ["POST", `workspaces/${workId}/work/approvals/${workId}/resolve`, "operate"],
+    ["GET", `workspaces/${workId}/work/inputs(?:/${workId})?`, "read"],
+    ["POST", `workspaces/${workId}/work/inputs/${workId}/resolve`, "operate"],
+    ["GET", `workspaces/${workId}/work/tasks(?:/${workId}(?:/events)?)?`, "read"],
+    ["POST", `workspaces/${workId}/work/tasks/${workId}/approvals`, "operate"],
+    ["PATCH", `workspaces/${workId}/work/tasks/${workId}`, "operate"],
+    ["POST", `workspaces/${workId}/work/tasks/${workId}/events`, "operate"],
+    ["GET", `workspaces/${workId}/work/memory/facts`, "read"],
+    ["POST", `workspaces/${workId}/work/memory/facts`, "write"],
+    ["POST", `workspaces/${workId}/work/memory/query`, "read"],
+    ["GET", `workspaces/${workId}/work/notifications`, "read"],
+    ["POST", `workspaces/${workId}/work/attachments`, "write"],
+    ["GET", `workspaces/${workId}/work/attachments/${workId}`, "read"],
+    ["GET", `workspaces/${workId}/work/connectors`, "read"],
+    ["GET", `workspaces/${workId}/work/connectors/${workId}/health`, "read"],
+    ["GET", `workspaces/${workId}/work/connectors/${workId}/events`, "read"],
+    ["POST", `workspaces/${workId}/work/connectors/${workId}/login/qr`, "operate"],
+    ["POST", `workspaces/${workId}/work/connectors/${workId}/login/poll`, "operate"],
   ];
   if (method === "POST" && path === "/api/proxy/exchange-gateway/v1/chat/completions") return "products.operate";
   const rule = rules.find(([verb, pattern]) => verb === method && new RegExp(`^/api/v1/${pattern}$`).test(path));

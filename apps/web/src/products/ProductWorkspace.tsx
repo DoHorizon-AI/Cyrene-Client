@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavigatorApi, type SessionPayload } from "../../services/navigator/src/api";
 import { ChatPage, DatasetsPage, DeploymentsPage, GatewayPage, ModelsPage, OverviewPage, RunsPage, SettingsPage, TrainingPage } from "../../services/navigator/src/pages";
+import { WorkAssistantPage } from "../../services/navigator/src/work-assistant";
 import { ControlledLocaleProvider } from "../../services/navigator/src/i18n";
 import type { RouteId } from "../../services/navigator/src/router";
 import { useI18n } from "../i18n";
@@ -17,7 +18,7 @@ export default function ProductWorkspace({ route }: { route: RouteId }) {
     : <ProductSession key={`${actorId}:${workspaceId}`} route={route} />}</ControlledLocaleProvider>;
 }
 function ProductSession({ route }: { route: RouteId }) {
-  const { locale } = useI18n(), { scopes } = useTeamIdentity();
+  const { locale } = useI18n(), { scopes, workspaceId } = useTeamIdentity();
   const tx = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
   const api = useMemo(() => new NavigatorApi(studioProductFetch), []);
   const [session, setSession] = useState<SessionPayload | null>(null), [error, setError] = useState(""), [pairing, setPairing] = useState("");
@@ -46,6 +47,7 @@ function ProductSession({ route }: { route: RouteId }) {
       case "deployments": return <DeploymentsPage api={api} />;
       case "gateway": return <GatewayPage api={api} />;
       case "chat": return <ChatPage api={api} />;
+      case "assistant": return <WorkAssistantPage api={api} workspaceId={workspaceId} canOperate={scopes.includes("products.operate")} canWrite={scopes.includes("products.write")} />;
       case "settings": return session && <SettingsPage api={api} session={session} />;
       default: return <OverviewPage api={api} />;
     }
