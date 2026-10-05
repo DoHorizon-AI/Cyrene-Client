@@ -12,7 +12,7 @@ import { usePipelineDocument } from "./pipelines/usePipelineDocument";
 import { useRunControl } from "./runs/RunPanel";
 import { useBuildControl } from "./builds/useBuildControl";
 import { useNodeCatalog } from "./pipelines/useNodeCatalog";
-import { DeviceApprovalPage } from "./device-approval/DeviceApprovalPage";
+import { DeviceApprovalRoute } from "./device-approval/DeviceApprovalRoute";
 import { UpdatesPanel } from "./updates/UpdatesPanel";
 
 import { EditorWorkspace, type EditorWorkspaceHandle, type EditorId } from "./ide/EditorWorkspace";
@@ -346,7 +346,7 @@ export function App() {
   return (
     <ErrorBoundary>
       {isDeviceApprovalRoute
-        ? <DeviceApprovalPage sessionStatus="unavailable" />
+        ? <DeviceApprovalRoute />
         : <AppView />}
     </ErrorBoundary>
   );
