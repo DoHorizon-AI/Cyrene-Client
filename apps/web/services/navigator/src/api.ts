@@ -351,6 +351,7 @@ export interface TrainingDraftSpecInput {
  */
 export const NAVIGATOR_PROXY_PATHS = {
   catalyst: "/api/v1/catalyst",
+  echo: "/api/v1/echo",
   exchange: "/api/v1/exchange",
   navigator: "/api/v1/navigator",
   reactor: "/api/v1/reactor",
@@ -983,6 +984,19 @@ export class NavigatorApi {
   }
 
   /**
+   * Send a raw response request to the published Catalyst or Echo API through
+   * the same-origin Navigator proxy. Use this for new Product contract routes
+   * and binary downloads while keeping session refresh and CSRF in one place.
+   * 中文：通过 Navigator 同源代理请求 Catalyst 或 Echo API 原始响应；新 Product 路由和二进制下载仍复用会话轮换与 CSRF 处理。
+   */
+  async requestProductResponse(path: string, init: RequestInit = {}): Promise<Response> {
+    if (!isPublishedProductPath(path)) {
+      throw new NavigatorContractError("Product requests must use a published Catalyst or Echo same-origin path.");
+    }
+    return this.requestResponse(path, init);
+  }
+
+  /**
    * Read deployment loading phase events through Reactor proxy.
    * 中文：通过 Reactor 代理读取部署加载阶段事件。
    */
@@ -1275,6 +1289,15 @@ function jsonRequest(method: string, body: unknown, idempotent: boolean | string
     headers["Idempotency-Key"] = typeof idempotent === "string" ? idempotent : makeIdempotencyKey();
   }
   return { method, headers, body: JSON.stringify(body) };
+}
+
+/** Reject absolute URLs and ambiguous encoded paths before Product proxy dispatch. */
+function isPublishedProductPath(path: string): boolean {
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("://") || path.includes("\\")) return false;
+  const pathname = path.split(/[?#]/, 1)[0] ?? "";
+  if (!/^\/api\/v1\/(?:catalyst|echo)\//.test(pathname)) return false;
+  if (/%(?:2f|5c|2e|25|00)/i.test(pathname) || pathname.split("/").includes("..")) return false;
+  return true;
 }
 
 /** Keep one key for each explicit command and its retries. 中文：每次显式命令及其重试使用同一幂等键。 */

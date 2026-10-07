@@ -41,6 +41,7 @@ import { studioProductFetch } from "../../../src/products/transport";
 import { pushRoute, pushRunRoute, runIdForLocation, routeForPath } from "./router";
 import { useTrainingRun, type TrainingRunClient } from "./use-training-run";
 import { useI18n } from "./i18n";
+import { CatalystDataToolsPanel } from "../../catalyst/src/CatalystDataToolsPanel";
 
 export interface PageProps {
   api: NavigatorApi;
@@ -827,6 +828,14 @@ export function DatasetsPage({ api }: PageProps) {
         {workflowError ? <p className="inline-error" role="alert">{workflowError}</p> : null}
         {workflowNotice ? <p className="form-message form-message--success">{workflowNotice}</p> : null}
       </Panel>
+
+      <CatalystDataToolsPanel
+        datasets={datasets}
+        datasetsLoading={loading}
+        datasetsError={error}
+        onRefreshDatasets={() => setReloadKey((value) => value + 1)}
+        transport={api}
+      />
 
       <Panel title={t("Dataset containers")} meta={datasets ? `${datasets.length} records` : "LIVE READ"}>
         {loading ? (

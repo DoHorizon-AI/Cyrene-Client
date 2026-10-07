@@ -12,6 +12,7 @@ export type RouteId =
   | "overview"
   | "models"
   | "datasets"
+  | "echo"
   | "training"
   | "runs"
   | "deployments"
@@ -49,6 +50,12 @@ export const ROUTES: readonly RouteDefinition[] = [
     label: "Datasets",
     path: "/datasets",
     description: "Containers and preparation handoffs",
+  },
+  {
+    id: "echo",
+    label: "Echo",
+    path: "/echo",
+    description: "Evaluation suites, inputs, and reports",
   },
   {
     id: "training",
