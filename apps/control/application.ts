@@ -270,7 +270,9 @@ export function createControlApplication(options: ControlOptions) {
         if (path === "/api/proxy/exchange-gateway/v1/chat/completions" && typeof req.headers["x-product-authorization"] === "string") headers.set("authorization", req.headers["x-product-authorization"]);
         let body: Buffer | undefined;
         if (req.method !== "GET" && req.method !== "HEAD") {
-          const limit = /^\/api\/v1\/catalyst\/datasets\/[^/]+\/preparations$/.test(path) ? 32 * 1024 * 1024
+          const limit = /^\/api\/v1\/catalyst\/datasets\/[^/]+\/preparations$/.test(path)
+            || /^\/api\/v1\/catalyst\/api\/v1\/datasets\/[^/]+\/sources$/.test(path) ? 32 * 1024 * 1024
+            : path === "/api/v1/echo/api/v1/session-artifacts" ? 16 * 1024 * 1024
             : /^\/api\/v1\/workspaces\/[^/]+\/work\/attachments$/.test(path) ? 16 * 1024 * 1024
               : 1_048_576;
           let bytes = 0; const chunks: Buffer[] = [];

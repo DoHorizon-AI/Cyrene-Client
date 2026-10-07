@@ -18,6 +18,7 @@ describe("Navigator routes", () => {
     expect(routeForPath("/")).toBe("overview");
     expect(routeForPath("/models")).toBe("models");
     expect(routeForPath("/datasets/")).toBe("datasets");
+    expect(routeForPath("/echo")).toBe("echo");
     expect(routeForPath("/training")).toBe("training");
     expect(routeForPath("/runs?runId=run-1")).toBe("runs");
     expect(routeForPath("/deployments")).toBe("deployments");
@@ -35,6 +36,7 @@ describe("Navigator routes", () => {
   it("returns canonical paths for route ids", () => {
     expect(pathForRoute("overview")).toBe("/");
     expect(pathForRoute("models")).toBe("/models");
+    expect(pathForRoute("echo")).toBe("/echo");
     expect(pathForRoute("deployments")).toBe("/deployments");
     expect(pathForRoute("gateway")).toBe("/gateway");
     expect(pathForRoute("chat")).toBe("/chat");

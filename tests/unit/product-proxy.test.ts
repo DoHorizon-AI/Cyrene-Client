@@ -3,6 +3,7 @@ import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SqliteStoreFactory } from "../../tooling/sqlite-store";
 import { createControlApplication } from "../../apps/control/application";
+import { productPermission } from "../../tooling/product-proxy";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -68,4 +69,29 @@ it("forwards the first SSE event before upstream completion and closes on unsubs
     const deadline = setTimeout(() => { req.destroy(); reject(new Error("Proxy buffered the stream")); }, 2000);
     req.on("error", error => { clearTimeout(deadline); reject(error); }); req.end();
   });
+});
+
+it("allows only scoped Echo trial routes and carries the bounded JSONL upload", async () => {
+  const f = await fixture(), viewer = await f.login("viewer"), editor = await f.login("editor"), operator = await f.login("operator");
+  expect((await f.request("/api/v1/echo/evaluation-suites", editor, "POST", "{}")).status).toBe(200);
+  expect((await f.request("/api/v1/echo/evaluation-suites", viewer, "POST", "{}")).status).toBe(403);
+  const jsonl = "x".repeat(1_100_000);
+  expect((await f.request("/api/v1/echo/api/v1/session-artifacts", { ...editor, "content-type": "application/jsonl" }, "POST", jsonl)).status).toBe(200);
+  expect(f.received[1]?.body).toBe(jsonl);
+  expect((await f.request("/api/v1/echo/api/v1/evaluation-inputs/input-1/actions/evaluate", viewer, "POST", "{}")).status).toBe(403);
+  expect((await f.request("/api/v1/echo/api/v1/evaluation-inputs/input-1/actions/evaluate", operator, "POST", "{}")).status).toBe(200);
+  expect((await f.request("/api/v1/echo/api/v1/evaluation-results/result-1/export", viewer)).status).toBe(200);
+  expect(f.received.map(entry => entry.url)).toEqual([
+    "/api/v1/echo/evaluation-suites",
+    "/api/v1/echo/api/v1/session-artifacts",
+    "/api/v1/echo/api/v1/evaluation-inputs/input-1/actions/evaluate",
+    "/api/v1/echo/api/v1/evaluation-results/result-1/export",
+  ]);
+});
+
+it("allowlists the Catalyst trial collection and encoded opaque block identifiers", () => {
+  expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets")).toBe("products.read");
+  expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets/ds-1/processing-runs")).toBe("products.read");
+  expect(productPermission("POST", "/api/v1/catalyst/api/v1/content-revisions/rev-1/blocks/block%3A4/edits")).toBe("products.write");
+  expect(productPermission("DELETE", "/api/v1/catalyst/api/v1/datasets/ds-1/sources")).toBeNull();
 });

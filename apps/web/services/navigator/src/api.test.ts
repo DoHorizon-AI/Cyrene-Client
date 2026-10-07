@@ -549,4 +549,46 @@ describe("NavigatorApi", () => {
     const revoked = await api.revokeApiKey("key-1");
     expect(revoked.state).toBe("REVOKED");
   });
+
+  it("limits raw Product transport to Catalyst/Echo and refreshes paired sessions for uploads", async () => {
+    const calls: Array<{ path: string; init: RequestInit }> = [];
+    let uploadCount = 0;
+    const api = new NavigatorApi(async (input, init) => {
+      const path = String(input);
+      calls.push({ path, init: init ?? {} });
+      if (path === "/api/v1/auth/session") return response({
+        authenticated: true, state: "AUTHENTICATED", sessionId: "session-1",
+        expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "csrf-old", refreshed: false,
+      });
+      if (path === "/api/v1/auth/session/refresh") return response({
+        authenticated: true, state: "AUTHENTICATED", sessionId: "session-1",
+        expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "csrf-new", refreshed: true,
+      });
+      if (path === "/api/v1/echo/api/v1/session-artifacts" && uploadCount++ === 0) return response({ detail: "expired" }, 401);
+      if (path === "/api/v1/echo/api/v1/session-artifacts") return new Response("report", { status: 200 });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    await api.getSession();
+    const result = await api.requestProductResponse("/api/v1/echo/api/v1/session-artifacts", {
+      method: "POST", headers: { "Content-Type": "application/jsonl" }, body: "sample\n",
+    });
+    expect(await result.text()).toBe("report");
+    expect(calls.map(call => call.path)).toEqual([
+      "/api/v1/auth/session",
+      "/api/v1/echo/api/v1/session-artifacts",
+      "/api/v1/auth/session/refresh",
+      "/api/v1/echo/api/v1/session-artifacts",
+    ]);
+    expect(new Headers(calls[1]?.init.headers).get("X-CSRF-Token")).toBe("csrf-old");
+    expect(new Headers(calls[3]?.init.headers).get("X-CSRF-Token")).toBe("csrf-new");
+    expect(calls[3]?.init.credentials).toBe("same-origin");
+    await expect(api.requestProductResponse("https://attacker.invalid/api/v1/echo/api/v1/session-artifacts"))
+      .rejects.toMatchObject({ name: "NavigatorContractError" });
+    await expect(api.requestProductResponse("/api/v1/reactor/model-imports"))
+      .rejects.toMatchObject({ name: "NavigatorContractError" });
+    await expect(api.requestProductResponse("/api/v1/echo/api/v1/%2e%2e/secret"))
+      .rejects.toMatchObject({ name: "NavigatorContractError" });
+    expect(calls).toHaveLength(4);
+  });
 });

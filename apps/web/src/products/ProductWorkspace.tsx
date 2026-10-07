@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { NavigatorApi, type SessionPayload } from "../../services/navigator/src/api";
 import { ChatPage, DatasetsPage, DeploymentsPage, GatewayPage, ModelsPage, OverviewPage, RunsPage, SettingsPage, TrainingPage } from "../../services/navigator/src/pages";
 import { WorkAssistantPage } from "../../services/navigator/src/work-assistant";
+import { EchoWorkbench } from "../../services/echo/src/EchoWorkbench";
 import { ControlledLocaleProvider } from "../../services/navigator/src/i18n";
 import type { RouteId } from "../../services/navigator/src/router";
 import { useI18n } from "../i18n";
@@ -42,6 +43,7 @@ function ProductSession({ route }: { route: RouteId }) {
     switch (id) {
       case "models": return <ModelsPage api={api} />;
       case "datasets": return <DatasetsPage api={api} />;
+      case "echo": return <EchoWorkbench api={api} />;
       case "training": return <TrainingPage api={api} />;
       case "runs": return <RunsPage api={api} />;
       case "deployments": return <DeploymentsPage api={api} />;
