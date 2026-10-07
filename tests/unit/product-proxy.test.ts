@@ -89,9 +89,34 @@ it("allows only scoped Echo trial routes and carries the bounded JSONL upload", 
   ]);
 });
 
+it("forwards a multipart Catalyst batch larger than the single-source cap", async () => {
+  const f = await fixture(), editor = await f.login("editor");
+  const boundary = "----catalyst-v02-boundary";
+  const fileBytes = "x".repeat(33 * 1024 * 1024);
+  const multipart = `--${boundary}\r\nContent-Disposition: form-data; name=\"files[]\"; filename=\"large.pdf\"\r\nContent-Type: application/pdf\r\n\r\n${fileBytes}\r\n--${boundary}--\r\n`;
+
+  const result = await f.request(
+    "/api/v1/catalyst/api/v1/datasets/ds-1/sources/batch",
+    { ...editor, "content-type": `multipart/form-data; boundary=${boundary}` },
+    "POST",
+    multipart,
+  );
+
+  expect(result.status).toBe(200);
+  expect(f.received).toHaveLength(1);
+  expect(f.received[0]?.url).toBe("/api/v1/catalyst/api/v1/datasets/ds-1/sources/batch");
+  expect(Buffer.byteLength(f.received[0]?.body ?? "")).toBe(Buffer.byteLength(multipart));
+  expect(f.received[0]?.body.startsWith(`--${boundary}\r\n`)).toBe(true);
+  expect(f.received[0]?.body.endsWith(`\r\n--${boundary}--\r\n`)).toBe(true);
+});
+
 it("allowlists the Catalyst trial collection and encoded opaque block identifiers", () => {
   expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets")).toBe("products.read");
   expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets/ds-1/processing-runs")).toBe("products.read");
   expect(productPermission("POST", "/api/v1/catalyst/api/v1/content-revisions/rev-1/blocks/block%3A4/edits")).toBe("products.write");
+  expect(productPermission("POST", "/api/v1/catalyst/api/v1/datasets/ds-1/sources/batch")).toBe("products.write");
+  expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets/ds-1/source-parse-reports")).toBe("products.read");
+  expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets/ds-1/review-queue")).toBe("products.read");
+  expect(productPermission("POST", "/api/v1/catalyst/api/v1/review-items/review%3A1/resolve")).toBe("products.operate");
   expect(productPermission("DELETE", "/api/v1/catalyst/api/v1/datasets/ds-1/sources")).toBeNull();
 });

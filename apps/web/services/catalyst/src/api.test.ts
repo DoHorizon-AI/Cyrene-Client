@@ -6,7 +6,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import { CatalystClientError, CatalystDataToolsClient, MAX_SOURCE_BYTES, userFacingCatalystError } from "./api";
+import {
+  CatalystClientError,
+  CatalystDataToolsClient,
+  contentApprovalBlockReason,
+  MAX_BATCH_SOURCE_COUNT,
+  MAX_SOURCE_BYTES,
+  userFacingCatalystError,
+  userFacingParseFailure,
+  userFacingSourceItemError,
+} from "./api";
 
 describe("CatalystDataToolsClient", () => {
   it("uploads the original PDF bytes as an octet-stream without text conversion", async () => {
@@ -59,6 +68,154 @@ describe("CatalystDataToolsClient", () => {
     await expect(client.createSource("dataset-1", oversized))
       .rejects.toMatchObject({ code: "file_too_large" });
     expect(calls).toBe(0);
+  });
+
+  it("sends repeated files[] FormData and preserves per-file successes and failures", async () => {
+    let capturedPath = "";
+    let capturedInit: RequestInit | undefined;
+    const goodFile = new File([new Uint8Array([0x50, 0x4b])], "slides.pptx", { type: "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
+    const overFile = new File(["x"], "oversized.pdf", { type: "application/pdf" });
+    Object.defineProperty(overFile, "size", { value: MAX_SOURCE_BYTES + 1 });
+    const client = new CatalystDataToolsClient({
+      async requestProductResponse(path, init) {
+        capturedPath = path;
+        capturedInit = init;
+        return jsonResponse({ items: [
+          { filename: "slides.pptx", source: { id: "source-1", filename: "slides.pptx" }, error: null },
+          { filename: "oversized.pdf", source: null, error: { code: "CATALYST_SOURCE_FILE_TOO_LARGE", message: "The file exceeds the per-file limit.", retryable: false } },
+        ] }, 200);
+      },
+    });
+
+    const result = await client.uploadSourcesBatch("dataset-1", [goodFile, overFile]);
+
+    expect(capturedPath).toBe("/api/v1/catalyst/api/v1/datasets/dataset-1/sources/batch");
+    expect(capturedInit?.method).toBe("POST");
+    expect(capturedInit?.body).toBeInstanceOf(FormData);
+    expect(new Headers(capturedInit?.headers).has("content-type")).toBe(false);
+    const form = capturedInit?.body as FormData;
+    const files = form.getAll("files[]");
+    expect(files).toHaveLength(2);
+    expect(files.map((file) => (file as File).name)).toEqual(["slides.pptx", "oversized.pdf"]);
+    expect(result.items.map((item) => [item.filename, item.source?.id ?? null, item.error?.code ?? null])).toEqual([
+      ["slides.pptx", "source-1", null],
+      ["oversized.pdf", null, "CATALYST_SOURCE_FILE_TOO_LARGE"],
+    ]);
+    expect(userFacingSourceItemError(result.items[1]!.error!)).toContain("32 MiB per-file");
+    expect(userFacingSourceItemError({
+      code: "CATALYST_SOURCE_BATCH_TOO_LARGE",
+      message: "Accepted files reached the batch limit.",
+      retryable: false,
+    })).toContain("128 MiB stored-file limit");
+  });
+
+  it("validates the batch item count without imposing client-side byte limits", async () => {
+    let calls = 0;
+    const client = new CatalystDataToolsClient({
+      async requestProductResponse() {
+        calls += 1;
+        return jsonResponse({ items: [] });
+      },
+    });
+    await expect(client.uploadSourcesBatch("dataset-1", [])).rejects.toMatchObject({ code: "empty_batch" });
+    const files = Array.from({ length: MAX_BATCH_SOURCE_COUNT + 1 }, (_, index) => new File(["x"], `${index}.txt`));
+    await expect(client.uploadSourcesBatch("dataset-1", files)).rejects.toMatchObject({ code: "too_many_files" });
+    expect(calls).toBe(0);
+  });
+
+  it("reports the request cap when the multipart body itself is rejected", async () => {
+    const client = new CatalystDataToolsClient({
+      async requestProductResponse() {
+        return jsonResponse({ code: "request_body_too_large", detail: "Request too large." }, 413);
+      },
+    });
+    const file = new File(["content"], "source.pdf", { type: "application/pdf" });
+
+    await expect(client.uploadSourcesBatch("dataset-1", [file]))
+      .rejects.toMatchObject({ code: "batch_request_too_large", message: "The batch request exceeds the 129 MiB upload limit. Select fewer or smaller files." });
+  });
+
+  it("reads parse reports as a filtered direct array", async () => {
+    let capturedPath = "";
+    const client = new CatalystDataToolsClient({
+      async requestProductResponse(path) {
+        capturedPath = path;
+        return jsonResponse([]);
+      },
+    });
+
+    await expect(client.listSourceParseReports("dataset-1", { sourceRevisionId: "source/1", processingRunId: "run 2" }))
+      .resolves.toEqual([]);
+
+    expect(capturedPath).toBe("/api/v1/catalyst/api/v1/datasets/dataset-1/source-parse-reports?sourceRevisionId=source%2F1&processingRunId=run+2");
+  });
+
+  it("loads the review queue and resolves an item with a trimmed note", async () => {
+    const calls: Array<{ path: string; init?: RequestInit }> = [];
+    const client = new CatalystDataToolsClient({
+      async requestProductResponse(path, init) {
+        calls.push({ path, init });
+        return jsonResponse(path.endsWith("/review-queue")
+          ? { items: [], generatedDrafts: [{ id: "revision-draft", datasetId: "dataset-1", revision: 4, state: "DRAFT", blockCount: 2, sourceRevisionIds: ["source-1"], createdAt: "2026-10-07T00:00:00Z", resourceVersion: 1, processingRunId: "run-1" }] }
+          : { id: "review-1", state: "ACKNOWLEDGED" });
+      },
+    });
+
+    const queue = await client.getReviewQueue("dataset-1");
+    await client.resolveReviewItem("review:1", "ACKNOWLEDGE", "  inspected page 3  ");
+
+    expect(calls[0]?.path).toBe("/api/v1/catalyst/api/v1/datasets/dataset-1/review-queue");
+    expect(queue.generatedDrafts[0]?.processingRunId).toBe("run-1");
+    expect(calls[1]?.path).toBe("/api/v1/catalyst/api/v1/review-items/review%3A1/resolve");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ action: "ACKNOWLEDGE", note: "inspected page 3" });
+  });
+
+  it("fails closed on unresolved low-confidence parser warnings and missing review records", () => {
+    const report = parseReportFixture();
+    const openLowConfidenceItem = reviewItemFixture({ state: "OPEN", confidence: 0.18 });
+    const queue = { items: [openLowConfidenceItem], generatedDrafts: [] };
+
+    expect(contentApprovalBlockReason("revision-1", ["source-1"], [report], queue))
+      .toBe("unresolved_review_items");
+    expect(contentApprovalBlockReason("revision-1", ["source-1"], [report], {
+      items: [{ ...openLowConfidenceItem, state: "ACKNOWLEDGED" }],
+      generatedDrafts: [],
+    })).toBeNull();
+    expect(contentApprovalBlockReason("revision-1", ["source-1"], [report], {
+      items: [{ ...openLowConfidenceItem, state: "REJECTED" }],
+      generatedDrafts: [],
+    })).toBe("unresolved_review_items");
+    expect(contentApprovalBlockReason("revision-1", ["source-1"], [report], { items: [], generatedDrafts: [] }))
+      .toBe("parser_report_missing_review_item");
+    expect(contentApprovalBlockReason("revision-1", ["source-1"], null, null))
+      .toBe("review_status_unavailable");
+    expect(contentApprovalBlockReason("revision-1", ["other-source"], [report], { items: [], generatedDrafts: [] }))
+      .toBeNull();
+  });
+
+  it("keeps model lineage on generated blocks and gives parser failures usable messages", async () => {
+    const receipt = {
+      recipeId: "grounded-qa",
+      recipeVersion: "1.2",
+      recipeDigest: "sha256:abc",
+      bindingId: "model-binding",
+      model: "test-model",
+      budget: { maxExamples: 8 },
+      usage: { modelCalls: 2 },
+      generatedAt: "2026-10-07T00:00:00Z",
+      sourceBlockIds: ["block-1"],
+    };
+    const client = new CatalystDataToolsClient({
+      async requestProductResponse() {
+        return jsonResponse({ revisionId: "revision-1", offset: 0, limit: 50, total: 1, blocks: [{ id: "block-2", kind: "text", text: "Question? Answer.", origin: "GENERATED", generationReceipt: receipt }] });
+      },
+    });
+
+    const page = await client.getBlocks("revision-1");
+
+    expect(page.blocks[0]?.generationReceipt).toEqual(receipt);
+    expect(userFacingParseFailure({ code: "CATALYST_SOURCE_UNSUPPORTED", message: "unsupported", retryable: false })).toContain("cannot be extracted");
+    expect(userFacingParseFailure({ code: "CATALYST_SOURCE_PARSE_FAILED", message: "failed", retryable: false })).toContain("No readable content");
   });
 
   it("uses the frozen revision edit route and preserves policy restrictions", async () => {
@@ -174,6 +331,45 @@ describe("CatalystDataToolsClient", () => {
       .toContain("workspace capability is unavailable");
   });
 });
+
+function parseReportFixture() {
+  return {
+    id: "report-1",
+    datasetId: "dataset-1",
+    sourceRevisionId: "source-1",
+    processingRunId: "run-1",
+    status: "WARNING" as const,
+    blockCount: 2,
+    warnings: [],
+    diagnostics: [{ code: "LOW_CONFIDENCE_OCR", message: "Text needs review.", kind: "ocr" as const, severity: "warning" as const, confidence: 0.18 }],
+    unsupportedContent: [],
+    outputArtifacts: [],
+    createdAt: "2026-10-07T00:00:00Z",
+    updatedAt: "2026-10-07T00:00:00Z",
+    resourceVersion: 1,
+  };
+}
+
+function reviewItemFixture(overrides: Partial<{
+  state: "OPEN" | "ACKNOWLEDGED" | "REJECTED";
+  confidence: number;
+}> = {}) {
+  return {
+    id: "review-1",
+    datasetId: "dataset-1",
+    sourceParseReportId: "report-1",
+    sourceRevisionId: "source-1",
+    processingRunId: "run-1",
+    kind: "OCR_WARNING" as const,
+    code: "LOW_CONFIDENCE_OCR",
+    message: "Text needs review.",
+    severity: "warning",
+    state: "OPEN" as const,
+    createdAt: "2026-10-07T00:00:00Z",
+    resourceVersion: 1,
+    ...overrides,
+  };
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
