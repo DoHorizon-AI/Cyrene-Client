@@ -272,6 +272,7 @@ export function createControlApplication(options: ControlOptions) {
         if (req.method !== "GET" && req.method !== "HEAD") {
           const limit = /^\/api\/v1\/catalyst\/datasets\/[^/]+\/preparations$/.test(path)
             || /^\/api\/v1\/catalyst\/api\/v1\/datasets\/[^/]+\/sources$/.test(path) ? 32 * 1024 * 1024
+            : /^\/api\/v1\/catalyst\/api\/v1\/datasets\/[^/]+\/sources\/batch$/.test(path) ? 129 * 1024 * 1024
             : path === "/api/v1/echo/api/v1/session-artifacts" ? 16 * 1024 * 1024
             : /^\/api\/v1\/workspaces\/[^/]+\/work\/attachments$/.test(path) ? 16 * 1024 * 1024
               : 1_048_576;

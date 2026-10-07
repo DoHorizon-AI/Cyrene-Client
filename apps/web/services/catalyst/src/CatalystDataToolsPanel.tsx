@@ -10,24 +10,36 @@ import { Button, Field, Panel, StateBlock, StatusPill } from "../../navigator/sr
 import { useI18n } from "../../navigator/src/i18n";
 import {
   CatalystDataToolsClient,
+  contentApprovalBlockReason,
   isRunActive,
+  MAX_BATCH_REQUEST_BYTES,
+  MAX_BATCH_SOURCE_COUNT,
+  MAX_BATCH_STORED_BYTES,
   MAX_SOURCE_BYTES,
   userFacingCatalystError,
+  userFacingParseFailure,
   userFacingRunFailure,
+  userFacingSourceItemError,
   type ContentBlock,
   type ContentPolicy,
+  type ContentApprovalBlockReason,
   type ContentRevision,
+  type ContentRevisionSummary,
   type CreateProcessingRunRequest,
   type DatasetVersion,
   type ProcessingRun,
   type ProductResponseTransport,
+  type ReviewItem,
+  type ReviewQueue,
   type RunOperation,
+  type SourceBatchItem,
+  type SourceParseReport,
   type SourceRevision,
 } from "./api";
 import { catalystText } from "./copy";
 import "./catalyst.css";
 
-type LoadErrors = { sources: string | null; revisions: string | null; runs: string | null; versions: string | null };
+type LoadErrors = { sources: string | null; revisions: string | null; runs: string | null; versions: string | null; parseReports: string | null; reviewQueue: string | null };
 type BlockEdit = { text: string; policy: ContentPolicy };
 
 /**
@@ -56,7 +68,11 @@ export function CatalystDataToolsPanel({
   const [revisions, setRevisions] = useState<ContentRevision[] | null>(null);
   const [runs, setRuns] = useState<ProcessingRun[] | null>(null);
   const [versions, setVersions] = useState<DatasetVersion[] | null>(null);
-  const [loadErrors, setLoadErrors] = useState<LoadErrors>({ sources: null, revisions: null, runs: null, versions: null });
+  const [parseReports, setParseReports] = useState<SourceParseReport[] | null>(null);
+  const [reviewQueue, setReviewQueue] = useState<ReviewQueue | null>(null);
+  const [uploadResults, setUploadResults] = useState<SourceBatchItem[]>([]);
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
+  const [loadErrors, setLoadErrors] = useState<LoadErrors>({ sources: null, revisions: null, runs: null, versions: null, parseReports: null, reviewQueue: null });
   const [pollErrors, setPollErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [selectedRevisionId, setSelectedRevisionId] = useState("");
@@ -86,6 +102,15 @@ export function CatalystDataToolsPanel({
   const selectedKnowledgeRunId = knowledgeRuns[0]?.id ?? "";
   const selectedSftRunId = sftRuns[0]?.id ?? "";
   const splitIsValid = trainPercent + validationPercent + testPercent === 100;
+  const approvalGateReason = contentApprovalBlockReason(
+    selectedRevisionId,
+    selectedRevision?.sourceRevisionIds ?? [],
+    parseReports,
+    reviewQueue,
+    Boolean(loadErrors.reviewQueue || loadErrors.parseReports),
+  );
+  const approvalBlocked = approvalGateReason !== null;
+  const approvalBlockReason = approvalGateCopy(approvalGateReason);
 
   useEffect(() => {
     if (!datasetId) {
@@ -93,22 +118,28 @@ export function CatalystDataToolsPanel({
       setRevisions(null);
       setRuns(null);
       setVersions(null);
+      setParseReports(null);
+      setReviewQueue(null);
+      setUploadResults([]);
+      setReviewNotes({});
       setSelectedRevisionId("");
-      setLoadErrors({ sources: null, revisions: null, runs: null, versions: null });
+      setLoadErrors({ sources: null, revisions: null, runs: null, versions: null, parseReports: null, reviewQueue: null });
       return;
     }
 
     let active = true;
     setLoading(true);
-    setLoadErrors({ sources: null, revisions: null, runs: null, versions: null });
+    setLoadErrors({ sources: null, revisions: null, runs: null, versions: null, parseReports: null, reviewQueue: null });
     void Promise.allSettled([
       client.listSources(datasetId),
       client.listContentRevisions(datasetId),
       client.listProcessingRuns(datasetId),
       client.listVersions(datasetId),
-    ]).then(([sourceResult, revisionResult, runResult, versionResult]) => {
+      client.listSourceParseReports(datasetId),
+      client.getReviewQueue(datasetId),
+    ]).then(([sourceResult, revisionResult, runResult, versionResult, parseReportResult, reviewQueueResult]) => {
       if (!active) return;
-      const errors: LoadErrors = { sources: null, revisions: null, runs: null, versions: null };
+      const errors: LoadErrors = { sources: null, revisions: null, runs: null, versions: null, parseReports: null, reviewQueue: null };
       if (sourceResult.status === "fulfilled") setSources(sourceResult.value);
       else { setSources(null); errors.sources = userFacingCatalystError(sourceResult.reason); }
       if (revisionResult.status === "fulfilled") {
@@ -121,6 +152,10 @@ export function CatalystDataToolsPanel({
       else { setRuns(null); errors.runs = userFacingCatalystError(runResult.reason); }
       if (versionResult.status === "fulfilled") setVersions(versionResult.value);
       else { setVersions(null); errors.versions = userFacingCatalystError(versionResult.reason); }
+      if (parseReportResult.status === "fulfilled") setParseReports(parseReportResult.value);
+      else { setParseReports(null); errors.parseReports = userFacingCatalystError(parseReportResult.reason); }
+      if (reviewQueueResult.status === "fulfilled") setReviewQueue(reviewQueueResult.value);
+      else { setReviewQueue(null); errors.reviewQueue = userFacingCatalystError(reviewQueueResult.reason); }
       setLoadErrors(errors);
       setLoading(false);
     });
@@ -214,36 +249,79 @@ export function CatalystDataToolsPanel({
       : `${operationLabel(run.operation)} started. Its status will update here.`);
   };
 
-  const handleUpload = async (file: File) => {
+  const handleBatchUpload = async (files: readonly File[]) => {
     if (!datasetId) { setActionError("Choose a dataset before uploading."); return; }
-    if (file.size > MAX_SOURCE_BYTES) { setActionError("This file exceeds the 32 MiB upload limit."); return; }
+    if (files.length === 0) return;
     setBusyAction("upload");
     setActionError(null);
     setNotice(null);
-    let uploaded: SourceRevision | null = null;
+    setUploadResults([]);
     try {
-      uploaded = await client.createSource(datasetId, file);
-      setSources((current) => [uploaded!, ...(current ?? []).filter((source) => source.id !== uploaded!.id)]);
-      try {
-        const run = await client.createProcessingRun(datasetId, {
-          operation: "parse",
-          sourceRevisionIds: [uploaded.id],
-        });
-        setRuns((current) => [run, ...(current ?? []).filter((item) => item.id !== run.id)]);
-        setNotice(locale === "zh-CN"
-          ? `${file.name} 已上传，文档解析与校对已启动。`
-          : `${file.name} was uploaded and document review has started.`);
-      } catch (parseError) {
-        setActionError(locale === "zh-CN"
-          ? `文件已上传，但无法启动文档解析与校对。${l(userFacingCatalystError(parseError))}`
-          : `The file was uploaded, but document review could not start. ${userFacingCatalystError(parseError)}`);
+      const response = await client.uploadSourcesBatch(datasetId, files);
+      setUploadResults(response.items);
+      const uploaded = response.items.flatMap((item) => item.source ? [item.source] : []);
+      if (uploaded.length > 0) {
+        setSources((current) => [...uploaded, ...(current ?? []).filter((source) => !uploaded.some((item) => item.id === source.id))]);
+      }
+      const failedItems = response.items.filter((item) => item.error !== null);
+      if (uploaded.length > 0) {
+        try {
+          const run = await client.createProcessingRun(datasetId, {
+            operation: "parse",
+            sourceRevisionIds: uploaded.map((source) => source.id),
+          });
+          setRuns((current) => [run, ...(current ?? []).filter((item) => item.id !== run.id)]);
+          setNotice(locale === "zh-CN"
+            ? `${uploaded.length} 个文件已保存，文档解析与校对已启动。${failedItems.length ? `另有 ${failedItems.length} 个文件未能保存，请查看逐项结果。` : ""}`
+            : `${uploaded.length} files were stored and document review has started.${failedItems.length ? ` ${failedItems.length} other files could not be stored; see the per-file results.` : ""}`);
+        } catch (parseError) {
+          setActionError(locale === "zh-CN"
+            ? `文件已保存，但无法启动文档解析与校对。${l(userFacingCatalystError(parseError))}`
+            : `The files were stored, but document review could not start. ${userFacingCatalystError(parseError)}`);
+          refresh();
+        }
+      } else if (failedItems.length > 0) {
+        setNotice(locale === "zh-CN" ? "没有文件保存成功；请查看逐项失败原因。" : "No files were stored. Review the per-file failure reasons.");
+      } else {
+        setActionError(locale === "zh-CN" ? "Catalyst 未确认任何文件结果，请刷新来源列表核实。" : "Catalyst did not confirm any file results. Refresh the source list to verify.");
         refresh();
       }
     } catch (error) {
       setActionError(userFacingCatalystError(error));
+      refresh();
     } finally {
       setBusyAction(null);
     }
+  };
+
+  const openRevision = (revisionId: string) => {
+    setSelectedRevisionId(revisionId);
+    window.requestAnimationFrame(() => document.querySelector(".catalyst-tools__revision-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
+
+  const openGeneratedDraft = async (draft: ContentRevisionSummary) => {
+    const existing = revisions?.find((revision) => revision.id === draft.id);
+    if (existing) { openRevision(existing.id); return; }
+    await perform(`open-draft:${draft.id}`, async () => {
+      const latest = await client.listContentRevisions(datasetId);
+      setRevisions(latest);
+      const found = latest.find((revision) => revision.id === draft.id);
+      if (!found) throw new Error("The generated draft is no longer available. Refresh the review queue.");
+      openRevision(found.id);
+    });
+  };
+
+  const openReviewItem = async (item: ReviewItem) => {
+    const revisionId = item.contentRevisionId
+      ?? revisions?.find((revision) => revision.sourceRevisionIds.includes(item.sourceRevisionId))?.id;
+    if (revisionId && revisions?.some((revision) => revision.id === revisionId)) { openRevision(revisionId); return; }
+    if (!revisionId) return;
+    await perform(`open-review:${item.id}`, async () => {
+      const latest = await client.listContentRevisions(datasetId);
+      setRevisions(latest);
+      if (!latest.some((revision) => revision.id === revisionId)) throw new Error("The related content revision is no longer available. Refresh the review queue.");
+      openRevision(revisionId);
+    });
   };
 
   const updateBlockEdit = (block: ContentBlock, update: Partial<BlockEdit>) => {
@@ -309,6 +387,28 @@ export function CatalystDataToolsPanel({
 
   const selectedDatasetName = datasets?.find((row) => String(row["id"] ?? row["datasetId"] ?? "") === datasetId)?.["name"];
 
+  const selectDataset = (nextDatasetId: string) => {
+    setDatasetId(nextDatasetId);
+    setSources(null);
+    setRevisions(null);
+    setRuns(null);
+    setVersions(null);
+    setParseReports(null);
+    setReviewQueue(null);
+    setUploadResults([]);
+    setReviewNotes({});
+    setSelectedRevisionId("");
+    setBlocks([]);
+    setBlockTotal(0);
+    setBlocksError(null);
+    setEdits({});
+    setLoadErrors({ sources: null, revisions: null, runs: null, versions: null, parseReports: null, reviewQueue: null });
+    setActionError(null);
+    setNotice(null);
+    setDownloadError(null);
+    setLoading(Boolean(nextDatasetId));
+  };
+
   return (
     <div className="catalyst-tools">
       <Panel
@@ -316,8 +416,8 @@ export function CatalystDataToolsPanel({
         meta={<span className="mono-label">CATALYST DATA TOOLS</span>}
       >
         <div className="catalyst-tools__intro">
-          <p>{l("Keep the original PDF or Word file, review extracted passages, then build a knowledge package and a training package from approved content.")}</p>
-          <p className="catalyst-tools__limit">{l("PDF and DOCX · up to 32 MiB per file")}</p>
+          <p>{l("Keep original source files, review extracted passages, then build knowledge and training packages from approved content.")}</p>
+          <p className="catalyst-tools__limit">{l("Supported source formats and batch limits")}: PDF, DOCX, PPTX, XLSX, Markdown, TXT, CSV, PNG, JPEG, JSONL · {MAX_BATCH_SOURCE_COUNT} files · {formatBytes(MAX_SOURCE_BYTES)} per file · {formatBytes(MAX_BATCH_STORED_BYTES)} stored per batch · {formatBytes(MAX_BATCH_REQUEST_BYTES)} request cap</p>
         </div>
 
         {datasets === null ? (
@@ -329,7 +429,7 @@ export function CatalystDataToolsPanel({
         ) : (
           <div className="catalyst-tools__selector-grid">
             <Field label={l("Dataset")} hint={l("Documents and published versions belong to this dataset.")}>
-              <select value={datasetId} onChange={(event) => setDatasetId(event.target.value)}>
+              <select value={datasetId} disabled={busyAction !== null} onChange={(event) => selectDataset(event.target.value)}>
                 <option value="">{l("Select a dataset")}</option>
                 {datasets.map((row, index) => {
                   const id = String(row["id"] ?? row["datasetId"] ?? "");
@@ -340,14 +440,15 @@ export function CatalystDataToolsPanel({
             </Field>
             <div className="catalyst-tools__upload">
               <label className="field">
-                <span className="field__label">{l("Upload PDF or Word file")}</span>
+                <span className="field__label">{l("Upload source files")}</span>
                 <input
                   type="file"
-                  accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  multiple
+                  accept=".pdf,.docx,.pptx,.xlsx,.md,.txt,.csv,.png,.jpg,.jpeg,.jsonl,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/markdown,text/plain,text/csv,image/png,image/jpeg,application/json"
                   disabled={!datasetId || busyAction !== null}
                   onChange={(event) => {
-                    const file = event.currentTarget.files?.[0];
-                    if (file) void handleUpload(file);
+                    const files = Array.from(event.currentTarget.files ?? []);
+                    if (files.length > 0) void handleBatchUpload(files);
                     event.currentTarget.value = "";
                   }}
                 />
@@ -361,6 +462,18 @@ export function CatalystDataToolsPanel({
 
         {actionError ? <p className="inline-error" role="alert">{l(actionError)}</p> : null}
         {notice ? <p className="form-message form-message--success" role="status">{l(notice)}</p> : null}
+        {uploadResults.length > 0 ? (
+          <div className="catalyst-tools__source-list" aria-label={l("Batch upload results")}>
+            {uploadResults.map((item, index) => <article className="catalyst-tools__source" key={item.source?.id ?? String(index)}>
+              <div className="catalyst-tools__source-main">
+                <strong>{item.filename}</strong>
+                {item.source ? <span>{l("Stored source revision")} {item.source.revision} · {formatBytes(item.source.byteLength)}</span> : null}
+                {item.error ? <p className="catalyst-tools__run-message" role="alert">{l(userFacingSourceItemError(item.error))}</p> : null}
+              </div>
+              <div className="catalyst-tools__source-status"><StatusPill value={l(item.source ? "UPLOADED" : "FAILED")} />{item.error?.retryable ? <small>{l("This upload can be retried.")}</small> : null}</div>
+            </article>)}
+          </div>
+        ) : null}
         {datasetId && selectedDatasetName ? <p className="catalyst-tools__current-dataset">{l("Working in")} <strong>{String(selectedDatasetName)}</strong></p> : null}
       </Panel>
 
@@ -373,7 +486,8 @@ export function CatalystDataToolsPanel({
                   <div className="catalyst-tools__source-list">
                     {sources.map((source) => {
                       const run = (runs ?? []).find((item) => item.operation === "parse" && item.sourceRevisionIds.includes(source.id));
-                      const status = l(sourceStatus(run));
+                      const report = latestReportForSource(parseReports ?? [], source.id);
+                      const status = l(report?.status ?? sourceStatus(run));
                       return (
                         <article className="catalyst-tools__source" key={source.id}>
                           <div className="catalyst-tools__source-main">
@@ -383,13 +497,27 @@ export function CatalystDataToolsPanel({
                           </div>
                           <div className="catalyst-tools__source-status">
                             <StatusPill value={status} />
-                            {(run?.state === "FAILED" || run?.state === "INTERRUPTED") && run.failure ? <p>{l(userFacingRunFailure(run.failure))}</p> : null}
+                            {report?.failure ? <p className="catalyst-tools__run-message">{l(userFacingParseFailure(report.failure))}</p> : null}
+                            {!report?.failure && (run?.state === "FAILED" || run?.state === "INTERRUPTED") && run.failure ? <p>{l(userFacingRunFailure(run.failure))}</p> : null}
+                            {report?.contentRevisionId ? <small>{l("Content revision")} {report.contentRevisionId}</small> : null}
                           </div>
+                          {report && reportNeedsReview(report) ? <div className="catalyst-tools__source-main">
+                            {report.warnings.length > 0 || report.diagnostics.length > 0 ? <ul className="catalyst-tools__warnings">
+                              {[...report.warnings, ...report.diagnostics].map((warning, index) => <li key={String(index)}>
+                                {l(userFacingWarning(warning.code, warning.message))}
+                                {"kind" in warning ? <span> · {l(warning.kind === "ocr" ? "OCR review" : "Parser review")}</span> : null}
+                                {"confidence" in warning && typeof warning.confidence === "number" ? <span> · {l("Confidence")} {formatPercent(warning.confidence)}</span> : null}
+                                {"locator" in warning && warning.locator ? <small>{formatCatalystLocator(warning.locator, locale).join(" · ")}</small> : null}
+                              </li>)}
+                            </ul> : null}
+                            {report.unsupportedContent.length > 0 ? <p>{l("Some embedded content could not be read.")} {report.unsupportedContent.map((item) => describeUnsupportedContent(item, locale)).filter(Boolean).join(" · ")}</p> : null}
+                          </div> : null}
                         </article>
                       );
                     })}
                   </div>
-                ) : <StateBlock kind="empty" title={l("No original documents yet")} detail={l("Upload a PDF or DOCX file. The exact original bytes are retained by Catalyst.")} />}
+                ) : <StateBlock kind="empty" title={l("No original documents yet")} detail={l("Upload supported source files. Catalyst retains the exact original bytes.")} />}
+            {loadErrors.parseReports ? <StateBlock kind="error" title={l("Parse reports unavailable")} detail={l(loadErrors.parseReports)} action={<Button onClick={refresh}>{l("Try again")}</Button>} /> : null}
           </Panel>
 
           <Panel title={l("Processing activity")} meta={runs ? `${runs.length} ${l("runs")}` : l("LIVE STATUS")}>
@@ -429,7 +557,67 @@ export function CatalystDataToolsPanel({
                 ) : <StateBlock kind="empty" title={l("No processing activity")} detail={l("Uploading a document will start its first review run.")} />}
           </Panel>
 
-          <Panel title={l("Review passages and generated drafts")} meta={revisions ? `${revisions.length} ${l("revisions")}` : l("IMMUTABLE REVISIONS")}>
+          <Panel title={l("Review queue")} meta={reviewQueue ? `${reviewQueue.items.length} ${l("review items")}` : l("PARSER AND GENERATED DRAFTS")}>
+            {loadErrors.reviewQueue ? <StateBlock kind="error" title={l("Review queue unavailable")} detail={l(loadErrors.reviewQueue)} action={<Button onClick={refresh}>{l("Try again")}</Button>} />
+              : loading && reviewQueue === null ? <StateBlock kind="loading" title={l("Loading review queue")} detail={l("Reading parser warnings and generated drafts.")} />
+                : reviewQueue ? (
+                  <>
+                    {reviewQueue.items.length > 0 ? <div className="catalyst-tools__run-list">
+                      {reviewQueue.items.map((item) => {
+                        const relatedRevisionId = item.contentRevisionId
+                          ?? revisions?.find((revision) => revision.sourceRevisionIds.includes(item.sourceRevisionId))?.id;
+                        return <article className="catalyst-tools__run" key={item.id}>
+                          <div className="catalyst-tools__run-heading">
+                            <strong>{l(reviewItemLabel(item.kind))}</strong>
+                            <StatusPill value={l(item.state)} />
+                          </div>
+                          <p>{l(userFacingWarning(item.code, item.message))}</p>
+                          <p>{l("Source revision")} {item.sourceRevisionId} · {l("Processing run")} {item.processingRunId}</p>
+                          <p>{l("Severity")}: {l(item.severity)}</p>
+                          {item.confidence !== undefined ? <p>{l("Confidence")} {formatPercent(item.confidence)} · {l("Review required before approval.")}</p> : <p>{l("Review required before approval.")}</p>}
+                          {item.locator ? <p>{formatCatalystLocator(item.locator, locale).join(" · ") || l("Location not provided")}</p> : <p>{l("Location not provided")}</p>}
+                          {item.note ? <p className="catalyst-tools__review-note">{l("Review note:")} {item.note}</p> : null}
+                          {item.state === "REJECTED" ? <p className="inline-error">{l("This issue still blocks approval. Reprocess or exclude its source.")}</p> : null}
+                          <div className="catalyst-tools__run-actions">
+                            {relatedRevisionId ? <Button disabled={busyAction !== null} onClick={() => void openReviewItem(item)}>{l("Open related revision")}</Button> : null}
+                            {item.state === "OPEN" ? <>
+                              <Field label={l("Review note")} hint={l("Optional; kept with the review record.")}>
+                                <textarea rows={2} value={reviewNotes[item.id] ?? ""} onChange={(event) => setReviewNotes((current) => ({ ...current, [item.id]: event.target.value }))} placeholder={l("Add a note for the review record")} />
+                              </Field>
+                              <Button disabled={busyAction !== null} onClick={() => void perform(`acknowledge:${item.id}`, async () => {
+                                const resolved = await client.resolveReviewItem(item.id, "ACKNOWLEDGE", reviewNotes[item.id]);
+                                setReviewQueue((current) => current ? { ...current, items: current.items.map((candidate) => candidate.id === resolved.id ? resolved : candidate) } : current);
+                                setReviewNotes((current) => ({ ...current, [item.id]: "" }));
+                                setNotice(locale === "zh-CN" ? "已记录审核结论；可重新检查内容批准条件。" : "Review decision recorded. Content approval conditions were refreshed.");
+                                refresh();
+                              })}>{l("Acknowledge issue")}</Button>
+                              <Button tone="danger" disabled={busyAction !== null} onClick={() => void perform(`reject-review:${item.id}`, async () => {
+                                const resolved = await client.resolveReviewItem(item.id, "REJECT", reviewNotes[item.id]);
+                                setReviewQueue((current) => current ? { ...current, items: current.items.map((candidate) => candidate.id === resolved.id ? resolved : candidate) } : current);
+                                setNotice(locale === "zh-CN" ? "已记录拒绝结论；此问题仍会阻止内容批准。" : "Rejection recorded. This issue will continue to block content approval.");
+                                refresh();
+                              })}>{l("Reject issue")}</Button>
+                            </> : null}
+                          </div>
+                        </article>;
+                      })}
+                    </div> : null}
+                    {reviewQueue.generatedDrafts.length > 0 ? <div className="catalyst-tools__run-list">
+                      {reviewQueue.generatedDrafts.map((draft) => <article className="catalyst-tools__run" key={draft.id}>
+                        <div className="catalyst-tools__run-heading"><strong>{l("Generated draft")} · {l("Revision")} {draft.revision}</strong><StatusPill value={l("DRAFT")} /></div>
+                        <p>{draft.blockCount} {l("draft passages")} · {formatDate(draft.createdAt)}</p>
+                        {draft.processingRunId ? <p>{l("Processing run")} {draft.processingRunId}</p> : null}
+                        <Button disabled={busyAction !== null} onClick={() => void openGeneratedDraft(draft)}>{l("Review generated draft")}</Button>
+                      </article>)}
+                    </div> : null}
+                    {reviewQueue.items.length === 0 && reviewQueue.generatedDrafts.length === 0
+                      ? <StateBlock kind="empty" title={l("No open review items")} detail={l("Parser warnings and generated drafts will appear here.")} />
+                      : null}
+                  </>
+                ) : <StateBlock kind="empty" title={l("No open review items")} detail={l("Parser warnings and generated drafts will appear here.")} />}
+          </Panel>
+
+          <Panel title={l("Review passages and generated drafts")} meta={revisions ? `${revisions.length} ${l("revisions")}` : l("IMMUTABLE REVISIONS")} className="catalyst-tools__revision-panel">
             {loadErrors.revisions ? <StateBlock kind="error" title={l("Content revisions unavailable")} detail={l(loadErrors.revisions)} action={<Button onClick={refresh}>{l("Try again")}</Button>} />
               : loading && revisions === null ? <StateBlock kind="loading" title={l("Loading content")} detail={l("Reading revision history from Catalyst.")} />
                 : revisions && revisions.length > 0 ? (
@@ -448,6 +636,7 @@ export function CatalystDataToolsPanel({
                     </div>
                     {selectedRevision?.reviewNote ? <p className="catalyst-tools__review-note">{l("Review note:")} {selectedRevision.reviewNote}</p> : null}
                     <p className="catalyst-tools__policy-guidance">{l("Content use is blocked by default. Choose the package and allowed use for each passage, add its allowed people or groups, and approve the revision when review is complete.")}</p>
+                    {approvalBlocked ? <p className="inline-error" role="status">{l(approvalBlockReason)}</p> : null}
                     {blocksLoading && blocks.length === 0 ? <StateBlock kind="loading" title={l("Loading passages")} detail={l("Reading document text and page locations.")} />
                       : blocksError ? <StateBlock kind="error" title={l("Passages unavailable")} detail={l(blocksError)} action={<Button onClick={() => setBlockReloadKey((value) => value + 1)}>{l("Try again")}</Button>} />
                         : blocks.length === 0 ? <StateBlock kind="empty" title={l("No passages in this revision")} detail={l("The processing run may have failed or the document may contain no readable text.")} />
@@ -473,7 +662,7 @@ export function CatalystDataToolsPanel({
                           <textarea value={reviewNote} rows={2} onChange={(event) => setReviewNote(event.target.value)} placeholder={l("Add a note for the review record")} />
                         </Field>
                         <div className="form-actions">
-                          <Button tone="primary" disabled={busyAction !== null} onClick={() => void perform("approve", async () => {
+                          <Button tone="primary" disabled={busyAction !== null || approvalBlocked} onClick={() => void perform("approve", async () => {
                             const reviewed = await client.reviewContent(selectedRevision.id, "APPROVE", reviewNote);
                             setRevisions((current) => replaceRevision(current, reviewed));
                             setReviewNote("");
@@ -627,6 +816,18 @@ function BlockEditor({
         <span className="field__label">{l("Passage text")}</span>
         <textarea value={text} rows={Math.min(8, Math.max(3, Math.ceil(text.length / 120)))} disabled={disabled} onChange={(event) => onChange({ text: event.target.value })} />
       </label>
+      {block.origin === "GENERATED" ? <details>
+        <summary>{l("Generation lineage")}</summary>
+        {block.generationReceipt ? <dl>
+          <dt>{l("Model")}</dt><dd>{block.generationReceipt.model}</dd>
+          <dt>{l("Recipe")}</dt><dd>{block.generationReceipt.recipeId} · {block.generationReceipt.recipeVersion}</dd>
+          <dt>{l("Recipe digest")}</dt><dd>{block.generationReceipt.recipeDigest}</dd>
+          <dt>{l("Budget")}</dt><dd>{formatReceiptRecord(block.generationReceipt.budget, locale).join(" · ") || l("Not reported")}</dd>
+          <dt>{l("Usage")}</dt><dd>{formatReceiptRecord(block.generationReceipt.usage, locale).join(" · ") || l("Not reported")}</dd>
+          <dt>{l("Generated at")}</dt><dd>{formatDate(block.generationReceipt.generatedAt)}</dd>
+          <dt>{l("Source passages")}</dt><dd>{block.generationReceipt.sourceBlockIds.join(", ") || l("Not reported")}</dd>
+        </dl> : <p>{l("Generation lineage is unavailable.")}</p>}
+      </details> : null}
       <div className="catalyst-tools__policy" aria-label={l("Package inclusion")}>
         <label><input type="checkbox" checked={policy.allowKnowledge} disabled={disabled} onChange={(event) => onChange({ policy: { ...policy, allowKnowledge: event.target.checked } })} /> {l("Include in knowledge")}</label>
         <label><input type="checkbox" checked={policy.allowTraining} disabled={disabled} onChange={(event) => onChange({ policy: { ...policy, allowTraining: event.target.checked } })} /> {l("Include in training")}</label>
@@ -707,6 +908,148 @@ function userFacingWarning(code: string, message: string): string {
   return message || "Review the extracted content before approving.";
 }
 
+function latestReportForSource(reports: readonly SourceParseReport[], sourceRevisionId: string): SourceParseReport | undefined {
+  return reports
+    .filter((report) => report.sourceRevisionId === sourceRevisionId)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+}
+
+function reportNeedsReview(report: SourceParseReport): boolean {
+  return report.status === "WARNING"
+    || report.warnings.length > 0
+    || report.diagnostics.length > 0
+    || report.unsupportedContent.length > 0
+    || report.failure !== undefined;
+}
+
+function reviewItemLabel(kind: ReviewItem["kind"]): string {
+  switch (kind) {
+    case "PARSER_WARNING": return "Parser warning";
+    case "OCR_WARNING": return "OCR warning";
+    case "PARSE_FAILURE": return "Document could not be read";
+    case "UNSUPPORTED_SOURCE": return "Unsupported file content";
+  }
+}
+
+function approvalGateCopy(reason: ContentApprovalBlockReason | null): string {
+  switch (reason) {
+    case "review_status_unavailable": return "Parser review status is unavailable. Refresh before approving content.";
+    case "unresolved_review_items": return "Resolve every applicable parser or OCR review item before approving.";
+    case "parser_report_missing_review_item": return "A parser warning has no review record yet. Refresh the queue before approving.";
+    case "parse_in_progress": return "Document parsing is still running for this revision.";
+    case null: return "";
+  }
+}
+
+function formatPercent(value: number): string {
+  return String(Math.round(Math.min(1, Math.max(0, value)) * 100)) + "%";
+}
+
+export function formatCatalystLocator(locator: unknown, locale: "zh-CN" | "en-US"): string[] {
+  if (!isRecord(locator)) return [];
+  const details: string[] = [];
+  const pages = locator["sourcePages"] ?? locator["source_pages"] ?? locator["pages"];
+  if (Array.isArray(pages) && pages.length > 0) {
+    const value = pages.map(safeLocationValue).filter(Boolean).join(locale === "zh-CN" ? "、" : ", ");
+    if (value) details.push(locale === "zh-CN" ? "第 " + value + " 页" : (pages.length === 1 ? "Page " : "Pages ") + value);
+  } else {
+    const page = safeLocationValue(locator["page"] ?? locator["page_number"]);
+    if (page) details.push(locale === "zh-CN" ? "第 " + page + " 页" : "Page " + page);
+  }
+  const sectionPath = locator["sectionPath"] ?? locator["section_path"];
+  if (Array.isArray(sectionPath)) {
+    const value = sectionPath.map(safeLocationValue).filter(Boolean).join(" / ");
+    if (value) details.push(value);
+  }
+  const tableIndex = safeLocationValue(locator["tableIndex"] ?? locator["table_index"]);
+  if (tableIndex) details.push((locale === "zh-CN" ? "表格 " : "Table ") + tableIndex);
+  const itemRef = safeLocationValue(locator["itemRef"] ?? locator["item_ref"]);
+  if (itemRef) details.push((locale === "zh-CN" ? "位置 " : "Location ") + itemRef);
+  const start = safeLocationValue(locator["startOffset"] ?? locator["start_offset"]);
+  const end = safeLocationValue(locator["endOffset"] ?? locator["end_offset"]);
+  if (start || end) details.push((locale === "zh-CN" ? "文本偏移 " : "Text offset ") + (start || "?") + "–" + (end || "?"));
+
+  const provenance = locator["provenance"];
+  const nested = Array.isArray(provenance) ? provenance.filter(isRecord) : isRecord(provenance) ? [provenance] : [];
+  const records = [locator, ...nested];
+  for (const record of records) {
+    const fields: Array<[string, string]> = [
+      ["slide_number", locale === "zh-CN" ? "幻灯片" : "Slide"],
+      ["shape_id", locale === "zh-CN" ? "形状" : "Shape"],
+      ["index", locale === "zh-CN" ? "索引" : "Index"],
+      ["name", locale === "zh-CN" ? "名称" : "Name"],
+      ["type", locale === "zh-CN" ? "类型" : "Type"],
+      ["sheet_name", locale === "zh-CN" ? "工作表" : "Sheet"],
+      ["cell_ref", locale === "zh-CN" ? "单元格" : "Cell"],
+      ["table_name", locale === "zh-CN" ? "表格" : "Table"],
+      ["ref", locale === "zh-CN" ? "引用" : "Reference"],
+      ["formula", locale === "zh-CN" ? "公式" : "Formula"],
+      ["cached_value", locale === "zh-CN" ? "缓存值" : "Cached value"],
+      ["availability", locale === "zh-CN" ? "可用性" : "Availability"],
+      ["data_type", locale === "zh-CN" ? "数据类型" : "Data type"],
+      ["number_format", locale === "zh-CN" ? "数字格式" : "Number format"],
+      ["engine", locale === "zh-CN" ? "OCR 引擎" : "OCR engine"],
+      ["language", locale === "zh-CN" ? "语言" : "Language"],
+      ["confidence", locale === "zh-CN" ? "置信度" : "Confidence"],
+      ["text_origin", locale === "zh-CN" ? "文本来源" : "Text origin"],
+      ["bbox_emu", locale === "zh-CN" ? "位置框" : "Position"],
+      ["bbox", locale === "zh-CN" ? "位置框" : "Bounds"],
+    ];
+    for (const [key, label] of fields) {
+      const value = safeLocationValue(record[key]);
+      if (value) details.push(label + " " + value);
+    }
+  }
+  return details.slice(0, 12);
+}
+
+function describeUnsupportedContent(value: unknown, locale: "zh-CN" | "en-US"): string {
+  if (!isRecord(value)) return "";
+  const location = formatCatalystLocator(value["locator"] ?? value, locale);
+  const name = safeLocationValue(value["name"] ?? value["type"]);
+  const reason = safeLocationValue(value["reason"]);
+  const separator = locale === "zh-CN" ? "：" : ": ";
+  return [name, reason, ...location].filter(Boolean).join(separator);
+}
+
+function safeLocationValue(value: unknown): string {
+  if (typeof value === "string") return value.trim().slice(0, 140);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(safeLocationValue).filter(Boolean).join(", ").slice(0, 140);
+  if (isRecord(value)) {
+    const coordinates = ["x", "y", "width", "height", "left", "top", "right", "bottom"]
+      .map((key) => value[key])
+      .filter((item) => typeof item === "number" || typeof item === "string");
+    return coordinates.length > 0 ? coordinates.map(String).join(", ") : "";
+  }
+  return "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatReceiptRecord(value: Record<string, unknown>, locale: "zh-CN" | "en-US"): string[] {
+  return Object.entries(value).flatMap(([key, item]) => {
+    if (typeof item !== "string" && typeof item !== "number" && typeof item !== "boolean") return [];
+    return [receiptMetricLabel(key, locale) + ": " + String(item)];
+  }).slice(0, 10);
+}
+
+function receiptMetricLabel(value: string, locale: "zh-CN" | "en-US"): string {
+  const normalized = value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").toLowerCase();
+  const known: Record<string, [string, string]> = {
+    "max examples": ["Max examples", "最多样例数"],
+    "max calls": ["Max model calls", "最多模型调用次数"],
+    "model calls": ["Model calls", "模型调用次数"],
+    "input tokens": ["Input tokens", "输入 Token 数"],
+    "output tokens": ["Output tokens", "输出 Token 数"],
+    "prompt tokens": ["Prompt tokens", "提示 Token 数"],
+    "completion tokens": ["Completion tokens", "补全 Token 数"],
+  };
+  return known[normalized]?.[locale === "zh-CN" ? 1 : 0] ?? normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function replaceRun(current: ProcessingRun[] | null, run: ProcessingRun): ProcessingRun[] {
   return [run, ...(current ?? []).filter((item) => item.id !== run.id)];
 }
@@ -760,13 +1103,8 @@ function blockOriginLabel(origin: ContentBlock["origin"]): string {
 
 function blockLocation(block: ContentBlock, locale: "zh-CN" | "en-US"): string {
   const l = (value: string) => catalystText(value, locale);
-  const pages = block.locator.sourcePages ?? [];
-  if (pages.length > 0) return locale === "zh-CN"
-    ? `第 ${pages.join("、")} 页`
-    : `${pages.length === 1 ? "Page" : "Pages"} ${pages.join(", ")}`;
-  if (block.locator.sectionPath?.length) return block.locator.sectionPath.join(" / ");
-  if (block.locator.itemRef) return block.locator.itemRef;
-  return l("Location not provided");
+  const details = formatCatalystLocator(block.locator, locale);
+  return details.length > 0 ? details.join(" · ") : l("Location not provided");
 }
 
 function formatBytes(value: number): string {

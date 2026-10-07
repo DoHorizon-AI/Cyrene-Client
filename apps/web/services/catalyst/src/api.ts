@@ -6,6 +6,9 @@
 
 const CATALYST_PROXY = "/api/v1/catalyst";
 export const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
+export const MAX_BATCH_SOURCE_COUNT = 20;
+export const MAX_BATCH_STORED_BYTES = 128 * 1024 * 1024;
+export const MAX_BATCH_REQUEST_BYTES = 129 * 1024 * 1024;
 
 export interface ProductResponseTransport {
   requestProductResponse(path: string, init?: RequestInit): Promise<Response>;
@@ -33,6 +36,22 @@ export interface SourceRevision {
   resourceVersion: number;
 }
 
+export interface SourceBatchItemError {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface SourceBatchItem {
+  filename: string;
+  source: SourceRevision | null;
+  error: SourceBatchItemError | null;
+}
+
+export interface SourceBatchUploadResponse {
+  items: SourceBatchItem[];
+}
+
 export interface ContentPolicy {
   allowKnowledge: boolean;
   allowTraining: boolean;
@@ -46,6 +65,10 @@ export interface ContentBlock {
   ordinal: number;
   kind: string;
   text: string;
+  sourceFamilyId?: string;
+  groupId?: string;
+  conversationId?: string;
+  sampleId?: string;
   locator: {
     sourcePages?: number[];
     sectionPath?: string[];
@@ -58,6 +81,19 @@ export interface ContentBlock {
   };
   origin: "EXTRACTED" | "NORMALIZED" | "HUMAN_EDITED" | "GENERATED";
   policy: ContentPolicy;
+  generationReceipt?: GenerationReceipt;
+}
+
+export interface GenerationReceipt {
+  recipeId: string;
+  recipeVersion: string;
+  recipeDigest: string;
+  bindingId: string;
+  model: string;
+  budget: Record<string, unknown>;
+  usage: Record<string, unknown>;
+  generatedAt: string;
+  sourceBlockIds: string[];
 }
 
 export interface ContentRevision {
@@ -132,6 +168,111 @@ export interface DatasetVersion {
   };
 }
 
+export type SourceParseReportStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "WARNING" | "FAILED" | "INTERRUPTED" | "CANCELLED";
+
+export interface SourceParseReport {
+  id: string;
+  datasetId: string;
+  sourceRevisionId: string;
+  processingRunId: string;
+  status: SourceParseReportStatus;
+  contentRevisionId?: string;
+  blockCount: number;
+  warnings: Array<{ code: string; message: string }>;
+  diagnostics: Array<{
+    code: string;
+    message: string;
+    kind: "parser" | "ocr";
+    severity: "warning";
+    locator?: Record<string, unknown>;
+    confidence?: number;
+  }>;
+  unsupportedContent: Array<Record<string, unknown>>;
+  failure?: ProcessingFailure;
+  outputArtifacts: ArtifactRef[];
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  resourceVersion: number;
+}
+
+export type ReviewItemKind = "PARSER_WARNING" | "OCR_WARNING" | "PARSE_FAILURE" | "UNSUPPORTED_SOURCE";
+export type ReviewItemState = "OPEN" | "ACKNOWLEDGED" | "REJECTED";
+
+export interface ReviewItem {
+  id: string;
+  datasetId: string;
+  sourceParseReportId: string;
+  sourceRevisionId: string;
+  processingRunId: string;
+  contentRevisionId?: string;
+  kind: ReviewItemKind;
+  code: string;
+  message: string;
+  severity: string;
+  locator?: ContentBlock["locator"];
+  confidence?: number;
+  state: ReviewItemState;
+  note?: string;
+  createdAt: string;
+  resolvedAt?: string;
+  resourceVersion: number;
+}
+
+export interface ContentRevisionSummary {
+  id: string;
+  datasetId: string;
+  revision: number;
+  state: "DRAFT";
+  blockCount: number;
+  sourceRevisionIds: string[];
+  createdAt: string;
+  resourceVersion: number;
+  processingRunId?: string;
+}
+
+export interface ReviewQueue {
+  items: ReviewItem[];
+  generatedDrafts: ContentRevisionSummary[];
+}
+
+export type ContentApprovalBlockReason =
+  | "review_status_unavailable"
+  | "unresolved_review_items"
+  | "parser_report_missing_review_item"
+  | "parse_in_progress";
+
+/** Fails closed when parser reports or required review records are unavailable. */
+export function contentApprovalBlockReason(
+  revisionId: string,
+  sourceRevisionIds: readonly string[],
+  parseReports: readonly SourceParseReport[] | null,
+  reviewQueue: ReviewQueue | null,
+  hasLoadError = false,
+): ContentApprovalBlockReason | null {
+  if (!revisionId || !parseReports || !reviewQueue || hasLoadError) return "review_status_unavailable";
+  const sourceIds = new Set(sourceRevisionIds);
+  if (reviewQueue.items.some((item) => item.state !== "ACKNOWLEDGED"
+    && (item.contentRevisionId === revisionId || sourceIds.has(item.sourceRevisionId)))) {
+    return "unresolved_review_items";
+  }
+  const relatedReports = parseReports.filter((report) => sourceIds.has(report.sourceRevisionId));
+  if (relatedReports.some((report) => report.status === "QUEUED" || report.status === "RUNNING")) {
+    return "parse_in_progress";
+  }
+  const needsReview = (report: SourceParseReport) => report.status === "WARNING"
+    || report.warnings.length > 0
+    || report.diagnostics.length > 0
+    || report.unsupportedContent.length > 0
+    || report.failure !== undefined;
+  if (relatedReports.some((report) => needsReview(report)
+    && !reviewQueue.items.some((item) => item.sourceParseReportId === report.id))) {
+    return "parser_report_missing_review_item";
+  }
+  return null;
+}
+
 export interface CreateProcessingRunRequest {
   operation: RunOperation;
   sourceRevisionIds?: string[];
@@ -187,6 +328,48 @@ export class CatalystDataToolsClient {
       headers: { "Content-Type": "application/octet-stream" },
       body: file,
     });
+  }
+
+  /** Uploads a bounded set of original files without rewriting bytes. */
+  async uploadSourcesBatch(datasetId: string, files: readonly File[]): Promise<SourceBatchUploadResponse> {
+    if (files.length === 0) throw new CatalystClientError("Choose at least one source file.", 400, "empty_batch");
+    if (files.length > MAX_BATCH_SOURCE_COUNT) {
+      throw new CatalystClientError("A batch can include at most 20 files.", 413, "too_many_files");
+    }
+    const form = new FormData();
+    for (const file of files) form.append("files[]", file, file.name);
+    return this.json<SourceBatchUploadResponse>(this.datasetPath(datasetId, "sources/batch"), { method: "POST", body: form }).catch((error: unknown) => {
+      if (error instanceof CatalystClientError && error.status === 413) {
+        throw new CatalystClientError("The batch request exceeds the 129 MiB upload limit. Select fewer or smaller files.", 413, "batch_request_too_large");
+      }
+      throw error;
+    });
+  }
+
+  listSourceParseReports(
+    datasetId: string,
+    filters: { sourceRevisionId?: string; processingRunId?: string } = {},
+  ): Promise<SourceParseReport[]> {
+    const query = new URLSearchParams();
+    if (filters.sourceRevisionId) query.set("sourceRevisionId", filters.sourceRevisionId);
+    if (filters.processingRunId) query.set("processingRunId", filters.processingRunId);
+    const suffix = query.size > 0 ? `?${query}` : "";
+    return this.json(this.datasetPath(datasetId, `source-parse-reports${suffix}`));
+  }
+
+  getReviewQueue(datasetId: string): Promise<ReviewQueue> {
+    return this.json(this.datasetPath(datasetId, "review-queue"));
+  }
+
+  resolveReviewItem(
+    reviewItemId: string,
+    action: "ACKNOWLEDGE" | "REJECT",
+    note?: string,
+  ): Promise<ReviewItem> {
+    return this.json(
+      this.route(`/api/v1/review-items/${pathId(reviewItemId)}/resolve`),
+      jsonRequest("POST", { action, ...(note?.trim() ? { note: note.trim() } : {}) }),
+    );
   }
 
   listProcessingRuns(datasetId: string): Promise<ProcessingRun[]> {
@@ -290,6 +473,36 @@ export function userFacingRunFailure(failure: ProcessingFailure | undefined): st
   return messageForCode(failure.code, failure.message, 500);
 }
 
+/** Hides machine codes and executor details while preserving a concrete upload reason. */
+export function userFacingSourceItemError(error: SourceBatchItemError): string {
+  const normalized = `${error.code} ${error.message}`.toLowerCase();
+  if (error.code.toUpperCase().includes("SOURCE_BATCH_TOO_LARGE")) {
+    return "The batch reached its 128 MiB stored-file limit. This file was not stored.";
+  }
+  if (error.code.toUpperCase().includes("SOURCE_TOO_LARGE") || normalized.includes("per-file")) {
+    return "This file exceeds the 32 MiB per-file upload limit.";
+  }
+  if (normalized.includes("too_large") || normalized.includes("size_limit") || normalized.includes("aggregate")) {
+    return "This file could not be stored because the per-file or batch upload limit was reached.";
+  }
+  if (/traceback|stack trace|toolchain|pip install|python executable|filesystem|artifact plane/i.test(error.message)) {
+    return "This file could not be staged in the workspace. Try again or ask an administrator to check storage configuration.";
+  }
+  return error.message || "This file could not be uploaded. Try it again.";
+}
+
+/** Turns parse failures into clear file-specific guidance without showing implementation details. */
+export function userFacingParseFailure(failure: ProcessingFailure | undefined): string {
+  if (!failure) return "This source could not be read. Review the file and try parsing it again.";
+  if (failure.code === "CATALYST_SOURCE_UNSUPPORTED") {
+    return "This file type cannot be extracted. The original file remains available for download.";
+  }
+  if (failure.code === "CATALYST_SOURCE_PARSE_FAILED") {
+    return "No readable content was extracted. Check whether the file is damaged, protected, or image-only.";
+  }
+  return userFacingRunFailure(failure);
+}
+
 export function isRunActive(run: ProcessingRun): boolean {
   return run.state === "QUEUED" || run.state === "RUNNING";
 }
@@ -331,6 +544,9 @@ async function responseError(response: Response): Promise<CatalystClientError> {
 
 function messageForCode(code: string | undefined, detail: string, status: number): string {
   const normalized = `${code ?? ""} ${detail}`.toLowerCase();
+  if (normalized.includes("batch_request_too_large")) {
+    return "The batch request exceeds the 129 MiB upload limit. Select fewer or smaller files.";
+  }
   if (normalized.includes("unsupported") || normalized.includes("unsupported_media") || status === 415) {
     return "This file type is unsupported. Choose a PDF or Word document (.docx).";
   }
