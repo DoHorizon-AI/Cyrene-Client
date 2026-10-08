@@ -11,9 +11,10 @@
 // │    GET /api/installer/v1/workloads and /components calls when ready.     │
 // └─────────────────────────────────────────────────────────────────────────┘
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useI18n } from "../../../src/i18n";
 import { installerText } from "./copy";
+import { useInstallerProvider } from "./provider";
 import {
   MOCK_WORKLOAD_CATALOG,
   MOCK_COMPONENT_CATALOG,
@@ -134,15 +135,17 @@ function AffinityWarning({
   affinity,
   workloads,
   l,
+  onRestore,
 }: {
   componentId: string;
   affinity: ComponentAffinity;
   workloads: readonly WorkloadEntry[];
   l: (v: string) => string;
+  onRestore?: () => void;
 }) {
   if (affinity === "required") {
     return (
-      <div className="installer-affinity-warning">
+      <div className="installer-affinity-warning" role="alert">
         {l("This component is required by the selected workload and cannot be removed.")}
       </div>
     );
@@ -153,13 +156,28 @@ function AffinityWarning({
       .map((wl) => wl.name);
     if (affected.length === 0) return null;
     return (
-      <div className="installer-affinity-warning">
-        {l("This component is recommended. Removing it may limit functionality.")}
-        <br />
-        {l("If you remove this component, the following capabilities will be affected:")}
-        <ul className="installer-affinity-warning__list">
-          {affected.map((name) => <li key={name}>{name}</li>)}
-        </ul>
+      <div className="installer-affinity-warning" role="alert">
+        <div>
+          {l("This component is recommended. Removing it may limit functionality.")}
+          <br />
+          {l("If you remove this component, the following capabilities will be affected:")}
+          <ul className="installer-affinity-warning__list">
+            {affected.map((name) => <li key={name}>{name}</li>)}
+          </ul>
+        </div>
+        {onRestore && (
+          <button
+            type="button"
+            className="installer-btn"
+            style={{ marginTop: "var(--dh-space-2)", height: "24px", fontSize: "var(--dh-fs-xs)" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRestore();
+            }}
+          >
+            ↺ {l("Restore")}
+          </button>
+        )}
       </div>
     );
   }
@@ -184,24 +202,40 @@ function WorkloadsTab({
   l: (v: string) => string;
 }) {
   return (
-    <div className="installer-workloads" role="list">
+    <div className="installer-workloads" role="group" aria-label="Workload choices">
       {workloads.map((wl) => {
         const selected = selectedWorkloadIds.has(wl.id);
         return (
           <article
             key={wl.id}
             className={`installer-workload-card${selected ? " installer-workload-card--selected" : ""}`}
-            role="listitem"
-            onClick={() => onToggle(wl.id)}
-            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onToggle(wl.id)}
-            tabIndex={0}
+            role="checkbox"
             aria-checked={selected}
+            tabIndex={0}
+            onClick={() => onToggle(wl.id)}
+            onKeyDown={(e) => {
+              // Prevent double-toggle if event originated from a child (e.g. checkbox)
+              if (e.target !== e.currentTarget) return;
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onToggle(wl.id);
+              }
+            }}
           >
             <input
               type="checkbox"
+              tabIndex={-1}
               checked={selected}
-              onChange={() => onToggle(wl.id)}
+              onChange={(e) => {
+                e.stopPropagation();
+                onToggle(wl.id);
+              }}
               onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === " " || e.key === "Enter") {
+                  e.stopPropagation();
+                }
+              }}
               className="installer-workload-card__check"
               aria-label={wl.name}
             />
@@ -313,18 +347,31 @@ function IndividualComponentsTab({
             <div
               key={c.id}
               className={`installer-component-row${isSelected ? " installer-component-row--selected" : ""}${incompatible ? " installer-component-row--incompatible" : ""}`}
-              role="listitem"
-              onClick={() => !isRequired && !incompatible && onToggle(c.id)}
-              onKeyDown={(e) => !isRequired && !incompatible && (e.key === "Enter" || e.key === " ") && onToggle(c.id)}
-              tabIndex={incompatible ? -1 : 0}
+              role="checkbox"
+              aria-checked={isSelected}
               aria-disabled={isRequired || incompatible}
+              tabIndex={incompatible || isRequired ? -1 : 0}
+              onClick={() => !isRequired && !incompatible && onToggle(c.id)}
+              onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return;
+                if (!isRequired && !incompatible && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  onToggle(c.id);
+                }
+              }}
             >
               <input
                 type="checkbox"
+                tabIndex={-1}
                 checked={isSelected}
                 disabled={isRequired || incompatible}
                 onChange={() => !isRequired && !incompatible && onToggle(c.id)}
                 onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === " " || e.key === "Enter") {
+                    e.stopPropagation();
+                  }
+                }}
                 aria-label={c.name}
               />
               <div>
@@ -343,6 +390,7 @@ function IndividualComponentsTab({
                       affinity="recommended"
                       workloads={workloads}
                       l={l}
+                      onRestore={() => onToggle(c.id)}
                     />
                   </div>
                 )}
@@ -485,9 +533,28 @@ export function InstallerWorkloadsPanel({
 }) {
   const { locale } = useI18n();
   const l = useCallback((v: string) => installerText(v, locale), [locale]);
+  const provider = useInstallerProvider();
 
-  const workloads = MOCK_WORKLOAD_CATALOG.workloads;
-  const components = MOCK_COMPONENT_CATALOG.components;
+  const [workloads, setWorkloads] = useState(MOCK_WORKLOAD_CATALOG.workloads);
+  const [components, setComponents] = useState(MOCK_COMPONENT_CATALOG.components);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([provider.getWorkloadCatalog(), provider.getComponentCatalog()])
+      .then(([w, c]) => {
+        if (active) {
+          setWorkloads(w.workloads);
+          setComponents(c.components);
+        }
+      })
+      .catch(() => {
+        // Safe fallback to mock defaults
+      });
+    return () => {
+      active = false;
+    };
+  }, [provider]);
+
   const componentMap = useMemo(() => new Map(components.map((c) => [c.id, c])), [components]);
 
   const [tab, setTab] = useState<"workloads" | "components">("workloads");

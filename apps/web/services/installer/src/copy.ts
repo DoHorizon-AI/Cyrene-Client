@@ -107,6 +107,26 @@ const ZH_MAP: Record<string, string> = {
   "Progress": "进度",
   "Done": "完成",
 
+  // Error and safety states
+  "Permission denied": "权限不足",
+  "Insufficient permissions to execute installer operation.": "权限不足，无法执行安装器操作。",
+  "Network interruption": "网络中断",
+  "Failed to reach Installer service.": "无法连接到安装器服务。",
+  "Plan conflict or expired": "安装计划冲突或已过期",
+  "The installation plan has expired or conflicts with current catalog generation.":
+    "安装计划已过期或与当前组件目录版本冲突，请重新生成计划。",
+  "Operation disabled in demo mode.": "演示模式下操作已禁用。",
+  "User data retention policy is unverified. Cyrene cannot guarantee data preservation upon uninstall.":
+    "用户数据保留策略未验证，无法保证卸载后数据完整性，请查阅组件文档。",
+  "Restore": "恢复",
+  "Restore component": "恢复组件",
+  "TBD": "待确定",
+  "Undetermined": "待确定",
+  "Unverified": "未验证",
+  "Resolving installation plan…": "正在生成权威安装计划…",
+  "Target machine / architecture": "目标设备与架构",
+  "Demo / Unverified Catalog": "演示 / 未验证目录",
+
   // Generic
   "Loading…": "加载中…",
   "Try again": "重试",

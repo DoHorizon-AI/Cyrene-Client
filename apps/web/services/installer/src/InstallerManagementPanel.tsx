@@ -7,50 +7,20 @@
 // │  中文：模块职责：安装后组件管理——状态展示、安装/卸载/启停/更新/回滚与           │
 // │         依赖阻断保护界面。                                                  │
 // │                                                                          │
-// │  ⚠ NOT_CONNECTED: component status and all operations use mock data.     │
-// │    Wire to real Installer API once /api/installer/v1/components and      │
-// │    /operations endpoints are implemented.                                 │
+// │  安全策略：无真实后端连接时，所有可能造成副作用的操作完全禁用。               │
+// │  绝不在 NOT_CONNECTED 下弹出 window.alert 或执行未经验证的变更。            │
 // └─────────────────────────────────────────────────────────────────────────┘
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useI18n } from "../../../src/i18n";
 import { installerText } from "./copy";
+import { useInstallerProvider } from "./provider";
 import {
-  MOCK_COMPONENT_CATALOG,
-  type InstallerComponent,
   type ComponentLifecycleStatus,
   type InstallerOperationKind,
-  type ComponentBinding,
+  type ManagedComponent,
 } from "./contracts";
 import "./installer.css";
-
-// ---------------------------------------------------------------------------
-// § Types (management-layer extension)
-// ---------------------------------------------------------------------------
-
-interface ManagedComponent extends InstallerComponent {
-  /** Active bindings from products using this component */
-  activeBindings: ComponentBinding[];
-  /** Operations the backend currently permits */
-  allowedOperations: InstallerOperationKind[];
-}
-
-// ---------------------------------------------------------------------------
-// § NOT_CONNECTED: mock management data
-// ---------------------------------------------------------------------------
-
-function buildMockManagedComponents(): ManagedComponent[] {
-  // NOT_CONNECTED — real data comes from GET /api/installer/v1/components
-  // with enriched management fields.
-  return MOCK_COMPONENT_CATALOG.components.map((c) => ({
-    ...c,
-    // Simulate some components as installed
-    installedVersion: null,
-    status: "available" as ComponentLifecycleStatus,
-    activeBindings: [],
-    allowedOperations: (["install"] as InstallerOperationKind[]),
-  }));
-}
 
 // ---------------------------------------------------------------------------
 // § Sub-components
@@ -75,12 +45,13 @@ function UninstallConfirmDialog({
   onCancel: () => void;
   l: (v: string) => string;
 }) {
-  const retention = component.status === "not_installed"
-    ? null
-    : (component as unknown as { retentionPolicyOnUninstall?: string }).retentionPolicyOnUninstall;
+  const retention = component.retentionPolicyOnUninstall;
 
   let dataNoticeClass = "installer-confirm-dialog__data-notice--unknown";
-  let dataNoticeText = l("User data retention is unknown. Review the component documentation before proceeding.");
+  let dataNoticeText = l(
+    "User data retention policy is unverified. Cyrene cannot guarantee data preservation upon uninstall.",
+  );
+
   if (retention === "retain") {
     dataNoticeClass = "installer-confirm-dialog__data-notice--retain";
     dataNoticeText = l("User data will be retained after uninstall.");
@@ -96,9 +67,9 @@ function UninstallConfirmDialog({
           {l("Confirm uninstall")} — {component.name}
         </h3>
         <p className="installer-confirm-dialog__body">
-          {l("This component is required by the selected workload and cannot be removed.")}
+          {component.description}
         </p>
-        <div className={`installer-confirm-dialog__data-notice ${dataNoticeClass}`}>
+        <div className={`installer-confirm-dialog__data-notice ${dataNoticeClass}`} role="note">
           {dataNoticeText}
         </div>
         <div className="installer-confirm-dialog__actions">
@@ -116,9 +87,13 @@ function UninstallConfirmDialog({
 
 function ComponentManagementCard({
   comp,
+  isDemoOrDisconnected,
+  onExecuteOp,
   l,
 }: {
   comp: ManagedComponent;
+  isDemoOrDisconnected: boolean;
+  onExecuteOp: (comp: ManagedComponent, op: InstallerOperationKind) => void;
   l: (v: string) => string;
 }) {
   const [confirmUninstall, setConfirmUninstall] = useState(false);
@@ -139,15 +114,13 @@ function ComponentManagementCard({
     uninstall: "danger",
   };
 
-  const handleOperation = (op: InstallerOperationKind) => {
+  const handleOperationClick = (op: InstallerOperationKind) => {
+    if (isDemoOrDisconnected) return; // Safety guard: ignore clicks in demo mode
     if (op === "uninstall") {
-      if (hasBindings) return; // guard — button should be disabled
+      if (hasBindings) return; // blocked by bindings
       setConfirmUninstall(true);
     } else {
-      // NOT_CONNECTED: real operation would POST to /api/installer/v1/operations
-      window.alert(
-        `[NOT_CONNECTED] Operation "${op}" on ${comp.id} would be sent to the Installer API.`,
-      );
+      onExecuteOp(comp, op);
     }
   };
 
@@ -174,7 +147,7 @@ function ComponentManagementCard({
 
         {/* Binding guard */}
         {hasBindings && (
-          <div className="installer-mgmt-card__guard">
+          <div className="installer-mgmt-card__guard" role="alert">
             <p style={{ margin: 0 }}>
               {l("This component is in use by:")}
             </p>
@@ -194,14 +167,21 @@ function ComponentManagementCard({
           <div className="installer-mgmt-card__actions">
             {comp.allowedOperations.map((op) => {
               const isDanger = operationTone[op] === "danger";
-              const isBlocked = op === "uninstall" && hasBindings;
+              const isBlocked = (op === "uninstall" && hasBindings) || isDemoOrDisconnected;
+              const buttonTitle = isDemoOrDisconnected
+                ? l("Operation disabled in demo mode.")
+                : op === "uninstall" && hasBindings
+                ? l("Removal is blocked because this component is actively bound to a running product. Disable the product first.")
+                : undefined;
+
               return (
                 <button
                   key={op}
                   className={`installer-btn${isDanger ? " installer-btn--danger" : ""}`}
                   disabled={isBlocked}
-                  onClick={() => handleOperation(op)}
-                  title={isBlocked ? l("Removal is blocked because this component is actively bound to a running product. Disable the product first.") : undefined}
+                  onClick={() => handleOperationClick(op)}
+                  title={buttonTitle}
+                  aria-disabled={isBlocked}
                 >
                   {operationLabels[op]}
                 </button>
@@ -217,14 +197,13 @@ function ComponentManagementCard({
         )}
       </article>
 
-      {confirmUninstall && (
+      {confirmUninstall && !isDemoOrDisconnected && (
         <UninstallConfirmDialog
           component={comp}
           l={l}
           onConfirm={() => {
             setConfirmUninstall(false);
-            // NOT_CONNECTED: real operation here
-            window.alert(`[NOT_CONNECTED] Uninstall ${comp.id} confirmed — would call Installer API.`);
+            onExecuteOp(comp, "uninstall");
           }}
           onCancel={() => setConfirmUninstall(false)}
         />
@@ -240,20 +219,68 @@ function ComponentManagementCard({
 /**
  * Component management page for post-install operations.
  *
- * ⚠ NOT_CONNECTED: uses mock component status.
- * Wire to GET /api/installer/v1/components and POST /api/installer/v1/operations.
+ * All state and permissible actions are governed authoritatively by the
+ * InstallerProvider. In demo / NOT_CONNECTED mode, all mutating operations
+ * are completely disabled without alerts.
  *
- * Lifecycle statuses displayed: available, verified, installed, configured,
- * enabled, running, failed.
- *
- * 中文：当前为 Mock 数据，所有操作均不实际执行。
+ * 中文：组件管理页。权威状态来自 Provider；未连接时所有副作用操作均安全禁用。
  */
 export function InstallerManagementPanel() {
   const { locale } = useI18n();
   const l = useCallback((v: string) => installerText(v, locale), [locale]);
+  const provider = useInstallerProvider();
 
-  // NOT_CONNECTED: replace with API call
-  const components = useMemo(() => buildMockManagedComponents(), []);
+  const [components, setComponents] = useState<ManagedComponent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+
+  const isDemoOrDisconnected = provider.isDemo || !provider.isConnected;
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setErrorBanner(null);
+
+    provider
+      .getManagedComponents()
+      .then((items) => {
+        if (active) {
+          setComponents(items);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (active) {
+          setErrorBanner(err instanceof Error ? err.message : String(err));
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [provider]);
+
+  const handleExecuteOp = async (comp: ManagedComponent, op: InstallerOperationKind) => {
+    if (isDemoOrDisconnected) {
+      setErrorBanner(l("Operation disabled in demo mode."));
+      return;
+    }
+
+    try {
+      setErrorBanner(null);
+      setActionNotice(`${l(op.charAt(0).toUpperCase() + op.slice(1))} ${comp.name}…`);
+      await provider.executeComponentOperation({
+        componentId: comp.id,
+        operation: op,
+      });
+      setActionNotice(null);
+    } catch (err) {
+      setActionNotice(null);
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const statusOrder: ComponentLifecycleStatus[] = [
     "running",
@@ -278,9 +305,31 @@ export function InstallerManagementPanel() {
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
       {/* NOT_CONNECTED banner */}
-      <div className="installer-not-connected" role="status">
-        {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
-      </div>
+      {isDemoOrDisconnected && (
+        <div className="installer-not-connected" role="status">
+          {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
+        </div>
+      )}
+
+      {/* Action feedback / error alert banners */}
+      {errorBanner && (
+        <div className="installer-affinity-warning" role="alert" style={{ margin: "var(--dh-space-2) var(--dh-space-4)" }}>
+          <span>{errorBanner}</span>
+          <button
+            className="installer-btn"
+            style={{ marginLeft: "var(--dh-space-3)", height: "22px", fontSize: "var(--dh-fs-xs)" }}
+            onClick={() => setErrorBanner(null)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {actionNotice && (
+        <div className="installer-selection-summary" role="status" style={{ margin: "var(--dh-space-2) var(--dh-space-4)" }}>
+          {actionNotice}
+        </div>
+      )}
 
       <div className="installer-main" style={{ flex: 1 }}>
         <div className="installer-detail__header">
@@ -289,11 +338,23 @@ export function InstallerManagementPanel() {
         </div>
         <hr className="installer-horizon" />
 
-        <div className="installer-mgmt-list">
-          {sorted.map((comp) => (
-            <ComponentManagementCard key={comp.id} comp={comp} l={l} />
-          ))}
-        </div>
+        {loading ? (
+          <div className="installer-state" role="status" aria-live="polite">
+            <h3 className="installer-state__title">{l("Loading…")}</h3>
+          </div>
+        ) : (
+          <div className="installer-mgmt-list">
+            {sorted.map((comp) => (
+              <ComponentManagementCard
+                key={comp.id}
+                comp={comp}
+                isDemoOrDisconnected={isDemoOrDisconnected}
+                onExecuteOp={handleExecuteOp}
+                l={l}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

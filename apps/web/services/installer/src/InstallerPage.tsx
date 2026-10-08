@@ -13,6 +13,11 @@ import { installerText } from "./copy";
 import { InstallerWorkloadsPanel } from "./InstallerWorkloadsPanel";
 import { InstallerPlanPanel } from "./InstallerPlanPanel";
 import { InstallerManagementPanel } from "./InstallerManagementPanel";
+import {
+  type InstallerProvider,
+  defaultInstallerProvider,
+  InstallerProviderBoundary,
+} from "./provider";
 import type { InstallationPlan } from "./contracts";
 import "./installer.css";
 
@@ -121,7 +126,11 @@ function InstallProgressPlaceholder({ l }: { l: (v: string) => string }) {
  *
  * 中文：顶层安装器页面。包含步骤进度条与三个主面板。
  */
-export function InstallerPage() {
+export function InstallerPage({
+  provider = defaultInstallerProvider,
+}: {
+  provider?: InstallerProvider;
+} = {}) {
   const { locale } = useI18n();
   const l = useCallback((v: string) => installerText(v, locale), [locale]);
 
@@ -139,58 +148,60 @@ export function InstallerPage() {
   };
 
   const handleInstall = (_plan: InstallationPlan) => {
-    // NOT_CONNECTED: would POST to /api/installer/v1/operations
+    // In connected mode, triggers operations stream
     setStep("progress");
   };
 
   return (
-    <div className="installer-shell" style={{ height: "100%", overflow: "hidden" }}>
-      {/* Step progress */}
-      {!showManagement && (
-        <StepIndicator steps={STEPS.filter((s) => s.id !== "management")} current={step} locale={locale} />
-      )}
-
-      {/* Tab bar for management mode */}
-      <div style={{ display: "flex", borderBottom: "1px solid var(--dh-border-subtle)", background: "var(--dh-bg-sheet)" }}>
-        <button
-          className={`installer-tab${!showManagement ? " installer-tab--active" : ""}`}
-          onClick={() => setShowManagement(false)}
-          aria-pressed={!showManagement}
-        >
-          {locale === "zh-CN" ? "安装" : "Install"}
-        </button>
-        <button
-          className={`installer-tab${showManagement ? " installer-tab--active" : ""}`}
-          onClick={() => setShowManagement(true)}
-          aria-pressed={showManagement}
-        >
-          {l("Component Management")}
-        </button>
-      </div>
-
-      {/* Page content */}
-      <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-        {showManagement ? (
-          <InstallerManagementPanel />
-        ) : step === "select" ? (
-          <InstallerWorkloadsPanel
-            onNext={handleSelectNext}
-            initialWorkloadIds={selectedWorkloadIds}
-            initialComponentIds={selectedComponentIds}
-            initialExcludedRecommendedIds={excludedComponentIds}
-          />
-        ) : step === "plan" ? (
-          <InstallerPlanPanel
-            workloadIds={selectedWorkloadIds}
-            componentIds={selectedComponentIds}
-            excludedComponentIds={excludedComponentIds}
-            onBack={() => setStep("select")}
-            onInstall={handleInstall}
-          />
-        ) : (
-          <InstallProgressPlaceholder l={l} />
+    <InstallerProviderBoundary provider={provider}>
+      <div className="installer-shell" style={{ height: "100%", overflow: "hidden" }}>
+        {/* Step progress */}
+        {!showManagement && (
+          <StepIndicator steps={STEPS.filter((s) => s.id !== "management")} current={step} locale={locale} />
         )}
+
+        {/* Tab bar for management mode */}
+        <div style={{ display: "flex", borderBottom: "1px solid var(--dh-border-subtle)", background: "var(--dh-bg-sheet)" }}>
+          <button
+            className={`installer-tab${!showManagement ? " installer-tab--active" : ""}`}
+            onClick={() => setShowManagement(false)}
+            aria-pressed={!showManagement}
+          >
+            {locale === "zh-CN" ? "安装" : "Install"}
+          </button>
+          <button
+            className={`installer-tab${showManagement ? " installer-tab--active" : ""}`}
+            onClick={() => setShowManagement(true)}
+            aria-pressed={showManagement}
+          >
+            {l("Component Management")}
+          </button>
+        </div>
+
+        {/* Page content */}
+        <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
+          {showManagement ? (
+            <InstallerManagementPanel />
+          ) : step === "select" ? (
+            <InstallerWorkloadsPanel
+              onNext={handleSelectNext}
+              initialWorkloadIds={selectedWorkloadIds}
+              initialComponentIds={selectedComponentIds}
+              initialExcludedRecommendedIds={excludedComponentIds}
+            />
+          ) : step === "plan" ? (
+            <InstallerPlanPanel
+              workloadIds={selectedWorkloadIds}
+              componentIds={selectedComponentIds}
+              excludedComponentIds={excludedComponentIds}
+              onBack={() => setStep("select")}
+              onInstall={handleInstall}
+            />
+          ) : (
+            <InstallProgressPlaceholder l={l} />
+          )}
+        </div>
       </div>
-    </div>
+    </InstallerProviderBoundary>
   );
 }

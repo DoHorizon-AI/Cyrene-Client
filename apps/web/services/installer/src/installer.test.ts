@@ -195,3 +195,101 @@ describe("resolveComponentSelection", () => {
     expect(sel.size).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// § Provider Layer Tests
+// ---------------------------------------------------------------------------
+
+import {
+  DemoInstallerProvider,
+  RealInstallerProvider,
+  NotConnectedError,
+  OperationNotPermittedError,
+  PermissionDeniedError,
+  PlanExpiredOrConflictError,
+} from "./provider";
+import { installerText } from "./copy";
+
+describe("DemoInstallerProvider", () => {
+  const provider = new DemoInstallerProvider();
+
+  it("is marked as demo and not connected", () => {
+    expect(provider.isDemo).toBe(true);
+    expect(provider.isConnected).toBe(false);
+  });
+
+  it("returns workload and component catalogs", async () => {
+    const workloads = await provider.getWorkloadCatalog();
+    const components = await provider.getComponentCatalog();
+    expect(workloads.workloads.length).toBeGreaterThan(0);
+    expect(components.components.length).toBeGreaterThan(0);
+  });
+
+  it("resolves plan with targetPlatform as null (never guessing from navigator.platform)", async () => {
+    const plan = await provider.resolvePlan({
+      workloadIds: ["catalyst"],
+      manualComponentIds: [],
+    });
+    expect(plan.planId).toMatch(/^demo-preview-/);
+    expect(plan.targetPlatform).toBeNull();
+    expect(plan.deploymentMode).toBeNull();
+    expect(plan.components.length).toBeGreaterThan(0);
+  });
+
+  it("executePlan rejects in demo mode", async () => {
+    await expect(provider.executePlan("test-plan")).rejects.toThrow(OperationNotPermittedError);
+  });
+
+  it("executeComponentOperation rejects in demo mode", async () => {
+    await expect(
+      provider.executeComponentOperation({
+        componentId: KNOWN_COMPONENT_IDS.documentParsing,
+        operation: "install",
+      }),
+    ).rejects.toThrow(OperationNotPermittedError);
+  });
+
+  it("returns managed components with unknown retention policy and no allowed operations", async () => {
+    const managed = await provider.getManagedComponents();
+    expect(managed.length).toBeGreaterThan(0);
+    for (const item of managed) {
+      expect(item.allowedOperations).toEqual([]);
+      expect(item.retentionPolicyOnUninstall).toBe("unknown");
+    }
+  });
+});
+
+describe("RealInstallerProvider", () => {
+  it("unconfigured provider throws NotConnectedError on fetch", async () => {
+    const provider = new RealInstallerProvider({ baseUrl: "" });
+    expect(provider.isConnected).toBe(false);
+    await expect(provider.getWorkloadCatalog()).rejects.toThrow(NotConnectedError);
+  });
+
+  it("error classes carry correct names and messages", () => {
+    const connErr = new NotConnectedError("custom msg");
+    expect(connErr.name).toBe("NotConnectedError");
+    expect(connErr.message).toBe("custom msg");
+
+    const permErr = new PermissionDeniedError("forbidden");
+    expect(permErr.name).toBe("PermissionDeniedError");
+
+    const confErr = new PlanExpiredOrConflictError("conflict");
+    expect(confErr.name).toBe("PlanExpiredOrConflictError");
+  });
+});
+
+describe("Bilingual copy table", () => {
+  it("translates error and safety keys in zh-CN", () => {
+    expect(installerText("Permission denied", "zh-CN")).toBe("权限不足");
+    expect(installerText("Network interruption", "zh-CN")).toBe("网络中断");
+    expect(installerText("TBD", "zh-CN")).toBe("待确定");
+    expect(installerText("Restore", "zh-CN")).toBe("恢复");
+  });
+
+  it("returns English original for non-zh locale", () => {
+    expect(installerText("Permission denied", "en-US")).toBe("Permission denied");
+    expect(installerText("Restore", "en-US")).toBe("Restore");
+  });
+});
+

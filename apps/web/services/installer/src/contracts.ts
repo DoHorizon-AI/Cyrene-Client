@@ -85,6 +85,22 @@ export interface WorkloadCatalog {
 // § 3 — Installation plan
 // ---------------------------------------------------------------------------
 
+/** Target platform tuple as resolved by the authoritative Installer service. */
+export interface TargetPlatform {
+  os: string;
+  architecture: string;
+  distribution?: string;
+  runtime?: string;
+  abi?: string;
+}
+
+/** User selection submitted to the Workload Resolver endpoint. */
+export interface PlanSelectionRequest {
+  workloadIds: string[];
+  manualComponentIds: string[];
+  excludedRecommendedComponentIds?: string[];
+}
+
 /** A component entry in the resolved installation plan. */
 export interface PlannedComponent {
   componentId: string;
@@ -99,22 +115,20 @@ export interface PlannedComponent {
 /** A full installation plan returned by the Workload Resolver. */
 export interface InstallationPlan {
   planId: string;
+  catalogGeneration: number;
   workloadIds: string[];
   additionalComponentIds: string[];
   components: PlannedComponent[];
   /** Sum of all downloadBytes; null when any component has unknown size */
   totalDownloadBytes: number | null;
-  /** Target platform tuple */
-  targetPlatform: {
-    os: string;
-    architecture: string;
-    distribution?: string;
-  };
-  deploymentMode: string;
+  /** Target platform tuple as certified by backend; null when undetermined */
+  targetPlatform: TargetPlatform | null;
+  deploymentMode: string | null;
   permissionsRequired: string[];
   knownLimitations: string[];
   alreadyInstalledComponentIds: string[];
   resolvedAt: string; // ISO-8601
+  expiresAt?: string; // ISO-8601 plan validity window
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +145,12 @@ export type InstallerOperationKind =
   | "start"
   | "stop";
 
+export interface ComponentOperationRequest {
+  componentId: string;
+  operation: InstallerOperationKind;
+  targetVersion?: string;
+}
+
 export interface InstallerOperationStatus {
   operationId: string;
   kind: InstallerOperationKind;
@@ -145,7 +165,7 @@ export interface InstallerOperationStatus {
 }
 
 // ---------------------------------------------------------------------------
-// § 5 — Binding / dependency info for uninstall guard
+// § 5 — Binding / dependency info for uninstall guard & managed components
 // ---------------------------------------------------------------------------
 
 /** A product binding that depends on a given component. */
@@ -160,6 +180,16 @@ export interface ComponentRemovalGuard {
   componentId: string;
   /** Non-empty means removal is blocked */
   activeBindings: ComponentBinding[];
+}
+
+/** Component enriched with management lifecycle metadata. */
+export interface ManagedComponent extends InstallerComponent {
+  /** Active bindings from products using this component */
+  activeBindings: ComponentBinding[];
+  /** Operations the backend currently permits */
+  allowedOperations: InstallerOperationKind[];
+  /** Retention policy on uninstall: null or 'unknown' means unverified */
+  retentionPolicyOnUninstall?: "retain" | "delete" | "unknown" | null;
 }
 
 // ---------------------------------------------------------------------------

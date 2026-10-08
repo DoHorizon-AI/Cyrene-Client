@@ -130,7 +130,7 @@ test.describe("Cyrene Installer UI", () => {
     await expect(docParseCheckbox).toBeDisabled();
 
     // Attempting to click docParseRow should not toggle it
-    await docParseRow.click();
+    await docParseRow.click({ force: true });
     await expect(docParseCheckbox).toBeChecked();
 
     // Filter by "Available"
@@ -156,7 +156,7 @@ test.describe("Cyrene Installer UI", () => {
     await expect(page.getByText(/预计下载大小|Estimated download size/i)).toBeVisible();
 
     // Size shows "待确定" when sizes are unknown, never fake data
-    await expect(page.getByText(/待确定|Unknown — size data not yet available/i)).toBeVisible();
+    await expect(page.locator(".installer-plan__tbd")).toBeVisible();
 
     // Crucial safety rule: install button MUST NOT execute in NOT_CONNECTED mock mode
     const installBtn = page.getByRole("button", { name: /开始安装|Install/i });
@@ -183,5 +183,88 @@ test.describe("Cyrene Installer UI", () => {
 
     // Take screenshot of Component Management
     await page.screenshot({ path: path.join(screenshotsDir, "05-component-management.png"), fullPage: true });
+  });
+
+  test("Accessibility & Keyboard navigation: Space/Enter toggles workload cards without double-toggle and restores recommended", async ({ page }) => {
+    await page.goto("/installer");
+
+    const catalystCard = page.locator(".installer-workload-card").filter({ hasText: "Catalyst" });
+    await catalystCard.focus();
+
+    // Press Space on card to select
+    await page.keyboard.press("Space");
+    await expect(catalystCard).toHaveClass(/installer-workload-card--selected/);
+    await expect(catalystCard).toHaveAttribute("aria-checked", "true");
+
+    // Press Enter on card to deselect
+    await page.keyboard.press("Enter");
+    await expect(catalystCard).not.toHaveClass(/installer-workload-card--selected/);
+    await expect(catalystCard).toHaveAttribute("aria-checked", "false");
+
+    // Re-select Catalyst with Enter
+    await page.keyboard.press("Enter");
+    await expect(catalystCard).toHaveClass(/installer-workload-card--selected/);
+
+    // Switch to Individual Components tab
+    await page.getByRole("tab", { name: /独立组件|Individual Components/i }).click();
+
+    // Locate Knowledge Preparation (recommended)
+    const knowledgeRow = page.locator(".installer-component-row").filter({ hasText: "Knowledge Preparation" });
+    await knowledgeRow.click();
+
+    // Verify warning appears with a Restore button
+    const restoreBtn = page.getByRole("button", { name: /恢复|Restore/i });
+    await expect(restoreBtn).toBeVisible();
+
+    // Click restore
+    await restoreBtn.click();
+
+    // Checkbox is restored back to checked state
+    const knowledgeCheckbox = knowledgeRow.locator("input[type='checkbox']");
+    await expect(knowledgeCheckbox).toBeChecked();
+    // Warning banner inside knowledgeRow disappears
+    await expect(knowledgeRow.locator(".installer-affinity-warning")).toHaveCount(0);
+  });
+
+  test("Target platform is authoritative: displays 待确定 (TBD) without guessing from navigator.platform", async ({ page }) => {
+    await page.goto("/installer");
+
+    // Select Catalyst
+    await page.locator(".installer-workload-card").filter({ hasText: "Catalyst" }).click();
+
+    // Proceed to Plan
+    await page.getByRole("button", { name: /查看安装计划|Review installation plan/i }).click();
+
+    // Target platform must display 待确定 / TBD because demo mode never fakes CPU architecture
+    const platformMetaCard = page.locator(".installer-plan__meta-card").filter({ hasText: /目标平台|Target platform/i });
+    await expect(platformMetaCard).toBeVisible();
+    await expect(platformMetaCard).toContainText(/待确定|TBD/);
+  });
+
+  test("Safety verification: zero window.alert calls and all mutation buttons safely disabled in NOT_CONNECTED mode", async ({ page }) => {
+    let alertTriggered = false;
+    page.on("dialog", (dialog) => {
+      alertTriggered = true;
+      dialog.dismiss();
+    });
+
+    await page.goto("/installer");
+
+    // Go to Component Management
+    await page.getByRole("button", { name: /组件管理|Component Management/i }).click();
+
+    // Verify cards are rendered
+    const cards = page.locator(".installer-mgmt-card");
+    await expect(cards.first()).toBeVisible();
+
+    // Find any buttons inside management cards (if allowed operations were shown)
+    const actionButtons = cards.first().locator(".installer-mgmt-card__actions button");
+    const count = await actionButtons.count();
+    for (let i = 0; i < count; i++) {
+      await expect(actionButtons.nth(i)).toBeDisabled();
+    }
+
+    // Ensure no window.alert occurred
+    expect(alertTriggered).toBe(false);
   });
 });

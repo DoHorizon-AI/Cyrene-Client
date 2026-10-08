@@ -5,14 +5,13 @@
 // │         why, download size, platform, and known limitations.             │
 // │                                                                          │
 // │  中文：模块职责：安装计划预览页——展示将安装内容、原因、大小、平台与限制。      │
-// │                                                                          │
-// │  ⚠ NOT_CONNECTED: plan is assembled from mock catalog.                   │
-// │    Replace with real POST /api/installer/v1/plans response when ready.   │
+// │  权威依赖解析由后端提供；绝不使用 navigator.platform 猜测架构。             │
 // └─────────────────────────────────────────────────────────────────────────┘
 
-import { useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useI18n } from "../../../src/i18n";
 import { installerText } from "./copy";
+import { useInstallerProvider } from "./provider";
 import {
   MOCK_COMPONENT_CATALOG,
   MOCK_WORKLOAD_CATALOG,
@@ -30,89 +29,6 @@ function formatBytes(bytes: number): string {
   if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
   if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(0)} KB`;
   return `${bytes} B`;
-}
-
-/**
- * Build a mock InstallationPlan from workload + manual component selections.
- *
- * NOT_CONNECTED: this assembles a plan from local mock data.
- * The real flow sends the selection to POST /api/installer/v1/plans and
- * receives a plan whose dependency resolution is done server-side.
- */
-function buildMockPlan(
-  workloadIds: string[],
-  componentIds: string[],
-  excludedComponentIds: string[] = [],
-): InstallationPlan {
-  const componentMap = new Map(MOCK_COMPONENT_CATALOG.components.map((c) => [c.id, c]));
-  const workloadMap = new Map(MOCK_WORKLOAD_CATALOG.workloads.map((w) => [w.id, w]));
-
-  const seen = new Set<string>();
-  const planned: PlannedComponent[] = [];
-
-  // From workloads
-  for (const wid of workloadIds) {
-    const wl = workloadMap.get(wid);
-    if (!wl) continue;
-    for (const entry of wl.components) {
-      if (entry.affinity === "optional") {
-        if (!componentIds.includes(entry.componentId)) continue;
-      }
-      if (entry.affinity === "recommended" && excludedComponentIds.includes(entry.componentId)) {
-        continue;
-      }
-      if (seen.has(entry.componentId)) continue;
-      seen.add(entry.componentId);
-      const comp = componentMap.get(entry.componentId);
-      planned.push({
-        componentId: entry.componentId,
-        affinity: entry.affinity,
-        reason: entry.affinity === "required" ? `Required by ${wl.name}` : `Recommended by ${wl.name}`,
-        reasonCn: entry.affinity === "required" ? `${wl.name} 必需` : `${wl.name} 推荐`,
-        downloadBytes: comp?.downloadBytes ?? null,
-        version: comp?.availableVersion ?? null,
-      });
-    }
-  }
-
-  // Manual additions
-  for (const cid of componentIds) {
-    if (seen.has(cid)) continue;
-    seen.add(cid);
-    const comp = componentMap.get(cid);
-    planned.push({
-      componentId: cid,
-      affinity: "optional",
-      reason: "Manually selected",
-      reasonCn: "手动选择",
-      downloadBytes: comp?.downloadBytes ?? null,
-      version: comp?.availableVersion ?? null,
-    });
-  }
-
-  const anyUnknown = planned.some((c) => c.downloadBytes === null);
-  const total = anyUnknown ? null : planned.reduce((sum, c) => sum + (c.downloadBytes ?? 0), 0);
-
-  return {
-    planId: `mock-${Date.now()}`,
-    workloadIds,
-    additionalComponentIds: componentIds,
-    components: planned,
-    totalDownloadBytes: total,
-    targetPlatform: {
-      os: navigator.platform.startsWith("Win") ? "windows" : navigator.platform.startsWith("Mac") ? "darwin" : "linux",
-      architecture: "x86_64",
-    },
-    deploymentMode: "local",
-    permissionsRequired: [],
-    knownLimitations: [
-      // NOT_CONNECTED: limitations come from the Installer API in production
-    ],
-    alreadyInstalledComponentIds: MOCK_COMPONENT_CATALOG.components
-      .filter((c) => c.installedVersion !== null)
-      .map((c) => c.id),
-    resolvedAt: new Date().toISOString(),
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -160,10 +76,10 @@ function PlannedComponentRow({
 /**
  * Installation plan review step.
  *
- * ⚠ NOT_CONNECTED: uses mock plan assembled from static catalog.
- * In production: plan = await fetch("POST /api/installer/v1/plans", selection).
+ * Dependency resolution and target environment are determined authoritatively
+ * by the Installer API / Provider.
  *
- * 中文：当前为 Mock 计划，不执行实际安装。
+ * 中文：权威计划由 InstallerProvider 提供，前端不猜测目标架构或伪造数据。
  */
 export function InstallerPlanPanel({
   workloadIds,
@@ -180,12 +96,41 @@ export function InstallerPlanPanel({
 }) {
   const { locale } = useI18n();
   const l = useCallback((v: string) => installerText(v, locale), [locale]);
+  const provider = useInstallerProvider();
 
-  // NOT_CONNECTED: replace with API call
-  const plan = useMemo(
-    () => buildMockPlan(workloadIds, componentIds, excludedComponentIds),
-    [workloadIds, componentIds, excludedComponentIds],
-  );
+  const [plan, setPlan] = useState<InstallationPlan | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    provider
+      .resolvePlan({
+        workloadIds,
+        manualComponentIds: componentIds,
+        excludedRecommendedComponentIds: excludedComponentIds,
+      })
+      .then((resolved) => {
+        if (!cancelled) {
+          setPlan(resolved);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, workloadIds, componentIds, excludedComponentIds, reloadKey]);
 
   const componentMap = useMemo(
     () => new Map(MOCK_COMPONENT_CATALOG.components.map((c) => [c.id, c])),
@@ -196,20 +141,32 @@ export function InstallerPlanPanel({
     [],
   );
 
-  const products = plan.workloadIds.map((id) => workloadMap.get(id)).filter(Boolean);
-  const alreadyInstalled = plan.components.filter((c) =>
-    plan.alreadyInstalledComponentIds.includes(c.componentId),
-  );
-  const toInstall = plan.components.filter(
-    (c) => !plan.alreadyInstalledComponentIds.includes(c.componentId),
-  );
+  const products = plan
+    ? plan.workloadIds.map((id) => workloadMap.get(id)).filter(Boolean)
+    : [];
+  const alreadyInstalled = plan
+    ? plan.components.filter((c) => plan.alreadyInstalledComponentIds.includes(c.componentId))
+    : [];
+  const toInstall = plan
+    ? plan.components.filter((c) => !plan.alreadyInstalledComponentIds.includes(c.componentId))
+    : [];
+
+  const targetPlatformDisplay = plan?.targetPlatform?.os
+    ? `${plan.targetPlatform.os} / ${plan.targetPlatform.architecture || l("TBD")}${
+        plan.targetPlatform.distribution ? ` (${plan.targetPlatform.distribution})` : ""
+      }`
+    : l("TBD");
+
+  const deploymentModeDisplay = plan?.deploymentMode ?? l("TBD");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      {/* NOT_CONNECTED banner */}
-      <div className="installer-not-connected" role="status">
-        {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
-      </div>
+      {/* Provider demo / unconnected notice */}
+      {provider.isDemo && (
+        <div className="installer-not-connected" role="status">
+          {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
+        </div>
+      )}
 
       <div className="installer-main" style={{ flex: 1 }}>
         <div className="installer-detail__header">
@@ -221,120 +178,144 @@ export function InstallerPlanPanel({
         </div>
         <hr className="installer-horizon" />
 
-        <div className="installer-plan">
-          {/* Products */}
-          {products.length > 0 && (
-            <section className="installer-plan__section">
-              <h3 className="installer-plan__section-title">{l("Products to install")}</h3>
-              {products.map((wl) => wl && (
-                <div key={wl.id} className="installer-plan__item">
-                  <div style={{ flex: 1 }}>
-                    <p className="installer-plan__item-name">{wl.name}</p>
-                    <p className="installer-plan__reason">{wl.description}</p>
-                  </div>
-                </div>
-              ))}
-            </section>
-          )}
-
-          {/* Plugins to install */}
-          {toInstall.length > 0 && (
-            <section className="installer-plan__section">
-              <h3 className="installer-plan__section-title">{l("Plugins to install")}</h3>
-              {toInstall.map((item) => (
-                <PlannedComponentRow
-                  key={item.componentId}
-                  item={item}
-                  componentName={componentMap.get(item.componentId)?.name ?? item.componentId}
-                  l={l}
-                />
-              ))}
-            </section>
-          )}
-
-          {/* Already installed */}
-          {alreadyInstalled.length > 0 && (
-            <section className="installer-plan__section">
-              <h3 className="installer-plan__section-title">{l("Already installed")}</h3>
-              {alreadyInstalled.map((item) => {
-                const comp = componentMap.get(item.componentId);
-                return (
-                  <div key={item.componentId} className="installer-plan__item" style={{ opacity: 0.6 }}>
+        {loading ? (
+          <div className="installer-state" role="status" aria-live="polite">
+            <h3 className="installer-state__title">{l("Resolving installation plan…")}</h3>
+            <p className="installer-state__detail">{l("Loading…")}</p>
+          </div>
+        ) : error ? (
+          <div className="installer-affinity-warning" role="alert" style={{ margin: "var(--dh-space-4) 0" }}>
+            <p style={{ margin: 0, fontWeight: 600 }}>{l("Plan conflict or expired")}</p>
+            <p style={{ margin: "var(--dh-space-2) 0" }}>{error}</p>
+            <button
+              className="installer-btn"
+              onClick={() => setReloadKey((k) => k + 1)}
+              style={{ marginTop: "var(--dh-space-2)" }}
+            >
+              {l("Try again")}
+            </button>
+          </div>
+        ) : plan ? (
+          <div className="installer-plan">
+            {/* Products */}
+            {products.length > 0 && (
+              <section className="installer-plan__section">
+                <h3 className="installer-plan__section-title">{l("Products to install")}</h3>
+                {products.map((wl) => wl && (
+                  <div key={wl.id} className="installer-plan__item">
                     <div style={{ flex: 1 }}>
-                      <p className="installer-plan__item-name">{comp?.name ?? item.componentId}</p>
-                      <p className="installer-plan__reason">
-                        v{comp?.installedVersion ?? "?"} — {l("Installed")}
-                      </p>
+                      <p className="installer-plan__item-name">{wl.name}</p>
+                      <p className="installer-plan__reason">{wl.description}</p>
                     </div>
                   </div>
-                );
-              })}
-            </section>
-          )}
+                ))}
+              </section>
+            )}
 
-          {/* Meta grid */}
-          <div className="installer-plan__meta-row">
-            {/* Download size */}
-            <div className="installer-plan__meta-card">
-              <p className="installer-plan__meta-label">{l("Estimated download size")}</p>
-              {plan.totalDownloadBytes !== null ? (
-                <>
-                  <p className="installer-plan__size">{formatBytes(plan.totalDownloadBytes)}</p>
-                  <p className="installer-plan__size-label">download</p>
-                </>
+            {/* Plugins to install */}
+            {toInstall.length > 0 && (
+              <section className="installer-plan__section">
+                <h3 className="installer-plan__section-title">{l("Plugins to install")}</h3>
+                {toInstall.map((item) => (
+                  <PlannedComponentRow
+                    key={item.componentId}
+                    item={item}
+                    componentName={componentMap.get(item.componentId)?.name ?? item.componentId}
+                    l={l}
+                  />
+                ))}
+              </section>
+            )}
+
+            {/* Already installed */}
+            {alreadyInstalled.length > 0 && (
+              <section className="installer-plan__section">
+                <h3 className="installer-plan__section-title">{l("Already installed")}</h3>
+                {alreadyInstalled.map((item) => {
+                  const comp = componentMap.get(item.componentId);
+                  return (
+                    <div key={item.componentId} className="installer-plan__item" style={{ opacity: 0.6 }}>
+                      <div style={{ flex: 1 }}>
+                        <p className="installer-plan__item-name">{comp?.name ?? item.componentId}</p>
+                        <p className="installer-plan__reason">
+                          v{comp?.installedVersion ?? "?"} — {l("Installed")}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </section>
+            )}
+
+            {/* Meta grid */}
+            <div className="installer-plan__meta-row">
+              {/* Download size */}
+              <div className="installer-plan__meta-card">
+                <p className="installer-plan__meta-label">{l("Estimated download size")}</p>
+                {plan.totalDownloadBytes !== null ? (
+                  <>
+                    <p className="installer-plan__size">{formatBytes(plan.totalDownloadBytes)}</p>
+                    <p className="installer-plan__size-label">download</p>
+                  </>
+                ) : (
+                  <p className="installer-plan__tbd">{l("Unknown — size data not yet available")}</p>
+                )}
+              </div>
+
+              {/* Target platform */}
+              <div className="installer-plan__meta-card">
+                <p className="installer-plan__meta-label">{l("Target platform")}</p>
+                <p className="installer-plan__meta-value">{targetPlatformDisplay}</p>
+                <p className="installer-plan__meta-label" style={{ marginTop: "var(--dh-space-2)" }}>
+                  {l("Deployment mode")}
+                </p>
+                <p className="installer-plan__meta-value">{deploymentModeDisplay}</p>
+              </div>
+            </div>
+
+            {/* Permissions */}
+            {plan.permissionsRequired.length > 0 && (
+              <section className="installer-plan__section">
+                <h3 className="installer-plan__section-title">{l("Permissions required")}</h3>
+                <ul className="installer-plan__limitation-list">
+                  {plan.permissionsRequired.map((perm) => <li key={perm}>{perm}</li>)}
+                </ul>
+              </section>
+            )}
+
+            {/* Known limitations */}
+            <section className="installer-plan__section">
+              <h3 className="installer-plan__section-title">{l("Known limitations")}</h3>
+              {plan.knownLimitations.length > 0 ? (
+                <ul className="installer-plan__limitation-list">
+                  {plan.knownLimitations.map((lim) => <li key={lim}>{lim}</li>)}
+                </ul>
               ) : (
-                <p className="installer-plan__tbd">{l("Unknown — size data not yet available")}</p>
+                <p style={{ fontSize: "var(--dh-fs-sm)", color: "var(--dh-text-tertiary)" }}>
+                  {l("None reported")}
+                </p>
+              )}
+            </section>
+
+            {/* Plan ID & expiration */}
+            <div className="installer-plan__meta-card">
+              <p className="installer-plan__meta-label">Plan ID</p>
+              <p className="installer-plan__meta-value">{plan.planId}</p>
+              <p className="installer-plan__meta-label" style={{ marginTop: "var(--dh-space-1)" }}>
+                Resolved at
+              </p>
+              <p className="installer-plan__meta-value">{plan.resolvedAt}</p>
+              {plan.expiresAt && (
+                <>
+                  <p className="installer-plan__meta-label" style={{ marginTop: "var(--dh-space-1)" }}>
+                    Expires at
+                  </p>
+                  <p className="installer-plan__meta-value">{plan.expiresAt}</p>
+                </>
               )}
             </div>
-
-            {/* Target platform */}
-            <div className="installer-plan__meta-card">
-              <p className="installer-plan__meta-label">{l("Target platform")}</p>
-              <p className="installer-plan__meta-value">
-                {plan.targetPlatform.os} / {plan.targetPlatform.architecture}
-                {plan.targetPlatform.distribution ? ` (${plan.targetPlatform.distribution})` : ""}
-              </p>
-              <p className="installer-plan__meta-label" style={{ marginTop: "var(--dh-space-2)" }}>
-                {l("Deployment mode")}
-              </p>
-              <p className="installer-plan__meta-value">{plan.deploymentMode}</p>
-            </div>
           </div>
-
-          {/* Permissions */}
-          {plan.permissionsRequired.length > 0 && (
-            <section className="installer-plan__section">
-              <h3 className="installer-plan__section-title">{l("Permissions required")}</h3>
-              <ul className="installer-plan__limitation-list">
-                {plan.permissionsRequired.map((perm) => <li key={perm}>{perm}</li>)}
-              </ul>
-            </section>
-          )}
-
-          {/* Known limitations */}
-          <section className="installer-plan__section">
-            <h3 className="installer-plan__section-title">{l("Known limitations")}</h3>
-            {plan.knownLimitations.length > 0 ? (
-              <ul className="installer-plan__limitation-list">
-                {plan.knownLimitations.map((lim) => <li key={lim}>{lim}</li>)}
-              </ul>
-            ) : (
-              <p style={{ fontSize: "var(--dh-fs-sm)", color: "var(--dh-text-tertiary)" }}>
-                {l("None reported")}
-              </p>
-            )}
-          </section>
-
-          {/* Plan ID (monospace — machine value) */}
-          <div className="installer-plan__meta-card">
-            <p className="installer-plan__meta-label">Plan ID</p>
-            <p className="installer-plan__meta-value">{plan.planId}</p>
-            <p className="installer-plan__meta-label" style={{ marginTop: "var(--dh-space-1)" }}>
-              Resolved at
-            </p>
-            <p className="installer-plan__meta-value">{plan.resolvedAt}</p>
-          </div>
-        </div>
+        ) : null}
       </div>
 
       {/* Footer */}
@@ -344,14 +325,20 @@ export function InstallerPlanPanel({
         </button>
         <span className="installer-footer__summary">
           {toInstall.length} {l("Plugins to install")}
-          {plan.totalDownloadBytes !== null ? ` · ${formatBytes(plan.totalDownloadBytes)}` : ""}
+          {plan?.totalDownloadBytes !== null && plan?.totalDownloadBytes !== undefined
+            ? ` · ${formatBytes(plan.totalDownloadBytes)}`
+            : ""}
         </span>
-        {/* Primary action — disabled because NOT_CONNECTED */}
+        {/* Primary action — disabled if provider isDemo or not connected, or if loading/error */}
         <button
           className="installer-btn installer-btn--primary"
-          disabled
-          title={l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
-          onClick={() => onInstall(plan)}
+          disabled={!plan || loading || Boolean(error) || provider.isDemo || !provider.isConnected}
+          title={
+            provider.isDemo || !provider.isConnected
+              ? l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")
+              : undefined
+          }
+          onClick={() => plan && onInstall(plan)}
         >
           {l("Install")}
         </button>
