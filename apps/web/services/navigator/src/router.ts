@@ -19,7 +19,8 @@ export type RouteId =
   | "gateway"
   | "settings"
   | "chat"
-  | "assistant";
+  | "assistant"
+  | "installer";
 
 /**
  * Navigation metadata used by both the shell and the route resolver.
@@ -98,6 +99,12 @@ export const ROUTES: readonly RouteDefinition[] = [
     label: "Settings",
     path: "/settings",
     description: "Workspace session and credentials",
+  },
+  {
+    id: "installer",
+    label: "Install & Components",
+    path: "/installer",
+    description: "Workload and component installation management",
   },
 ];
 
