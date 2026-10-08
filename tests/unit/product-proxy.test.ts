@@ -117,6 +117,9 @@ it("allowlists the Catalyst trial collection and encoded opaque block identifier
   expect(productPermission("POST", "/api/v1/catalyst/api/v1/datasets/ds-1/sources/batch")).toBe("products.write");
   expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets/ds-1/source-parse-reports")).toBe("products.read");
   expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets/ds-1/review-queue")).toBe("products.read");
+  expect(productPermission("GET", "/api/v1/catalyst/api/v1/content-revisions/rev-1/training-records")).toBe("products.read");
+  expect(productPermission("POST", "/api/v1/catalyst/api/v1/content-revisions/rev-1/training-records:edit")).toBe("products.write");
+  expect(productPermission("DELETE", "/api/v1/catalyst/api/v1/content-revisions/rev-1/training-records")).toBeNull();
   expect(productPermission("POST", "/api/v1/catalyst/api/v1/review-items/review%3A1/resolve")).toBe("products.operate");
   expect(productPermission("DELETE", "/api/v1/catalyst/api/v1/datasets/ds-1/sources")).toBeNull();
 });

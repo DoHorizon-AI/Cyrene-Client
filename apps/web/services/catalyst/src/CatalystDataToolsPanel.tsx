@@ -37,6 +37,7 @@ import {
   type SourceRevision,
 } from "./api";
 import { catalystText } from "./copy";
+import { TrainingCurationPanel } from "./TrainingCurationPanel";
 import "./catalyst.css";
 
 type LoadErrors = { sources: string | null; revisions: string | null; runs: string | null; versions: string | null; parseReports: string | null; reviewQueue: string | null };
@@ -87,6 +88,7 @@ export function CatalystDataToolsPanel({
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [sftMode, setSftMode] = useState<"instruction" | "conversation">("instruction");
+  const [outputFormat, setOutputFormat] = useState<"sft" | "messages" | "promptCompletion">("sft");
   const [trainPercent, setTrainPercent] = useState(70);
   const [validationPercent, setValidationPercent] = useState(15);
   const [testPercent, setTestPercent] = useState(15);
@@ -102,6 +104,10 @@ export function CatalystDataToolsPanel({
   const selectedKnowledgeRunId = knowledgeRuns[0]?.id ?? "";
   const selectedSftRunId = sftRuns[0]?.id ?? "";
   const splitIsValid = trainPercent + validationPercent + testPercent === 100;
+  const curationCountsReconcile = !approvedRevision?.trainingDataSnapshot
+    || approvedRevision.trainingDataSnapshot.counts.total === approvedRevision.trainingDataSnapshot.counts.eligible
+      + approvedRevision.trainingDataSnapshot.counts.pendingReview
+      + approvedRevision.trainingDataSnapshot.counts.excluded;
   const approvalGateReason = contentApprovalBlockReason(
     selectedRevisionId,
     selectedRevision?.sourceRevisionIds ?? [],
@@ -221,7 +227,7 @@ export function CatalystDataToolsPanel({
           return next;
         });
         const completedRuns = results.flatMap((result) => result.status === "fulfilled" && !isRunActive(result.value) ? [result.value] : []);
-        const newReviewAvailable = completedRuns.some((run) => run.state === "SUCCEEDED" && (run.operation === "parse" || run.operation === "generateQa"));
+        const newReviewAvailable = completedRuns.some((run) => run.state === "SUCCEEDED" && (run.operation === "parse" || run.operation === "curateTrainingData" || run.operation === "generateQa"));
         setRuns((current) => {
           if (!current) return current;
           const next = [...current];
@@ -576,6 +582,27 @@ export function CatalystDataToolsPanel({
                 ) : <StateBlock kind="empty" title={l("No processing activity")} detail={l("Uploading a document will start its first review run.")} />}
           </Panel>
 
+          <TrainingCurationPanel
+            datasetId={datasetId}
+            sources={sources ?? []}
+            revision={selectedRevision}
+            client={client}
+            busy={busyAction !== null}
+            onSourcesUploaded={(uploaded) => {
+              setSources((current) => [...uploaded, ...(current ?? []).filter((source) => !uploaded.some((item) => item.id === source.id))]);
+              if (uploaded.length > 0) setNotice(locale === "zh-CN" ? `已保存 ${uploaded.length} 个训练数据来源。` : `Stored ${uploaded.length} training data source${uploaded.length === 1 ? "" : "s"}.`);
+            }}
+            onRunStarted={(run) => {
+              setRuns((current) => [run, ...(current ?? []).filter((item) => item.id !== run.id)]);
+              setNotice(locale === "zh-CN" ? "训练数据整理任务已启动，状态会在此更新。" : "Training data curation started. Its status will update here.");
+            }}
+            onRevisionCreated={(revision) => {
+              setRevisions((current) => [revision, ...(current ?? []).filter((item) => item.id !== revision.id)]);
+              setSelectedRevisionId(revision.id);
+              setNotice(locale === "zh-CN" ? `样本审核已保存为新修订 ${revision.revision}。随后还需批准整个内容修订。` : `Sample review was saved as child revision ${revision.revision}. Approve the full content revision when review is complete.`);
+            }}
+          />
+
           <Panel id="catalyst-queue" title={l("Review queue")} meta={reviewQueue ? `${reviewQueue.items.length} ${l("review items")}` : l("PARSER AND GENERATED DRAFTS")}>
             {loadErrors.reviewQueue ? <StateBlock kind="error" title={l("Review queue unavailable")} detail={l(loadErrors.reviewQueue)} action={<Button onClick={refresh}>{l("Try again")}</Button>} />
               : loading && reviewQueue === null ? <StateBlock kind="loading" title={l("Loading review queue")} detail={l("Reading parser warnings and generated drafts.")} />
@@ -592,6 +619,7 @@ export function CatalystDataToolsPanel({
                           </div>
                           <p>{l(userFacingWarning(item.code, item.message))}</p>
                           <p>{l("Source revision")} {item.sourceRevisionId} · {l("Processing run")} {item.processingRunId}</p>
+                          {item.recordId ? <p>{l("Training sample")} <span className="dh-id">{item.recordId}</span></p> : null}
                           <p>{l("Severity")}: {l(item.severity)}</p>
                           {item.confidence !== undefined ? <p>{l("Confidence")} {formatPercent(item.confidence)} · {l("Review required before approval.")}</p> : <p>{l("Review required before approval.")}</p>}
                           {item.locator ? <p>{formatCatalystLocator(item.locator, locale).join(" · ") || l("Location not provided")}</p> : <p>{l("Location not provided")}</p>}
@@ -599,6 +627,7 @@ export function CatalystDataToolsPanel({
                           {item.state === "REJECTED" ? <p className="inline-error">{l("This issue still blocks approval. Reprocess or exclude its source.")}</p> : null}
                           <div className="catalyst-tools__run-actions">
                             {relatedRevisionId ? <Button disabled={busyAction !== null} onClick={() => void openReviewItem(item)}>{l("Open related revision")}</Button> : null}
+                            {item.recordId ? <Button disabled={busyAction !== null} onClick={() => void openReviewItem(item).then(() => window.requestAnimationFrame(() => document.getElementById("catalyst-training-curation")?.scrollIntoView({ behavior: "smooth", block: "start" })))}>{l("Review training samples")}</Button> : null}
                             {item.state === "OPEN" ? <>
                               <Field label={l("Review note")} hint={l("Optional; kept with the review record.")}>
                                 <textarea rows={2} value={reviewNotes[item.id] ?? ""} onChange={(event) => setReviewNotes((current) => ({ ...current, [item.id]: event.target.value }))} placeholder={l("Add a note for the review record")} />
@@ -724,12 +753,18 @@ export function CatalystDataToolsPanel({
                     <span className="eyebrow">{l("TRAINING")}</span>
                     <h3>{l("Train, validation, and test data")}</h3>
                     <p>{l("Create a deterministic split by source or conversation family.")}</p>
-                    <Field label={l("SFT format")}>
+                    {approvedRevision.trainingDataSnapshot ? <Field label={l("Training output target")} hint={l("Messages keeps every supported turn; prompt-completion accepts only representable single-turn samples.")}>
+                      <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as "sft" | "messages" | "promptCompletion")}>
+                        <option value="sft">{l("Trainer SFT JSONL")}</option>
+                        <option value="messages">{l("Conversational messages JSONL")}</option>
+                        <option value="promptCompletion">{l("Prompt-completion JSONL")}</option>
+                      </select>
+                    </Field> : <Field label={l("SFT format")}>
                       <select value={sftMode} onChange={(event) => setSftMode(event.target.value as "instruction" | "conversation")}>
                         <option value="instruction">{l("Instruction")}</option>
                         <option value="conversation">{l("Conversation")}</option>
                       </select>
-                    </Field>
+                    </Field>}
                     <div className="catalyst-tools__split-grid">
                       <PercentField label={l("Train %")} value={trainPercent} onChange={setTrainPercent} />
                       <PercentField label={l("Validation %")} value={validationPercent} onChange={setValidationPercent} />
@@ -741,6 +776,7 @@ export function CatalystDataToolsPanel({
                       contentRevisionId: approvedRevision.id,
                       config: {
                         sftMode,
+                        ...(approvedRevision.trainingDataSnapshot ? { outputFormat } : {}),
                         split: { train: trainPercent / 100, validation: validationPercent / 100, test: testPercent / 100 },
                       },
                     }))}>{busyAction === "prepareSft" ? l("Starting...") : l("Build training package")}</Button>
@@ -769,18 +805,18 @@ export function CatalystDataToolsPanel({
           </Panel>
 
           <Panel id="catalyst-versions" title={l("Published data versions")} meta={versions ? `${versions.length} ${l("versions")}` : l("IMMUTABLE VERSIONS")}>
-            {approvedRevision && selectedKnowledgeRunId && selectedSftRunId ? (
+            {approvedRevision && selectedSftRunId && curationCountsReconcile && (selectedKnowledgeRunId || approvedRevision.trainingDataSnapshot) ? (
               <div className="catalyst-tools__publish-bar">
-                <div><strong>{l("Ready to publish")}</strong><span>{l("One version will include both approved package artifacts.")}</span></div>
+                <div><strong>{l("Ready to publish")}</strong><span>{l(selectedKnowledgeRunId ? "One version will include both approved package artifacts." : "This version contains the reviewed SFT package.")}</span></div>
                 <Button tone={selectedRevision?.state === "DRAFT" ? undefined : "primary"} disabled={busyAction !== null} loading={busyAction === "publish"} onClick={() => void perform("publish", async () => {
                   const version = await client.publishVersion(datasetId, {
                     contentRevisionId: approvedRevision.id,
-                    knowledgeRunId: selectedKnowledgeRunId,
+                    ...(selectedKnowledgeRunId ? { knowledgeRunId: selectedKnowledgeRunId } : {}),
                     sftRunId: selectedSftRunId,
                   });
                   setVersions((current) => [version, ...(current ?? []).filter((item) => item.id !== version.id)]);
                   setNotice(locale === "zh-CN" ? `已发布数据版本 ${version.id}。` : `Published data version ${version.id}.`);
-                })}>{l("Publish both packages")}</Button>
+                })}>{l(selectedKnowledgeRunId ? "Publish both packages" : "Publish SFT package")}</Button>
               </div>
             ) : null}
             {loadErrors.versions ? <StateBlock kind="error" title={l("Published versions unavailable")} detail={l(loadErrors.versions)} action={<Button onClick={refresh}>{l("Try again")}</Button>} />
@@ -896,8 +932,8 @@ function VersionCard({ version, locale, busyAction, onDownload }: { version: Dat
       <p>{formatDate(version.publishedAt ?? version.createdAt)}</p>
       {tools ? <p>{l("Content revision")} <span className="dh-id">{tools.contentRevisionId}</span> · {tools.sourceRevisionIds.length} {l("source revisions")}</p> : <p>{l("This version was published through the existing preparation flow.")}</p>}
       {tools ? <div className="catalyst-tools__download-actions">
-        <Button disabled={busyAction !== null} loading={busyAction === `download:${version.id}:knowledge`} onClick={() => onDownload("knowledge")}>{l("Download knowledge package")}</Button>
-        <Button disabled={busyAction !== null} loading={busyAction === `download:${version.id}:sft`} onClick={() => onDownload("sft")}>{l("Download training package")}</Button>
+        {tools.knowledgeArtifact ? <Button disabled={busyAction !== null} loading={busyAction === `download:${version.id}:knowledge`} onClick={() => onDownload("knowledge")}>{l("Download knowledge package")}</Button> : null}
+        {tools.sftArtifact ? <Button disabled={busyAction !== null} loading={busyAction === `download:${version.id}:sft`} onClick={() => onDownload("sft")}>{l("Download training package")}</Button> : null}
       </div> : <span className="catalyst-tools__legacy-note">{l("Package downloads are available for data-tools versions.")}</span>}
     </article>
   );
@@ -962,16 +998,18 @@ function catalystWorkflow(input: CatalystWorkflowInput): WorkflowStep[] {
   else if (input.revisions.length > 0) review.detail = tx(`${input.revisions.length} 个修订`, `${input.revisions.length} revisions`);
 
   const buildRuns = input.selectedRuns.filter((run) => run.operation === "buildKnowledge" || run.operation === "prepareSft");
-  const built = Number(input.knowledgeReady) + Number(input.sftReady);
-  const buildFailed = !input.knowledgeReady && buildRuns.some((run) => run.operation === "buildKnowledge" && isFailed(run))
+  const sftOnly = Boolean(input.approvedRevision?.trainingDataSnapshot);
+  const built = Number(input.sftReady) + (sftOnly ? 0 : Number(input.knowledgeReady));
+  const requiredPackages = sftOnly ? 1 : 2;
+  const buildFailed = !sftOnly && !input.knowledgeReady && buildRuns.some((run) => run.operation === "buildKnowledge" && isFailed(run))
     || !input.sftReady && buildRuns.some((run) => run.operation === "prepareSft" && isFailed(run));
   const build: WorkflowStep = { id: "build", label: tx("构建数据包", "Build"), targetId: "catalyst-build", state: "pending", detail: tx("需先批准", "Needs approval") };
   if (input.approvedRevision) {
     if (input.runs === null && !input.unavailable.runs) build.detail = loadingText;
     else if (buildRuns.some(isRunActive)) mark(build, "running", tx("构建中", "Building"));
-    else if (built === 2) mark(build, "done", tx("两个数据包已就绪", "Both packages built"));
+    else if (built === requiredPackages) mark(build, "done", tx(sftOnly ? "训练数据包已就绪" : "两个数据包已就绪", sftOnly ? "Training package built" : "Both packages built"));
     else if (buildFailed) mark(build, built === 0 ? "blocked" : "attention", tx("构建失败", "Build failed"));
-    else mark(build, "current", tx(`已构建 ${built}/2`, `${built} of 2 built`));
+    else mark(build, "current", tx(`已构建 ${built}/${requiredPackages}`, `${built} of ${requiredPackages} built`));
   } else if (input.revisions === null && !input.unavailable.revisions) {
     build.detail = loadingText;
   }
@@ -980,7 +1018,7 @@ function catalystWorkflow(input: CatalystWorkflowInput): WorkflowStep[] {
   if (input.unavailable.versions) mark(publish, "attention", unavailableText);
   else if (input.versions === null) publish.detail = loadingText;
   else if (input.approvedRevision && input.versions.some((version) => version.dataTools?.contentRevisionId === input.approvedRevision!.id)) mark(publish, "done", tx("已发布", "Published"));
-  else if (input.approvedRevision && built === 2) mark(publish, "current", tx("可以发布", "Ready to publish"));
+  else if (input.approvedRevision && built === requiredPackages) mark(publish, "current", tx("可以发布", "Ready to publish"));
   else if (input.versions.length > 0) {
     const count = input.versions.length;
     publish.detail = tx(`${count} 个历史版本`, `${count} earlier ${count === 1 ? "version" : "versions"}`);
@@ -1001,6 +1039,7 @@ function sourceStatus(run: ProcessingRun | undefined): string {
 function operationLabel(operation: RunOperation): string {
   return {
     parse: "Document review",
+    curateTrainingData: "Training data curation",
     buildKnowledge: "Build knowledge package",
     prepareSft: "Build training package",
     generateQa: "Generate draft questions",
@@ -1034,6 +1073,11 @@ function reviewItemLabel(kind: ReviewItem["kind"]): string {
     case "OCR_WARNING": return "OCR warning";
     case "PARSE_FAILURE": return "Document could not be read";
     case "UNSUPPORTED_SOURCE": return "Unsupported file content";
+    case "TRAINING_STRUCTURE": return "Training data structure issue";
+    case "TRAINING_DUPLICATE": return "Possible duplicate training sample";
+    case "TRAINING_QUALITY": return "Training sample quality warning";
+    case "TRAINING_UNSUPPORTED": return "Unsupported training sample content";
+    case "TRAINING_LEAKAGE": return "Possible training split leakage";
   }
 }
 

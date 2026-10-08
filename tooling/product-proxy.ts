@@ -29,6 +29,8 @@ export function productPermission(method: string, path: string): string | null {
     ["POST", `catalyst/api/v1/processing-runs/${id}/(cancel|retry)`, "operate"],
     ["GET", `catalyst/api/v1/datasets/${id}/content-revisions`, "read"],
     ["GET", `catalyst/api/v1/content-revisions/${id}/blocks`, "read"],
+    ["GET", `catalyst/api/v1/content-revisions/${id}/training-records`, "read"],
+    ["POST", `catalyst/api/v1/content-revisions/${id}/training-records:edit`, "write"],
     ["POST", `catalyst/api/v1/content-revisions/${id}/blocks/${workId}/edits`, "write"],
     ["POST", `catalyst/api/v1/content-revisions/${id}/review`, "operate"],
     ["POST", `catalyst/api/v1/datasets/${id}/data-tools/versions`, "operate"],
