@@ -137,16 +137,7 @@ function makeApplyResult(resolved = resolution) {
     workloadId: resolved.workloadId,
     action: resolved.action,
     targetId: resolved.targetId,
-    components: resolved.selectedComponents.map(component => ({
-      componentId: component.componentId,
-      status: uninstall ? "uninstalled" : "activated",
-      version: component.version,
-      digest: component.digest,
-      installationId: component.artifactKind === "plugin-package"
-        ? uninstall ? component.installationId : component.installationId ?? "installation-1"
-        : null,
-      installedIdentity: component.installedIdentity ?? { componentId: component.componentId, installationId: "installation-1" },
-    })),
+    components: resolved.selectedComponents.map(component => ({ ...component })),
     resolution: resolved,
     warnings: resolved.warnings,
     blockers: resolved.blockers,
@@ -213,6 +204,7 @@ describe("local workload plan contract and bridge", () => {
   });
 
   it("binds uninstall selection and action into the existing plan digest", async () => {
+    expect(makeApplyResult(resolution).components).toEqual(resolution.selectedComponents);
     const uninstallSelection = { ...selection, includeComponentIds: ["cyrene-client-workspace-web"] };
     const uninstallResolution = makeResolution("uninstall", uninstallSelection);
     const uninstallPlan = workloadCheckResultSchema.parse({
@@ -256,7 +248,7 @@ describe("local workload plan contract and bridge", () => {
     expect(() => workloadApplyResultSchema.parse({ ...uninstallApply, status: "activated" })).toThrow();
     expect(() => workloadApplyResultSchema.parse({
       ...uninstallApply,
-      components: [{ ...uninstallApply.components[0], status: "activated" }],
+      components: [{ ...uninstallApply.components[0], reason: "changed-after-plan" }],
     })).toThrow("Applied component rows must preserve resolver identity.");
     expect(() => workloadApplyResultSchema.parse({
       ...uninstallApply,

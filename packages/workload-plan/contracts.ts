@@ -179,7 +179,7 @@ const selectionBindingSchema = z.object({
 }).strict();
 
 /** One catalog-resolved release and its verified provenance identity. */
-export const workloadSelectedComponentSchema = z.object({
+const workloadSelectedComponentFields = z.object({
   componentId,
   version: z.string().min(1).max(128),
   targetId: workloadTargetId,
@@ -201,14 +201,18 @@ export const workloadSelectedComponentSchema = z.object({
   capabilityId: z.string().min(1).max(160).nullable(),
   packageId: z.string().min(1).max(160).nullable(),
   bindingId: z.string().regex(/^[a-z][a-z0-9-]{0,159}$/).nullable(),
-}).strict().superRefine((component, context) => {
+}).strict();
+
+function validateSelectedComponent(component: z.infer<typeof workloadSelectedComponentFields>, context: z.RefinementCtx) {
   if (component.sourcePolicy === null && component.bindingId !== null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["bindingId"], message: "A source binding requires its catalog-authored source policy." });
   }
   if (component.artifactKind !== "plugin-package" && component.installationId !== null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["installationId"], message: "Non-plugin deployment components do not have Package Runtime installation IDs." });
   }
-});
+}
+
+export const workloadSelectedComponentSchema = workloadSelectedComponentFields.superRefine(validateSelectedComponent);
 
 const planDigestMaterialSchema = z.object({
   schemaVersion: z.literal(1),
@@ -330,14 +334,9 @@ const stagedComponentSchema = z.object({
 }).strict();
 
 const appliedComponentSchema = z.object({
-  componentId,
-  status: z.enum(["installed", "activated", "uninstalled"]),
-  version: z.string().min(1).max(128),
-  digest: nullableDigest,
-  installationId: z.string().min(1).max(200).nullable(),
-  installedIdentity: boundedJsonObjectSchema,
+  ...workloadSelectedComponentFields.shape,
   alreadyAbsent: z.literal(true).optional(),
-}).strict();
+}).strict().superRefine((component, context) => validateSelectedComponent(component, context));
 
 /** Read-only local inventory result returned by the status operation. */
 export const workloadStatusResultSchema = z.object({
@@ -433,10 +432,8 @@ export const workloadApplyResultSchema = z.object({
   }
   if (result.components.length !== result.resolution.selectedComponents.length || result.components.some((component, index) => {
     const selected = result.resolution.selectedComponents[index];
-    return !selected || component.componentId !== selected.componentId || component.version !== selected.version || component.digest !== selected.digest
-      || result.action === "uninstall" && component.status !== "uninstalled"
-      || result.action === "install" && component.status === "uninstalled"
-      || result.action === "uninstall" && (component.installationId !== selected.installationId || stableJson(component.installedIdentity) !== stableJson(selected.installedIdentity));
+    const identity = Object.fromEntries(Object.entries(component).filter(([key]) => key !== "alreadyAbsent"));
+    return !selected || stableJson(identity) !== stableJson(selected);
   })) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["components"], message: "Applied component rows must preserve resolver identity." });
   }
