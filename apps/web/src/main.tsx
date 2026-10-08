@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { TeamGate } from "./team/TeamGate";
 import { LocaleProvider } from "./i18n";
+import "./design-tokens.css";
 import "./styles.css";
 import "./services/settings.css";
 import "./ide/ide.css";

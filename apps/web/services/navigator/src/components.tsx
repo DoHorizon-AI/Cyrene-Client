@@ -4,7 +4,7 @@
 // -----------------------------------------------------------------------------
 // 中文：// 中文：模块职责：为 Navigator 运维控制台提供共享展示组件。
 
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from "react";
 import { useI18n } from "./i18n";
 
 export interface PageHeaderProps {
@@ -37,16 +37,17 @@ export interface PanelProps {
   meta?: ReactNode;
   children: ReactNode;
   className?: string;
+  id?: string;
 }
 
 /**
  * Bordered work surface used to keep related API data together.
  * 使用带边框的工作区将相关 API 数据归在一起。
  */
-export function Panel({ title, meta, children, className = "" }: PanelProps) {
+export function Panel({ title, meta, children, className = "", id }: PanelProps) {
   const { t } = useI18n();
   return (
-    <section className={`panel ${className}`.trim()}>
+    <section className={`panel ${className}`.trim()} id={id}>
       <div className="panel__heading">
         <h2>{t(title)}</h2>
         {meta ? <div className="panel__meta">{meta}</div> : null}
@@ -58,49 +59,152 @@ export function Panel({ title, meta, children, className = "" }: PanelProps) {
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   tone?: "primary" | "quiet" | "danger";
+  /**
+   * Shows the shared busy marker and sets aria-busy; callers still own `disabled`.
+   * 显示统一的处理中标记并设置 aria-busy；是否禁用仍由调用方决定。
+   */
+  loading?: boolean;
 }
 
 /**
  * Consistent keyboard-focusable button surface.
  * 提供统一且可通过键盘聚焦的按钮外观。
  */
-export function Button({ tone = "quiet", className = "", children, ...props }: ButtonProps) {
+export function Button({ tone = "quiet", className = "", loading = false, children, ...props }: ButtonProps) {
   const { t } = useI18n();
   return (
-    <button className={`button button--${tone} ${className}`.trim()} {...props}>
+    <button className={`button button--${tone} ${className}`.trim()} aria-busy={loading || undefined} {...props}>
+      {loading ? <span className="button__spinner" aria-hidden="true" /> : null}
       {typeof children === "string" ? t(children) : children}
     </button>
   );
 }
 
+/** `info` is a steady (non-animated) informational tone and is only set explicitly. */
+export type StatusTone = "good" | "live" | "info" | "warn" | "bad" | "muted";
+
 /**
- * Small state marker that uses domain wording rather than color alone.
- * 使用领域术语呈现小型状态标记，不单靠颜色表达状态。
+ * Map a raw (untranslated) lifecycle state to its semantic tone.
+ * 将原始（未翻译）生命周期状态映射为语义色调。
  */
-export function StatusPill({ value }: { value: string | undefined }) {
-  const label = value || "UNKNOWN";
-  const normalized = label.toLowerCase();
-  const tone =
+export function statusTone(value: string | undefined): StatusTone {
+  const normalized = (value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ");
+  if (!normalized || normalized.includes("inactive") || normalized.includes("not ready")) return "muted";
+  if (
+    normalized.includes("fail") ||
+    normalized.includes("error") ||
+    normalized.includes("revoked") ||
+    normalized.includes("unhealthy") ||
+    normalized.includes("rejected") ||
+    normalized.includes("denied") ||
+    normalized === "unavailable" ||
+    normalized === "blocked"
+  ) return "bad";
+  if (
+    normalized.includes("stale") ||
+    normalized.includes("out of date") ||
+    normalized.includes("interrupted") ||
+    normalized.includes("cancel") ||
+    normalized.includes("skipped") ||
+    normalized.includes("expired") ||
+    normalized.includes("degraded") ||
+    normalized.includes("warning") ||
+    normalized === "offline"
+  ) return "warn";
+  if (
+    normalized.includes("running") ||
+    normalized.includes("start") ||
+    normalized.includes("validat") ||
+    normalized.includes("queued") ||
+    normalized.includes("processing") ||
+    normalized.includes("loading") ||
+    normalized.includes("probing") ||
+    normalized.includes("connecting") ||
+    normalized === "live"
+  ) return "live";
+  if (
     normalized.includes("ready") ||
     normalized.includes("active") ||
     normalized.includes("complete") ||
     normalized.includes("published") ||
+    normalized.includes("succeeded") ||
+    normalized.includes("success") ||
+    normalized.includes("approved") ||
+    normalized.includes("evaluated") ||
+    normalized.includes("passed") ||
+    normalized === "current" ||
+    normalized === "connected" ||
+    normalized === "finished" ||
     normalized === "up" ||
     normalized === "available" ||
     normalized === "mounted" ||
     normalized === "ok"
-      ? "good"
-      : normalized.includes("fail") ||
-          normalized.includes("error") ||
-          normalized.includes("revoked") ||
-          normalized.includes("unhealthy") ||
-          normalized === "unavailable" ||
-          normalized === "blocked"
-        ? "bad"
-        : normalized.includes("running") || normalized.includes("start") || normalized.includes("validat")
-          ? "live"
-          : "muted";
-  return <span className={`status-pill status-pill--${tone}`}>{label}</span>;
+  ) return "good";
+  return "muted";
+}
+
+/**
+ * Small state marker that uses domain wording rather than color alone.
+ * Pass `tone` when the visible label is translated or not a raw state.
+ * 使用领域术语呈现小型状态标记，不单靠颜色表达状态；显示文字已翻译时请显式传入 tone。
+ */
+export function StatusPill({ value, tone }: { value: string | undefined; tone?: StatusTone }) {
+  const { t } = useI18n();
+  const label = value || "UNKNOWN";
+  return <span className={`status-pill status-pill--${tone ?? statusTone(label)}`}>{t(label)}</span>;
+}
+
+export type WorkflowStepState = "done" | "current" | "running" | "attention" | "blocked" | "pending";
+
+export interface WorkflowStep {
+  id: string;
+  label: string;
+  detail?: string;
+  state: WorkflowStepState;
+  /** Element id to scroll to when the step label is activated. 中文：点击步骤时滚动到的元素 id。 */
+  targetId?: string;
+}
+
+/**
+ * Horizon-style workflow progress: hairline track, gradient fill to the
+ * furthest reached step, hollow diamonds for finished steps.
+ * Labels and details must already be localized.
+ * 地平线式流程进度：细线轨道、渐变填充到已到达的最远步骤、空心菱形表示已完成；文案需已本地化。
+ */
+export function WorkflowSteps({ steps, label }: { steps: readonly WorkflowStep[]; label: string }) {
+  const hasFocus = steps.some((step) => step.state === "current" || step.state === "running" || step.state === "blocked");
+  const firstPending = hasFocus ? -1 : steps.findIndex((step) => step.state === "pending");
+  const resolved = steps.map((step, index) => index === firstPending ? { ...step, state: "current" as const } : step);
+  const reached = resolved.reduce((furthest, step, index) => step.state === "pending" ? furthest : index, 0);
+  const style = { "--dh-steps-count": resolved.length, "--dh-steps-progress": reached } as CSSProperties;
+  const reveal = (targetId: string) => {
+    document.getElementById(targetId)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  return (
+    <ol className="dh-steps" aria-label={label} style={style}>
+      {resolved.map((step, index) => {
+        const mix = reached > 0 ? Math.round((Math.min(index, reached) / reached) * 100) : 0;
+        const active = step.state === "current" || step.state === "running";
+        return (
+          <li
+            key={step.id}
+            className="dh-step"
+            data-state={step.state}
+            aria-current={active ? "step" : undefined}
+            style={{ "--dh-step-mix": `${mix}%` } as CSSProperties}
+          >
+            <span className="dh-step__node" aria-hidden="true" />
+            <span className="dh-step__label">
+              {step.targetId ? (
+                <button type="button" className="dh-step__link" onClick={() => reveal(step.targetId!)}>{step.label}</button>
+              ) : step.label}
+            </span>
+            {step.detail ? <span className="dh-step__detail">{step.detail}</span> : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
 }
 
 export interface MetricCardProps {

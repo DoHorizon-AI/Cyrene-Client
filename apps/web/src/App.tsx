@@ -62,7 +62,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: 24, color: "#e06c75", fontFamily: "sans-serif" }}>
+        <div style={{ padding: 24, color: "var(--dh-danger)", fontFamily: "sans-serif" }}>
           <h2>应用发生未捕获错误</h2>
           <pre>{this.state.error?.message}</pre>
         </div>

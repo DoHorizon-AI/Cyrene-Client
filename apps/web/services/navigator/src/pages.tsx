@@ -5,7 +5,7 @@
 // 中文：// 中文：模块职责：实现 Navigator 控制台的七个页面及其所属 Product 的读取操作。
 
 import { useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { CSSProperties, FormEvent } from "react";
 
 import {
   count,
@@ -18,7 +18,10 @@ import {
   ResourceTable,
   StateBlock,
   StatusPill,
+  statusTone,
   text,
+  WorkflowSteps,
+  type WorkflowStep,
 } from "./components";
 import {
   type ActiveRoutePayload,
@@ -169,7 +172,7 @@ export function OverviewPage({ api }: PageProps) {
             </div>
           </Panel>
 
-          <Panel title={t("Issues")} meta={<span className="mono-label">{failures.length}{t("FAILED")}</span>}>
+          <Panel title={t("Issues")} meta={<span className="mono-label">{failures.length} {t("FAILED")}</span>}>
             {failures.length === 0 ? (
               <StateBlock
                 kind="empty"
@@ -243,10 +246,10 @@ export function OverviewPage({ api }: PageProps) {
             {system?.blockers && system.blockers.length > 0 ? (
               <div className="attention-list">
                 {system.blockers.map((blocker) => (
-                  <div className="attention-item" key={blocker.code}>
-                    <span className="attention-item__icon" aria-hidden="true" style={{ color: "var(--red)", borderColor: "var(--red)" }}>!</span>
+                  <div className="attention-item attention-item--danger" key={blocker.code}>
+                    <span className="attention-item__icon" aria-hidden="true">!</span>
                     <div>
-                      <strong style={{ color: "var(--red)" }}>{blocker.code}</strong>
+                      <strong className="input-mono">{blocker.code}</strong>
                       <p>{blocker.message}</p>
                     </div>
                   </div>
@@ -270,12 +273,12 @@ export function OverviewPage({ api }: PageProps) {
                 {system.plugins.map((plugin) => (
                   <div className="service-row" key={plugin.name}>
                     <span
-                      className={`service-dot ${plugin.state === "READY" ? "service-dot--good" : "service-dot--bad"}`}
+                      className={`service-dot service-dot--${statusTone(plugin.state)}`}
                       aria-hidden="true"
                     />
                     <div>
                       <strong>{plugin.name}</strong>
-                      {plugin.kind ? <span style={{ marginLeft: "8px", color: "var(--muted)", fontSize: "11px" }}>({plugin.kind})</span> : null}
+                      {plugin.kind ? <small className="service-row__kind">({plugin.kind})</small> : null}
                     </div>
                     <StatusPill value={plugin.state} />
                   </div>
@@ -551,6 +554,9 @@ export function DatasetsPage({ api }: PageProps) {
   const [instructionField, setInstructionField] = useState("");
   const [inputField, setInputField] = useState("");
   const [outputField, setOutputField] = useState("");
+  // Default section keeps the dataset name field visible for the editor-tab flow.
+  // 中文：默认停在「数据集与版本」，名称输入保持可见，文档工作台单独成页以缩短长页面。
+  const [datasetSection, setDatasetSection] = useState<"registry" | "prepare" | "documents">("registry");
 
   const detectedFields = (() => {
     const row = preparations?.find((item) => text(item["id"]) === preparationId);
@@ -705,6 +711,24 @@ export function DatasetsPage({ api }: PageProps) {
         action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>{t("Refresh datasets")}</Button>}
       />
 
+      <div className="dh-segmented dataset-sections" role="tablist" aria-label={t("Dataset workspace")}>
+        {([
+          ["registry", "Datasets and versions"],
+          ["prepare", "Structured preparation"],
+          ["documents", "Document workbench"],
+        ] as const).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={`button${datasetSection === id ? " button--primary" : ""}`}
+            role="tab"
+            aria-selected={datasetSection === id}
+            onClick={() => setDatasetSection(id)}
+          >{t(label)}</button>
+        ))}
+      </div>
+
+      <div hidden={datasetSection !== "registry"}>
       <Panel title={t("New dataset container")} meta={<span className="mono-label">{t("CATALYST OWNS STATE")}</span>}>
         <form className="form-grid form-grid--compact" onSubmit={submitDataset}>
           <Field label="Name">
@@ -714,13 +738,15 @@ export function DatasetsPage({ api }: PageProps) {
             <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("Curated instruction examples")} />
           </Field>
           <div className="form-actions">
-            <Button tone="primary" type="submit" disabled={submitting}>{submitting ? "Creating..." : "Create dataset"}</Button>
+            <Button tone={datasets && datasets.length > 0 ? undefined : "primary"} type="submit" disabled={submitting}>{submitting ? t("Creating...") : t("Create dataset")}</Button>
             {formError ? <span className="form-message form-message--error" role="alert">{formError}</span> : null}
             {notice ? <span className="form-message form-message--success">{notice}</span> : null}
           </div>
         </form>
       </Panel>
+      </div>
 
+      <div hidden={datasetSection !== "prepare"}>
       <Panel title={t("Prepare data")} meta={<span className="mono-label">{t("UPLOAD → MAP → PREPARE → PUBLISH")}</span>}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
           <Field label="Dataset" hint="Preparation always belongs to one dataset.">
@@ -809,14 +835,15 @@ export function DatasetsPage({ api }: PageProps) {
         ) : null}
 
         <div className="form-actions">
-          <Button tone="primary" disabled={!preparationId || workflowBusy} onClick={() => void handleMap()}>
-            {workflowBusy ? "Working..." : "Save mapping"}
+          <Button disabled={!preparationId || workflowBusy} onClick={() => void handleMap()}>
+            {workflowBusy ? t("Working...") : t("Save mapping")}
           </Button>
           <Button
             disabled={!preparationId || workflowBusy}
             onClick={() => void runWorkflow("Preparation", () => api.confirmPreparation(preparationId))}
           >{t("Prepare")}</Button>
           <Button
+            tone={preparationId ? "primary" : undefined}
             disabled={!preparationId || workflowBusy}
             onClick={() => void runWorkflow("Publish", () => api.publishPreparation(preparationId))}
           >{t("Publish version")}</Button>
@@ -828,7 +855,9 @@ export function DatasetsPage({ api }: PageProps) {
         {workflowError ? <p className="inline-error" role="alert">{workflowError}</p> : null}
         {workflowNotice ? <p className="form-message form-message--success">{workflowNotice}</p> : null}
       </Panel>
+      </div>
 
+      <div hidden={datasetSection !== "documents"}>
       <CatalystDataToolsPanel
         datasets={datasets}
         datasetsLoading={loading}
@@ -836,8 +865,10 @@ export function DatasetsPage({ api }: PageProps) {
         onRefreshDatasets={() => setReloadKey((value) => value + 1)}
         transport={api}
       />
+      </div>
 
-      <Panel title={t("Dataset containers")} meta={datasets ? `${datasets.length} records` : "LIVE READ"}>
+      <div hidden={datasetSection !== "registry"}>
+      <Panel title={t("Dataset containers")} meta={datasets ? `${datasets.length} ${t("records")}` : t("LIVE READ")}>
         {loading ? (
           <StateBlock kind="loading" title={t("Reading datasets")} detail="Catalyst is the authority for containers and their lifecycle." />
         ) : error ? (
@@ -876,7 +907,7 @@ export function DatasetsPage({ api }: PageProps) {
 
       <Panel
         title={t("Dataset version sample preview")}
-        meta={previewData ? `${previewData.totalRows} total rows` : "CATALYST DUCKDB"}
+        meta={previewData ? `${previewData.totalRows} ${t("total rows")}` : t("CATALYST DUCKDB")}
       >
         <form
           className="form-grid form-grid--compact"
@@ -885,7 +916,7 @@ export function DatasetsPage({ api }: PageProps) {
             void loadPreview(previewVersionId, previewLimit, previewOffset);
           }}
         >
-          <div style={{ display: "flex", gap: "12px", alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div className="dh-inline-form">
             <div style={{ flex: "1 1 300px" }}>
               <Field label="Dataset version ID" hint="UUID of the prepared dataset version">
                 <input
@@ -919,11 +950,11 @@ export function DatasetsPage({ api }: PageProps) {
                 />
               </Field>
             </div>
-            <div>
+            <div className="dh-inline-form__action">
               <Button
-                tone="primary"
                 type="submit"
                 disabled={previewLoading || !previewVersionId.trim()}
+                loading={previewLoading}
               >
                 {previewLoading ? "Loading..." : "预览样本"}
               </Button>
@@ -940,59 +971,38 @@ export function DatasetsPage({ api }: PageProps) {
         ) : previewError ? (
           <StateBlock kind="error" title={t("Preview unavailable")} detail={previewError} />
         ) : previewData ? (
-          <div style={{ marginTop: "16px" }}>
-            <p style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "12px" }}>{t("Displaying")}{previewData.rows.length}{t("rows (out of")}{previewData.totalRows}{t("total rows) for version")}<code className="input-mono">{previewData.versionId}</code>
+          <div className="dh-preview">
+            <p className="dh-preview__summary">{t("Displaying")}{previewData.rows.length}{t("rows (out of")}{previewData.totalRows}{t("total rows) for version")}<code className="input-mono">{previewData.versionId}</code>
             </p>
-            <div style={{ display: "grid", gap: "12px" }}>
+            <div className="dh-record-list">
               {previewData.rows.map((row) => (
-                <div
-                  key={row.index}
-                  style={{
-                    background: "rgba(17, 29, 34, 0.6)",
-                    border: "1px solid var(--line)",
-                    borderRadius: "6px",
-                    padding: "12px",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                <div className="dh-record" key={row.index}>
+                  <div className="dh-record__head">
                     <span className="mono-label">{t("ROW #")}{row.index + 1}</span>
                   </div>
-                  <div style={{ display: "grid", gap: "6px", fontSize: "13px" }}>
+                  <div className="dh-record__fields">
                     {row.mapped["instruction"] !== undefined ? (
                       <div>
-                        <strong style={{ color: "var(--blue)" }}>{t("Instruction:")}</strong>
+                        <strong>{t("Instruction:")}</strong>
                         <span>{String(row.mapped["instruction"])}</span>
                       </div>
                     ) : null}
                     {row.mapped["input"] ? (
                       <div>
-                        <strong style={{ color: "var(--muted)" }}>{t("Input:")}</strong>
+                        <strong>{t("Input:")}</strong>
                         <span>{String(row.mapped["input"])}</span>
                       </div>
                     ) : null}
                     {row.mapped["output"] !== undefined ? (
                       <div>
-                        <strong style={{ color: "var(--lime)" }}>{t("Output:")}</strong>
+                        <strong>{t("Output:")}</strong>
                         <span>{String(row.mapped["output"])}</span>
                       </div>
                     ) : null}
                   </div>
-                  <details style={{ marginTop: "8px", fontSize: "12px", color: "var(--faint)" }}>
-                    <summary style={{ cursor: "pointer", userSelect: "none" }}>{t("Raw record JSON")}</summary>
-                    <pre
-                      style={{
-                        background: "var(--ink-soft)",
-                        padding: "8px",
-                        borderRadius: "4px",
-                        overflowX: "auto",
-                        marginTop: "6px",
-                        color: "var(--text)",
-                        fontFamily: "var(--mono)",
-                        fontSize: "11px",
-                      }}
-                    >
-                      {JSON.stringify(row.raw, null, 2)}
-                    </pre>
+                  <details>
+                    <summary>{t("Raw record JSON")}</summary>
+                    <pre className="dh-code-block">{JSON.stringify(row.raw, null, 2)}</pre>
                   </details>
                 </div>
               ))}
@@ -1006,6 +1016,7 @@ export function DatasetsPage({ api }: PageProps) {
           />
         )}
       </Panel>
+      </div>
     </div>
   );
 }
@@ -1566,7 +1577,9 @@ function LossChart({ series }: { series: number[] }) {
       if (index === 0) context.moveTo(x, y);
       else context.lineTo(x, y);
     });
-    context.strokeStyle = "#7dd3fc";
+    // The stroke follows the canvas CSS color so the chart stays on the design tokens.
+    // 中文：折线颜色取自 canvas 的 CSS color，保持与设计 token 一致。
+    context.strokeStyle = getComputedStyle(canvas).color || "currentColor";
     context.lineWidth = 1.5;
     context.stroke();
   }, [series]);
@@ -1575,9 +1588,9 @@ function LossChart({ series }: { series: number[] }) {
   return (
     <canvas
       ref={canvasRef}
+      className="dh-sparkline"
       width={480}
       height={120}
-      style={{ width: "100%", height: "120px" }}
       aria-label={t("Training loss over steps")}
     />
   );
@@ -1804,26 +1817,17 @@ export function RunsPage({ api }: { api: TrainingRunClient }) {
             </div>
 
             {currentStep !== null && totalSteps ? (
-              <div style={{ marginTop: "16px" }}>
-                <div
-                  role="progressbar"
-                  aria-valuenow={currentStep}
-                  aria-valuemin={0}
-                  aria-valuemax={totalSteps}
-                  style={{ height: "8px", background: "var(--color-bg-subtle, #181c20)", borderRadius: "4px", overflow: "hidden" }}
-                >
-                  <div
-                    style={{
-                      width: `${Math.min(100, Math.round((currentStep / totalSteps) * 100))}%`,
-                      height: "100%",
-                      background: "var(--lime, #7dd3fc)",
-                    }}
-                  />
-                </div>
-              </div>
+              <div
+                className="dh-meter"
+                role="progressbar"
+                aria-valuenow={currentStep}
+                aria-valuemin={0}
+                aria-valuemax={totalSteps}
+                style={{ "--dh-meter": `${Math.min(100, Math.round((currentStep / totalSteps) * 100))}%` } as CSSProperties}
+              />
             ) : null}
 
-            <div style={{ marginTop: "16px" }}>
+            <div className="dh-chart">
               <LossChart series={lossSeries} />
             </div>
 
@@ -1838,20 +1842,20 @@ export function RunsPage({ api }: { api: TrainingRunClient }) {
             ) : null}
             {actionNotice ? <p className="form-message form-message--success">{actionNotice}</p> : null}
 
-            <div style={{ marginTop: "16px" }}>
-              <strong style={{ display: "block", marginBottom: "8px", fontSize: "13px" }}>{t("Event logs (last 50):")}</strong>
-              <div style={{ maxHeight: "260px", overflowY: "auto", background: "var(--color-bg-subtle, #181c20)", padding: "12px", borderRadius: "6px", fontFamily: "monospace", fontSize: "12px" }}>
+            <div className="dh-chart">
+              <strong className="dh-section-label">{t("Event logs (last 50):")}</strong>
+              <div className="dh-log">
                 {events.length === 0 ? (
-                  <div style={{ color: "var(--muted, #888)" }}>{t("No realtime stream events captured yet.")}</div>
+                  <div className="dh-log__empty">{t("No realtime stream events captured yet.")}</div>
                 ) : (
                   events.map((evt, idx) => {
                     const seq = String(evt["sequence"] ?? idx + 1);
                     const kind = String(evt["kind"] ?? evt["event"] ?? "event");
                     const payload = evt["payload"] ? JSON.stringify(evt["payload"]) : evt["message"] ?? JSON.stringify(evt);
                     return (
-                      <div key={seq} style={{ marginBottom: "4px", lineHeight: "1.4" }}>
-                        <span style={{ color: "var(--muted, #888)", marginRight: "8px" }}>#{seq}</span>
-                        <span style={{ color: "var(--blue, #64B5F6)", marginRight: "8px" }}>[{kind}]</span>
+                      <div className="dh-log__row" key={seq}>
+                        <span className="dh-log__seq">#{seq}</span>
+                        <span className="dh-log__kind">[{kind}]</span>
                         <span>{String(payload)}</span>
                       </div>
                     );
@@ -2045,94 +2049,21 @@ export function DeploymentsPage({ api }: PageProps) {
           ) : eventsError ? (
             <StateBlock kind="error" title={t("Events unavailable")} detail={eventsError} />
           ) : deploymentEvents && deploymentEvents.length > 0 ? (
-            <div style={{ marginTop: "12px" }}>
-              {/* Phase sequence visualization */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  marginBottom: "20px",
-                  overflowX: "auto",
-                  padding: "8px 0",
-                }}
-              >
-                {["QUEUED", "LOADING", "PROBING", "READY"].map((p, idx) => {
-                  const hasPassed = deploymentEvents.some((e) => e.phase === p);
-                  return (
-                    <div key={p} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span
-                        style={{
-                          padding: "4px 10px",
-                          borderRadius: "12px",
-                          fontSize: "12px",
-                          fontWeight: 600,
-                          fontFamily: "var(--mono)",
-                          background: hasPassed ? "rgba(201, 242, 123, 0.15)" : "rgba(255, 255, 255, 0.05)",
-                          color: hasPassed ? "var(--lime)" : "var(--faint)",
-                          border: `1px solid ${hasPassed ? "var(--lime)" : "var(--line)"}`,
-                        }}
-                      >
-                        {p}
-                      </span>
-                      {idx < 3 ? <span style={{ color: "var(--faint)" }}>→</span> : null}
-                    </div>
-                  );
-                })}
-                {deploymentEvents.some((e) => e.phase === "FAILED") ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ color: "var(--red)" }}>→</span>
-                    <span
-                      style={{
-                        padding: "4px 10px",
-                        borderRadius: "12px",
-                        fontSize: "12px",
-                        fontWeight: 600,
-                        fontFamily: "var(--mono)",
-                        background: "rgba(255, 139, 120, 0.15)",
-                        color: "var(--red)",
-                        border: "1px solid var(--red)",
-                      }}
-                    >{t("FAILED")}</span>
-                  </div>
-                ) : null}
-              </div>
+            <div className="dh-phase-timeline">
+              <WorkflowSteps steps={deploymentPhaseSteps(deploymentEvents, t)} label={t("Deployment phases")} />
 
-              {/* Detailed event timeline list */}
               <div className="service-list">
                 {deploymentEvents.map((evt) => (
-                  <div
-                    key={evt.sequence}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "40px 100px 1fr auto",
-                      alignItems: "center",
-                      gap: "12px",
-                      padding: "10px 0",
-                      borderBottom: "1px solid var(--line)",
-                      fontSize: "12px",
-                    }}
-                  >
+                  <div className="dh-event-row" key={evt.sequence}>
                     <span className="mono-label">#{evt.sequence}</span>
                     <StatusPill value={evt.phase} />
                     <div>
                       <span>{evt.message}</span>
                       {evt.failureCode ? (
-                        <span
-                          style={{
-                            display: "block",
-                            color: "var(--red)",
-                            fontWeight: 600,
-                            marginTop: "2px",
-                            fontFamily: "var(--mono)",
-                          }}
-                        >{t("Failure:")}{evt.failureCode}
-                        </span>
+                        <span className="dh-event-row__failure">{t("Failure:")}{evt.failureCode}</span>
                       ) : null}
                     </div>
-                    <span style={{ color: "var(--muted)", fontSize: "11px" }}>
-                      {formatDate(evt.occurredAt)}
-                    </span>
+                    <span className="dh-event-row__time">{formatDate(evt.occurredAt)}</span>
                   </div>
                 ))}
               </div>
@@ -2380,9 +2311,8 @@ console.log(response.choices[0].message.content);`,
                   const isSelected = selectedRoute && text(selectedRoute["id"]) === text(row["id"]);
                   return (
                     <button
-                      className="link-button"
+                      className={isSelected ? "link-button link-button--selected" : "link-button"}
                       onClick={() => setSelectedRoute(row)}
-                      style={{ fontWeight: isSelected ? "bold" : "normal", textDecoration: "underline", background: "none", border: "none", cursor: "pointer", color: "inherit", padding: 0 }}
                     >
                       {pattern} {isSelected ? "◀ (Selected)" : ""}
                     </button>
@@ -2410,7 +2340,7 @@ console.log(response.choices[0].message.content);`,
                     );
                   }
                   return (
-                    <div style={{ display: "flex", gap: "6px" }}>
+                    <div className="dh-toolbar">
                       <Button onClick={() => setSelectedRoute(row)}>{t("View detail")}</Button>
                       <Button tone="primary" onClick={() => void handleUseInNavigator(row)}>{t("在 Navigator 中使用")}</Button>
                     </div>
@@ -2445,7 +2375,7 @@ console.log(response.choices[0].message.content);`,
             <Detail label="Created" value={formatDate(selectedRoute["createdAt"] || selectedRoute["created_at"])} />
           </dl>
 
-          <div style={{ marginTop: "12px", marginBottom: "16px", display: "flex", gap: "8px" }}>
+          <div className="dh-toolbar dh-toolbar--spaced">
             <Button
               onClick={() => {
                 void navigator.clipboard.writeText(baseUrl);
@@ -2461,18 +2391,21 @@ console.log(response.choices[0].message.content);`,
             >{t("在 Navigator 中使用")}</Button>
           </div>
 
-          <div style={{ marginTop: "20px" }}>
-            <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center" }}>
-              <strong style={{ marginRight: "12px" }}>{t("Integration code:")}</strong>
-              {(["curl", "python", "javascript"] as const).map((tab) => (
-                <Button
-                  key={tab}
-                  tone={activeCodeTab === tab ? "primary" : "quiet"}
-                  onClick={() => setActiveCodeTab(tab)}
-                >
-                  {tab === "curl" ? "cURL" : tab === "python" ? "Python" : "JavaScript"}
-                </Button>
-              ))}
+          <div className="dh-integration">
+            <div className="dh-toolbar dh-integration__bar">
+              <strong className="dh-section-label">{t("Integration code:")}</strong>
+              <div className="dh-segmented">
+                {(["curl", "python", "javascript"] as const).map((tab) => (
+                  <Button
+                    key={tab}
+                    tone={activeCodeTab === tab ? "primary" : "quiet"}
+                    aria-pressed={activeCodeTab === tab}
+                    onClick={() => setActiveCodeTab(tab)}
+                  >
+                    {tab === "curl" ? "cURL" : tab === "python" ? "Python" : "JavaScript"}
+                  </Button>
+                ))}
+              </div>
               <Button
                 onClick={() => {
                   void navigator.clipboard.writeText(snippets[activeCodeTab]);
@@ -2483,7 +2416,7 @@ console.log(response.choices[0].message.content);`,
                 {copiedSnippet ? "Copied!" : "Copy snippet"}
               </Button>
             </div>
-            <pre style={{ background: "var(--color-bg-subtle, #181c20)", padding: "16px", borderRadius: "6px", overflowX: "auto", fontSize: "13px", lineHeight: "1.5" }}>
+            <pre className="dh-code-block">
               <code>{snippets[activeCodeTab]}</code>
             </pre>
           </div>
@@ -2496,18 +2429,17 @@ console.log(response.choices[0].message.content);`,
         meta={apiKeys ? `${apiKeys.filter((k) => k.state === "ACTIVE").length} active` : "EXCHANGE KEYS"}
       >
         {createdSecret ? (
-          <div className="callout callout--orange" style={{ marginBottom: "20px", display: "block" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-              <span className="callout__mark" aria-hidden="true" style={{ fontSize: "18px", fontWeight: "bold" }}>⚠</span>
-              <strong style={{ color: "var(--orange, #FF9800)" }}>{t("API Key Created:")}{createdKeyName}</strong>
+          <div className="callout callout--orange callout--stacked">
+            <div className="callout__title">
+              <span className="callout__mark" aria-hidden="true">!</span>
+              <strong>{t("API Key Created:")}{createdKeyName}</strong>
             </div>
-            <p style={{ marginBottom: "12px" }}>{t("此密钥不会再次显示，请立即复制并安全保存。关闭后将无法重新查看完整明文。")}</p>
-            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px" }}>
+            <p>{t("此密钥不会再次显示，请立即复制并安全保存。关闭后将无法重新查看完整明文。")}</p>
+            <div className="dh-toolbar callout__secret">
               <input
                 readOnly
                 value={createdSecret}
                 className="input-mono"
-                style={{ flex: 1, padding: "8px 12px", fontSize: "14px", background: "rgba(0,0,0,0.3)" }}
               />
               <Button
                 tone="primary"
@@ -2593,7 +2525,7 @@ console.log(response.choices[0].message.content);`,
                       <Button tone="danger" onClick={() => void handleRevokeKey(row.id, row.name)}>{t("Revoke")}</Button>
                     );
                   }
-                  return <span style={{ color: "var(--muted)" }}>{t("Revoked")}</span>;
+                  return <span className="muted">{t("Revoked")}</span>;
                 },
               },
             ]}
@@ -3018,54 +2950,19 @@ export function ChatPage({ api }: PageProps) {
               </div>
             ) : null}
 
-            <div
-              style={{
-                display: "grid",
-                gap: "12px",
-                maxHeight: "450px",
-                overflowY: "auto",
-                padding: "12px",
-                background: "var(--ink-soft)",
-                borderRadius: "6px",
-                border: "1px solid var(--line)",
-                marginBottom: "16px",
-              }}
-            >
+            <div className="dh-chat">
               {messages.filter((m) => m.role !== "system").length === 0 ? (
-                <div style={{ color: "var(--muted)", textAlign: "center", padding: "24px 0" }}>{t("Start conversation with")}<code>{activeRoute.modelId}</code>
+                <div className="dh-chat__empty">{t("Start conversation with")}<code>{activeRoute.modelId}</code>
                 </div>
               ) : (
                 messages
                   .filter((m) => m.role !== "system")
                   .map((msg, idx) => (
-                    <div
-                      key={idx}
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: msg.role === "user" ? "flex-end" : "flex-start",
-                      }}
-                    >
-                      <span className="mono-label" style={{ marginBottom: "4px" }}>
-                        {msg.role === "user" ? "YOU" : activeRoute.modelId}
+                    <div key={idx} className={msg.role === "user" ? "dh-chat__message dh-chat__message--user" : "dh-chat__message"}>
+                      <span className="dh-chat__role">
+                        {msg.role === "user" ? "YOU" : <span className="dh-mono">{activeRoute.modelId}</span>}
                       </span>
-                      <div
-                        style={{
-                          maxWidth: "85%",
-                          padding: "10px 14px",
-                          borderRadius: "8px",
-                          background:
-                            msg.role === "user"
-                              ? "rgba(201, 242, 123, 0.12)"
-                              : "rgba(17, 29, 34, 0.9)",
-                          border: `1px solid ${
-                            msg.role === "user" ? "var(--lime)" : "var(--line)"
-                          }`,
-                          whiteSpace: "pre-wrap",
-                          fontSize: "13px",
-                          lineHeight: "1.5",
-                        }}
-                      >
+                      <div className="dh-chat__bubble">
                         {msg.content || (sending && idx === messages.length - 1 ? "..." : "")}
                       </div>
                     </div>
@@ -3073,9 +2970,8 @@ export function ChatPage({ api }: PageProps) {
               )}
             </div>
 
-            <form onSubmit={sendMessage} style={{ display: "flex", gap: "8px" }}>
+            <form className="dh-chat__composer" onSubmit={sendMessage}>
               <input
-                style={{ flex: 1, padding: "10px 14px", borderRadius: "6px" }}
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
                 placeholder={t("Type a message...")}
@@ -3097,9 +2993,30 @@ function Detail({ label, value, mono = false }: { label: string; value: string; 
   return (
     <div className="detail-item">
       <dt>{t(label)}</dt>
-      <dd className={mono ? "input-mono" : undefined}>{t(value)}</dd>
+      <dd className={mono ? "input-mono" : undefined} title={mono ? value : undefined}>{t(value)}</dd>
     </div>
   );
+}
+
+const DEPLOYMENT_PHASES = ["QUEUED", "LOADING", "PROBING", "READY"] as const;
+
+/**
+ * Map Reactor phase events onto the shared workflow horizon. A failed rollout
+ * shows the phases it actually reached followed by a FAILED node.
+ * 中文：将 Reactor 部署阶段事件映射到共享的流程地平线；失败时只显示实际到达的阶段，
+ *       并在末尾追加 FAILED 节点。
+ */
+function deploymentPhaseSteps(events: readonly DeploymentEvent[], t: (message: string) => string): WorkflowStep[] {
+  const passed = DEPLOYMENT_PHASES.map((phase) => events.some((event) => event.phase === phase));
+  const reached = passed.lastIndexOf(true);
+  if (events.some((event) => event.phase === "FAILED")) {
+    const timeline = DEPLOYMENT_PHASES.slice(0, reached + 1).map((phase, index): WorkflowStep => ({ id: phase, label: phase, state: passed[index] ? "done" : "pending" }));
+    return [...timeline, { id: "FAILED", label: t("FAILED"), state: "blocked" }];
+  }
+  return DEPLOYMENT_PHASES.map((phase, index): WorkflowStep => {
+    if (passed[index] && index === reached && phase !== "READY") return { id: phase, label: phase, detail: t("In progress"), state: "running" };
+    return { id: phase, label: phase, state: passed[index] ? "done" : "pending" };
+  });
 }
 
 function settledValue<T>(result: PromiseSettledResult<T>, label: string, failures: string[]): T | null {
