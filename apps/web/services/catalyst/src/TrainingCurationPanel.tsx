@@ -11,10 +11,12 @@ import { useI18n } from "../../navigator/src/i18n";
 import {
   CatalystDataToolsClient,
   userFacingCatalystError,
+  userFacingSourceItemError,
   type ContentRevision,
   type ContentPolicy,
   type ProcessingRun,
   type SourceRevision,
+  type SourceBatchItem,
   type TrainingDataFormat,
   type TrainingDataRecord,
 } from "./api";
@@ -63,6 +65,7 @@ export function TrainingCurationPanel({
   const [note, setNote] = useState("");
   const [action, setAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [uploadFailures, setUploadFailures] = useState<Array<{ filename: string; message: string }>>([]);
 
   const trainingSources = useMemo(
     () => sources.filter((source) => /\.jsonl?$/i.test(source.filename)),
@@ -123,14 +126,16 @@ export function TrainingCurationPanel({
     }
     setAction("upload");
     setActionError(null);
+    setUploadFailures([]);
     try {
       const response = await client.uploadSourcesBatch(datasetId, selectedFiles);
       const uploaded = response.items.flatMap((item) => item.source ? [item.source] : []);
+      const failures = summarizeTrainingUploadFailures(response.items);
       onSourcesUploaded(uploaded);
       setSelectedSourceIds(uploaded.filter((source) => /\.jsonl?$/i.test(source.filename)).map((source) => source.id));
       setTrainingConsent(false);
-      const failed = response.items.filter((item) => item.error !== null);
-      if (uploaded.length === 0) throw new Error(failed[0]?.error?.message ?? l("No training files were stored."));
+      setUploadFailures(failures);
+      if (uploaded.length === 0 && failures.length === 0) setActionError(l("No training files were stored."));
     } catch (error) {
       setActionError(userFacingCatalystError(error));
     } finally {
@@ -218,6 +223,10 @@ export function TrainingCurationPanel({
               event.currentTarget.value = "";
             }} />
           </Field>
+          {uploadFailures.length > 0 ? <div className="inline-error" role="alert">
+            <strong>{l("Some training files were not stored.")}</strong>
+            <ul>{uploadFailures.map((failure) => <li key={`${failure.filename}:${failure.message}`}><strong>{failure.filename}</strong>: {l(failure.message)}</li>)}</ul>
+          </div> : null}
           {trainingSources.length > 0 ? <div className="catalyst-tools__source-list">
             {trainingSources.map((source) => <label className="catalyst-tools__source" key={source.id}>
               <span><input type="checkbox" checked={selectedSourceIds.includes(source.id)} disabled={busy || action !== null} onChange={(event) => {
@@ -421,4 +430,12 @@ function trainingPolicy(): ContentPolicy {
     allowedPrincipalRefs: [],
     allowedUsePurposes: ["model_training"],
   };
+}
+
+export function summarizeTrainingUploadFailures(
+  items: readonly Pick<SourceBatchItem, "filename" | "error">[],
+): Array<{ filename: string; message: string }> {
+  return items.flatMap((item) => item.error
+    ? [{ filename: item.filename, message: userFacingSourceItemError(item.error) }]
+    : []);
 }

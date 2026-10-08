@@ -96,6 +96,7 @@ const chinese: Record<string, string> = {
   "Role mappings may target only system, user, or assistant.": "角色映射目标只能是 system、user 或 assistant。",
   "Select at least one JSON or JSONL source.": "请至少选择一个 JSON 或 JSONL 来源。",
   "No training files were stored.": "没有训练文件保存成功。",
+  "Some training files were not stored.": "部分训练文件未能保存。",
   "Choose JSON or JSONL files only.": "请只选择 JSON 或 JSONL 文件。",
   "Training record review": "训练样本审核",
   "Training records unavailable": "无法读取训练样本",

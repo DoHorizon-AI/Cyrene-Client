@@ -11,9 +11,22 @@ import { describe, expect, it } from "vitest";
 import { ControlledLocaleProvider } from "../../navigator/src/i18n";
 import { CatalystDataToolsPanel, formatCatalystLocator } from "./CatalystDataToolsPanel";
 import { CatalystDataToolsClient } from "./api";
-import { TrainingCurationPanel, TrainingRecordCard } from "./TrainingCurationPanel";
+import { summarizeTrainingUploadFailures, TrainingCurationPanel, TrainingRecordCard } from "./TrainingCurationPanel";
 
 describe("CatalystDataToolsPanel", () => {
+  it("retains each failed filename and readable reason when a training upload is partially successful", () => {
+    const failures = summarizeTrainingUploadFailures([
+      { filename: "accepted.jsonl", error: null },
+      { filename: "too-large.jsonl", error: { code: "CATALYST_SOURCE_TOO_LARGE", message: "per-file limit", retryable: false } },
+      { filename: "offline.json", error: { code: "STORAGE_UNAVAILABLE", message: "The storage service is unavailable.", retryable: true } },
+    ]);
+
+    expect(failures).toEqual([
+      { filename: "too-large.jsonl", message: "This file exceeds the 32 MiB per-file upload limit." },
+      { filename: "offline.json", message: "The storage service is unavailable." },
+    ]);
+  });
+
   it("offers the contract formats and displays the server-aligned batch limits", () => {
     const html = renderToStaticMarkup(createElement(
       ControlledLocaleProvider,
