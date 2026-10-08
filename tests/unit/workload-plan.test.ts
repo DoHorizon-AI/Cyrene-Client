@@ -159,6 +159,7 @@ describe("local workload plan contract and bridge", () => {
     expect(() => workloadSelectedComponentSchema.parse({ ...selectedComponents[0], manifestAssetDigest: null })).toThrow();
     expect(() => workloadSelectedComponentSchema.parse({ ...selectedComponents[0], digest: null })).toThrow();
     expect(() => workloadSelectedComponentSchema.parse({ ...selectedComponents[0], installationId: "invented-installation-id" })).toThrow("Package Runtime installation IDs");
+    expect(workloadSelectedComponentSchema.safeParse({ ...selectedComponents[0], bindingId: "catalog/binding" }).success).toBe(false);
   });
 
   it("requires install candidates to carry the verified catalog publisher and index", () => {

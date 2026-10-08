@@ -200,7 +200,7 @@ export const workloadSelectedComponentSchema = z.object({
   installedIdentity: boundedJsonObjectSchema.nullable(),
   capabilityId: z.string().min(1).max(160).nullable(),
   packageId: z.string().min(1).max(160).nullable(),
-  bindingId: z.string().regex(/^[a-z][a-z0-9._:/-]{0,159}$/).nullable(),
+  bindingId: z.string().regex(/^[a-z][a-z0-9-]{0,159}$/).nullable(),
 }).strict().superRefine((component, context) => {
   if (component.sourcePolicy === null && component.bindingId !== null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["bindingId"], message: "A source binding requires its catalog-authored source policy." });
