@@ -331,6 +331,7 @@ const stagedComponentSchema = z.object({
 
 const appliedComponentSchema = z.object({
   componentId,
+  status: z.enum(["installed", "activated", "uninstalled"]),
   version: z.string().min(1).max(128),
   digest: nullableDigest,
   installationId: z.string().min(1).max(200).nullable(),
@@ -433,6 +434,8 @@ export const workloadApplyResultSchema = z.object({
   if (result.components.length !== result.resolution.selectedComponents.length || result.components.some((component, index) => {
     const selected = result.resolution.selectedComponents[index];
     return !selected || component.componentId !== selected.componentId || component.version !== selected.version || component.digest !== selected.digest
+      || result.action === "uninstall" && component.status !== "uninstalled"
+      || result.action === "install" && component.status === "uninstalled"
       || result.action === "uninstall" && (component.installationId !== selected.installationId || stableJson(component.installedIdentity) !== stableJson(selected.installedIdentity));
   })) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["components"], message: "Applied component rows must preserve resolver identity." });

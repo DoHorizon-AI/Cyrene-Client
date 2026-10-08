@@ -139,6 +139,7 @@ function makeApplyResult(resolved = resolution) {
     targetId: resolved.targetId,
     components: resolved.selectedComponents.map(component => ({
       componentId: component.componentId,
+      status: uninstall ? "uninstalled" : "activated",
       version: component.version,
       digest: component.digest,
       installationId: component.artifactKind === "plugin-package"
@@ -253,6 +254,10 @@ describe("local workload plan contract and bridge", () => {
     const uninstallApply = makeApplyResult(uninstallResolution);
     expect(uninstallApply).toMatchObject({ status: "uninstalled", components: [{ installationId: null }] });
     expect(() => workloadApplyResultSchema.parse({ ...uninstallApply, status: "activated" })).toThrow();
+    expect(() => workloadApplyResultSchema.parse({
+      ...uninstallApply,
+      components: [{ ...uninstallApply.components[0], status: "activated" }],
+    })).toThrow("Applied component rows must preserve resolver identity.");
     expect(() => workloadApplyResultSchema.parse({
       ...uninstallApply,
       components: [{ ...uninstallApply.components[0], alreadyAbsent: true }],
