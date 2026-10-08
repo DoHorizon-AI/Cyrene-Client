@@ -271,6 +271,83 @@ describe("CatalystDataToolsClient", () => {
     expect(capturedBody).toEqual({ operation: "buildKnowledge", contentRevisionId: "revision-1" });
   });
 
+  it("starts training curation with source policy and the versioned recipe", async () => {
+    let capturedPath = "";
+    let capturedBody: unknown;
+    const client = new CatalystDataToolsClient({
+      async requestProductResponse(path, init) {
+        capturedPath = path;
+        capturedBody = JSON.parse(String(init?.body));
+        return jsonResponse({ id: "curation-run", operation: "curateTrainingData", state: "QUEUED" }, 202);
+      },
+    });
+
+    await client.createProcessingRun("dataset-1", {
+      operation: "curateTrainingData",
+      sourceRevisionIds: ["source-1"],
+      config: {
+        sourcePolicies: { "source-1": { allowKnowledge: false, allowTraining: true, allowedPrincipalRefs: [], allowedUsePurposes: ["model_training"] } },
+        curation: {
+          id: "training-curation-v1",
+          version: "1",
+          format: "auto",
+          fieldMapping: {},
+          roleMapping: {},
+          maxCharacters: 100000,
+          minCharacters: 2,
+          unicodeNormalization: "NFC",
+        },
+      },
+    });
+
+    expect(capturedPath).toBe("/api/v1/catalyst/api/v1/datasets/dataset-1/processing-runs");
+    expect(capturedBody).toMatchObject({
+      operation: "curateTrainingData",
+      sourceRevisionIds: ["source-1"],
+      config: { sourcePolicies: { "source-1": { allowTraining: true, allowedUsePurposes: ["model_training"] } }, curation: { format: "auto", unicodeNormalization: "NFC" } },
+    });
+  });
+
+  it("pages training records and creates an immutable child revision for a record decision", async () => {
+    const calls: Array<{ path: string; init?: RequestInit }> = [];
+    const client = new CatalystDataToolsClient({
+      async requestProductResponse(path, init) {
+        calls.push({ path, init });
+        return jsonResponse(path.includes("training-records:edit")
+          ? { id: "revision-2", revision: 2, state: "DRAFT", resourceVersion: 4, blocks: [] }
+          : { revisionId: "revision-1", offset: 25, limit: 25, total: 51, records: [{ id: "record-1", sampleId: "external-1", sourceRevisionId: "source-1", sourceFamilyId: "family-1", ordinal: 26, locator: { itemRef: "line:27" }, detectedFormat: "messages", normalized: { messages: [{ role: "user", content: "问题" }, { role: "assistant", content: "回答" }] }, disposition: "review", issues: [], contentDigest: "sha256:record", recipeDigest: "sha256:recipe", processingHistory: [] }] });
+      },
+    });
+
+    const page = await client.listTrainingRecords("revision-1", { offset: 25, limit: 25, disposition: "review", issueCode: "ROLE_ORDER" });
+    const child = await client.editTrainingRecords("revision-1", {
+      resourceVersion: 3,
+      edits: [{ recordId: "record-1", action: "approve", note: "Reviewed original and turns." }],
+    });
+
+    expect(calls[0]?.path).toBe("/api/v1/catalyst/api/v1/content-revisions/revision-1/training-records?offset=25&limit=25&disposition=review&issueCode=ROLE_ORDER");
+    expect(page.records[0]?.normalized?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(page.total).toBe(51);
+    expect(calls[1]?.path).toBe("/api/v1/catalyst/api/v1/content-revisions/revision-1/training-records:edit");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ resourceVersion: 3, edits: [{ recordId: "record-1", action: "approve", note: "Reviewed original and turns." }] });
+    expect(child.id).toBe("revision-2");
+  });
+
+  it("encodes Review Queue filters as a typed query", async () => {
+    let capturedPath = "";
+    const client = new CatalystDataToolsClient({
+      async requestProductResponse(path) {
+        capturedPath = path;
+        return jsonResponse({ items: [], generatedDrafts: [], offset: 10, limit: 10, total: 11 });
+      },
+    });
+
+    const queue = await client.getReviewQueue("dataset-1", { kind: "TRAINING_STRUCTURE", code: "MISSING_FIELD", offset: 10, limit: 10 });
+
+    expect(capturedPath).toBe("/api/v1/catalyst/api/v1/datasets/dataset-1/review-queue?kind=TRAINING_STRUCTURE&code=MISSING_FIELD&offset=10&limit=10");
+    expect(queue.total).toBe(11);
+  });
+
   it("sends cancel and retry commands with the contract's empty request body", async () => {
     const calls: Array<{ path: string; init?: RequestInit }> = [];
     const client = new CatalystDataToolsClient({
