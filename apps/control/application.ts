@@ -29,7 +29,10 @@ import { assistantTurn, type AssistantProvider } from "./assistant";
 import { LocalDiagnosticAdapter, diagnosticDatabase, emptyDiagnosticDatabase } from "../../packages/local-diagnostics/adapter";
 import { createUpdateControl } from "./update-control";
 import { createUpdateHelper } from "./update-helper";
+import { createWorkloadControl } from "./workload-control";
+import { createWorkloadPlanHelper } from "./workload-helper";
 import type { UpdateHelperRequest, UpdateHelperResult } from "../../packages/component-updates/contracts";
+import type { WorkloadPlanHelperRequest, WorkloadPlanResult } from "../../packages/workload-plan/contracts";
 
 export interface ControlOptions {
   stores: StoreFactory;
@@ -48,8 +51,9 @@ export interface ControlOptions {
   mcpReadOnly?: boolean;
   assistantProvider?: AssistantProvider;
   updateHelper?: (request: UpdateHelperRequest) => Promise<UpdateHelperResult>;
+  workloadPlanHelper?: (request: WorkloadPlanHelperRequest) => Promise<WorkloadPlanResult>;
 }
-const localScopes = ["products.read", "products.write", "products.operate", "products.admin", "pipelines.read", "pipelines.write", "servers.read", "servers.write", "runs.read", "runs.write", "builds.read", "builds.write", "catalog.write", "updates.read", "updates.apply"];
+const localScopes = ["products.read", "products.write", "products.operate", "products.admin", "pipelines.read", "pipelines.write", "servers.read", "servers.write", "runs.read", "runs.write", "builds.read", "builds.write", "catalog.write", "updates.read", "updates.apply", "workloads.read", "workloads.install"];
 const cookieName = "studio_session";
 function cookie(req: IncomingMessage) { return (req.headers.cookie ?? "").split(";").map(p => p.trim()).find(p => p.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1) ?? ""; }
 function secretEqual(a: string, b: string) { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); }
@@ -99,6 +103,7 @@ export function createControlApplication(options: ControlOptions) {
   const monitoring = new MonitoringControl(pipelineStore, runStore, new Set(adapters.keys()));
   const mcp = (actor: Actor) => createMcpServer(pipelines, actor, runs, { monitoring, builds, catalog: registry, servers, readOnly: options.mcpReadOnly });
   const updates = options.mode === "local" ? createUpdateControl(options.updateHelper ?? createUpdateHelper()) : undefined;
+  const workloads = options.mode === "local" ? createWorkloadControl(options.workloadPlanHelper ?? createWorkloadPlanHelper()) : undefined;
   const failures = new Map<string, { count: number; until: number }>();
   const activeAssistantTurns = new Set<string>();
   function originBoundary(req: IncomingMessage) {
@@ -135,6 +140,7 @@ export function createControlApplication(options: ControlOptions) {
     ["/studio-catalog", { commands: catalogCommands, execute: (raw, actor) => registry.execute(raw, actor) }],
   ]);
   if (updates) groups.set("/studio-updates", { commands: updates.commands, execute: (raw, actor) => updates.execute(raw, actor) });
+  if (workloads) groups.set("/studio-workloads", { commands: workloads.commands, execute: (raw, actor) => workloads.execute(raw, actor) });
   const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([name, command]) => (name !== "monitoring.snapshot" || actor.scopes.includes("pipelines.read")) && actor.scopes.includes(command.scope ?? `${prefix === "/studio-runs" ? "runs" : "pipelines"}.${command.readOnly ? "read" : "write"}`)).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -305,5 +311,5 @@ export function createControlApplication(options: ControlOptions) {
   const server = createServer((req, res) => { void handler(req, res); });
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;
-  return { server, handler, team, pipelines, servers, registry, runs, monitoring, builds, updates, ready, groups, authorize, stores: options.stores };
+  return { server, handler, team, pipelines, servers, registry, runs, monitoring, builds, updates, workloads, ready, groups, authorize, stores: options.stores };
 }
