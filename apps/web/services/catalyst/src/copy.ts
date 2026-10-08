@@ -231,6 +231,9 @@ const chinese: Record<string, string> = {
   "Try again": "重试",
   "Load more passages": "加载更多段落",
   "Working in": "当前数据集：",
+  "Uploading the file and starting document review...": "正在上传文件并启动文档解析与校对…",
+  "Document workflow progress": "文档处理流程进度",
+  "CATALYST DATA TOOLS": "文档数据工具",
 };
 
 /** Translate only the high-value labels used by this trial module. */

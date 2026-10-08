@@ -296,6 +296,9 @@ export function initialLocale(): AppLocale {
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
   const [locale, setLocale] = useState<AppLocale>(initialLocale);
+  // Set lang before children format dates in this same render.
+  // 中文：在子组件格式化日期之前写好 lang，同一次渲染就能用到新语言。
+  if (typeof document !== "undefined") document.documentElement.lang = locale;
 
   useEffect(() => {
     document.documentElement.lang = locale;

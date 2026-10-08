@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { Button, Field, Panel, StateBlock, StatusPill } from "../../navigator/src/components";
+import { Button, Field, Panel, StateBlock, StatusPill, statusTone, WorkflowSteps, type WorkflowStep, type WorkflowStepState } from "../../navigator/src/components";
 import { useI18n } from "../../navigator/src/i18n";
 import {
   CatalystDataToolsClient,
@@ -111,6 +111,19 @@ export function CatalystDataToolsPanel({
   );
   const approvalBlocked = approvalGateReason !== null;
   const approvalBlockReason = approvalGateCopy(approvalGateReason);
+  const workflow = catalystWorkflow({
+    locale,
+    sources,
+    runs,
+    revisions,
+    versions,
+    unavailable: loadErrors,
+    selectedRevision,
+    approvedRevision,
+    selectedRuns,
+    knowledgeReady: selectedKnowledgeRunId !== "",
+    sftReady: selectedSftRunId !== "",
+  });
 
   useEffect(() => {
     if (!datasetId) {
@@ -413,7 +426,7 @@ export function CatalystDataToolsPanel({
     <div className="catalyst-tools">
       <Panel
         title={l("Review original documents and prepare both outputs")}
-        meta={<span className="mono-label">CATALYST DATA TOOLS</span>}
+        meta={<span className="mono-label">{l("CATALYST DATA TOOLS")}</span>}
       >
         <div className="catalyst-tools__intro">
           <p>{l("Keep original source files, review extracted passages, then build knowledge and training packages from approved content.")}</p>
@@ -455,13 +468,14 @@ export function CatalystDataToolsPanel({
               </label>
             </div>
             <div className="catalyst-tools__selector-action">
-              <Button onClick={refresh} disabled={!datasetId || loading}>{loading ? l("Refreshing...") : l("Refresh data")}</Button>
+              <Button onClick={refresh} disabled={!datasetId || loading} loading={loading && datasetId !== ""}>{loading ? l("Refreshing...") : l("Refresh data")}</Button>
             </div>
           </div>
         )}
 
-        {actionError ? <p className="inline-error" role="alert">{l(actionError)}</p> : null}
-        {notice ? <p className="form-message form-message--success" role="status">{l(notice)}</p> : null}
+        {busyAction === "upload" ? <p className="dh-notice catalyst-tools__uploading" role="status"><span className="button__spinner" aria-hidden="true" />{l("Uploading the file and starting document review...")}</p> : null}
+        {actionError ? <p className="dh-notice dh-notice--danger" role="alert">{l(actionError)}</p> : null}
+        {notice ? <p className="dh-notice dh-notice--success" role="status">{l(notice)}</p> : null}
         {uploadResults.length > 0 ? (
           <div className="catalyst-tools__source-list" aria-label={l("Batch upload results")}>
             {uploadResults.map((item, index) => <article className="catalyst-tools__source" key={item.source?.id ?? String(index)}>
@@ -470,16 +484,21 @@ export function CatalystDataToolsPanel({
                 {item.source ? <span>{l("Stored source revision")} {item.source.revision} · {formatBytes(item.source.byteLength)}</span> : null}
                 {item.error ? <p className="catalyst-tools__run-message" role="alert">{l(userFacingSourceItemError(item.error))}</p> : null}
               </div>
-              <div className="catalyst-tools__source-status"><StatusPill value={l(item.source ? "UPLOADED" : "FAILED")} />{item.error?.retryable ? <small>{l("This upload can be retried.")}</small> : null}</div>
+              <div className="catalyst-tools__source-status"><StatusPill value={l(item.source ? "UPLOADED" : "FAILED")} tone={statusTone(item.source ? "UPLOADED" : "FAILED")} />{item.error?.retryable ? <small>{l("This upload can be retried.")}</small> : null}</div>
             </article>)}
           </div>
         ) : null}
-        {datasetId && selectedDatasetName ? <p className="catalyst-tools__current-dataset">{l("Working in")} <strong>{String(selectedDatasetName)}</strong></p> : null}
+        {datasetId ? (
+          <div className="catalyst-tools__progress">
+            {selectedDatasetName ? <p className="catalyst-tools__current-dataset">{l("Working in")} <strong>{String(selectedDatasetName)}</strong></p> : null}
+            <WorkflowSteps steps={workflow} label={l("Document workflow progress")} />
+          </div>
+        ) : null}
       </Panel>
 
       {datasetId ? (
         <>
-          <Panel title={l("Original documents")} meta={sources ? `${sources.length} ${l("sources")}` : l("SOURCE FILES")}>
+          <Panel id="catalyst-sources" title={l("Original documents")} meta={sources ? `${sources.length} ${l("sources")}` : l("SOURCE FILES")}>
             {loadErrors.sources ? <StateBlock kind="error" title={l("Sources unavailable")} detail={l(loadErrors.sources)} action={<Button onClick={refresh}>{l("Try again")}</Button>} />
               : loading && sources === null ? <StateBlock kind="loading" title={l("Loading original files")} detail={l("Reading the source ledger from Catalyst.")} />
                 : sources && sources.length > 0 ? (
@@ -487,16 +506,16 @@ export function CatalystDataToolsPanel({
                     {sources.map((source) => {
                       const run = (runs ?? []).find((item) => item.operation === "parse" && item.sourceRevisionIds.includes(source.id));
                       const report = latestReportForSource(parseReports ?? [], source.id);
-                      const status = l(report?.status ?? sourceStatus(run));
+                      const rawStatus = report?.status ?? sourceStatus(run);
                       return (
                         <article className="catalyst-tools__source" key={source.id}>
                           <div className="catalyst-tools__source-main">
                             <strong>{source.filename}</strong>
                             <span>{source.mediaType} · {formatBytes(source.byteLength)} · revision {source.revision} · {formatDate(source.createdAt)}</span>
-                            <span className="catalyst-tools__digest">{source.digest}</span>
+                            <span className="catalyst-tools__digest dh-id">{source.digest}</span>
                           </div>
                           <div className="catalyst-tools__source-status">
-                            <StatusPill value={status} />
+                            <StatusPill value={l(rawStatus)} tone={statusTone(rawStatus)} />
                             {report?.failure ? <p className="catalyst-tools__run-message">{l(userFacingParseFailure(report.failure))}</p> : null}
                             {!report?.failure && (run?.state === "FAILED" || run?.state === "INTERRUPTED") && run.failure ? <p>{l(userFacingRunFailure(run.failure))}</p> : null}
                             {report?.contentRevisionId ? <small>{l("Content revision")} {report.contentRevisionId}</small> : null}
@@ -520,7 +539,7 @@ export function CatalystDataToolsPanel({
             {loadErrors.parseReports ? <StateBlock kind="error" title={l("Parse reports unavailable")} detail={l(loadErrors.parseReports)} action={<Button onClick={refresh}>{l("Try again")}</Button>} /> : null}
           </Panel>
 
-          <Panel title={l("Processing activity")} meta={runs ? `${runs.length} ${l("runs")}` : l("LIVE STATUS")}>
+          <Panel id="catalyst-activity" title={l("Processing activity")} meta={runs ? `${runs.length} ${l("runs")}` : l("LIVE STATUS")}>
             {loadErrors.runs ? <StateBlock kind="error" title={l("Processing status unavailable")} detail={l(loadErrors.runs)} action={<Button onClick={refresh}>{l("Try again")}</Button>} />
               : loading && runs === null ? <StateBlock kind="loading" title={l("Loading processing status")} detail={l("Reading recent work from Catalyst.")} />
                 : runs && runs.length > 0 ? (
@@ -529,7 +548,7 @@ export function CatalystDataToolsPanel({
                       <article className="catalyst-tools__run" key={run.id}>
                         <div className="catalyst-tools__run-heading">
                           <strong>{l(operationLabel(run.operation))}</strong>
-                          <StatusPill value={l(run.state)} />
+                          <StatusPill value={l(run.state)} tone={statusTone(run.state)} />
                         </div>
                         <p>{formatDate(run.updatedAt)}{run.progress ? ` · ${run.progress.completed}${run.progress.total ? ` of ${run.progress.total}` : ""} complete` : ""}</p>
                         {run.failure ? <p className="catalyst-tools__run-message">{l(userFacingRunFailure(run.failure))}</p> : null}
@@ -540,12 +559,12 @@ export function CatalystDataToolsPanel({
                           </ul>
                         ) : null}
                         <div className="catalyst-tools__run-actions">
-                          {isRunActive(run) ? <Button disabled={busyAction !== null} onClick={() => void perform(`cancel:${run.id}`, async () => {
+                          {isRunActive(run) ? <Button disabled={busyAction !== null} loading={busyAction === `cancel:${run.id}`} onClick={() => void perform(`cancel:${run.id}`, async () => {
                             const cancelled = await client.cancelProcessingRun(run.id);
                             setRuns((current) => replaceRun(current, cancelled));
                             setNotice("Cancellation was requested. The final status will appear here.");
                           })}>{l("Cancel")}</Button> : null}
-                          {(run.state === "FAILED" || run.state === "INTERRUPTED") && run.failure?.retryable ? <Button disabled={busyAction !== null} onClick={() => void perform(`retry:${run.id}`, async () => {
+                          {(run.state === "FAILED" || run.state === "INTERRUPTED") && run.failure?.retryable ? <Button disabled={busyAction !== null} loading={busyAction === `retry:${run.id}`} onClick={() => void perform(`retry:${run.id}`, async () => {
                             const retry = await client.retryProcessingRun(run.id);
                             setRuns((current) => [retry, ...(current ?? []).filter((item) => item.id !== retry.id)]);
                             setNotice("A new run was created. The earlier run remains in the activity list.");
@@ -557,7 +576,7 @@ export function CatalystDataToolsPanel({
                 ) : <StateBlock kind="empty" title={l("No processing activity")} detail={l("Uploading a document will start its first review run.")} />}
           </Panel>
 
-          <Panel title={l("Review queue")} meta={reviewQueue ? `${reviewQueue.items.length} ${l("review items")}` : l("PARSER AND GENERATED DRAFTS")}>
+          <Panel id="catalyst-queue" title={l("Review queue")} meta={reviewQueue ? `${reviewQueue.items.length} ${l("review items")}` : l("PARSER AND GENERATED DRAFTS")}>
             {loadErrors.reviewQueue ? <StateBlock kind="error" title={l("Review queue unavailable")} detail={l(loadErrors.reviewQueue)} action={<Button onClick={refresh}>{l("Try again")}</Button>} />
               : loading && reviewQueue === null ? <StateBlock kind="loading" title={l("Loading review queue")} detail={l("Reading parser warnings and generated drafts.")} />
                 : reviewQueue ? (
@@ -569,7 +588,7 @@ export function CatalystDataToolsPanel({
                         return <article className="catalyst-tools__run" key={item.id}>
                           <div className="catalyst-tools__run-heading">
                             <strong>{l(reviewItemLabel(item.kind))}</strong>
-                            <StatusPill value={l(item.state)} />
+                            <StatusPill value={l(item.state)} tone={statusTone(item.state)} />
                           </div>
                           <p>{l(userFacingWarning(item.code, item.message))}</p>
                           <p>{l("Source revision")} {item.sourceRevisionId} · {l("Processing run")} {item.processingRunId}</p>
@@ -604,7 +623,7 @@ export function CatalystDataToolsPanel({
                     </div> : null}
                     {reviewQueue.generatedDrafts.length > 0 ? <div className="catalyst-tools__run-list">
                       {reviewQueue.generatedDrafts.map((draft) => <article className="catalyst-tools__run" key={draft.id}>
-                        <div className="catalyst-tools__run-heading"><strong>{l("Generated draft")} · {l("Revision")} {draft.revision}</strong><StatusPill value={l("DRAFT")} /></div>
+                        <div className="catalyst-tools__run-heading"><strong>{l("Generated draft")} · {l("Revision")} {draft.revision}</strong><StatusPill value={l("DRAFT")} tone={statusTone("DRAFT")} /></div>
                         <p>{draft.blockCount} {l("draft passages")} · {formatDate(draft.createdAt)}</p>
                         {draft.processingRunId ? <p>{l("Processing run")} {draft.processingRunId}</p> : null}
                         <Button disabled={busyAction !== null} onClick={() => void openGeneratedDraft(draft)}>{l("Review generated draft")}</Button>
@@ -617,7 +636,7 @@ export function CatalystDataToolsPanel({
                 ) : <StateBlock kind="empty" title={l("No open review items")} detail={l("Parser warnings and generated drafts will appear here.")} />}
           </Panel>
 
-          <Panel title={l("Review passages and generated drafts")} meta={revisions ? `${revisions.length} ${l("revisions")}` : l("IMMUTABLE REVISIONS")} className="catalyst-tools__revision-panel">
+          <Panel id="catalyst-review" title={l("Review passages and generated drafts")} meta={revisions ? `${revisions.length} ${l("revisions")}` : l("IMMUTABLE REVISIONS")} className="catalyst-tools__revision-panel">
             {loadErrors.revisions ? <StateBlock kind="error" title={l("Content revisions unavailable")} detail={l(loadErrors.revisions)} action={<Button onClick={refresh}>{l("Try again")}</Button>} />
               : loading && revisions === null ? <StateBlock kind="loading" title={l("Loading content")} detail={l("Reading revision history from Catalyst.")} />
                 : revisions && revisions.length > 0 ? (
@@ -632,7 +651,7 @@ export function CatalystDataToolsPanel({
                           })}
                         </select>
                       </Field>
-                      {selectedRevision ? <StatusPill value={l(selectedRevision.state)} /> : null}
+                      {selectedRevision ? <StatusPill value={l(selectedRevision.state)} tone={statusTone(selectedRevision.state)} /> : null}
                     </div>
                     {selectedRevision?.reviewNote ? <p className="catalyst-tools__review-note">{l("Review note:")} {selectedRevision.reviewNote}</p> : null}
                     <p className="catalyst-tools__policy-guidance">{l("Content use is blocked by default. Choose the package and allowed use for each passage, add its allowed people or groups, and approve the revision when review is complete.")}</p>
@@ -652,7 +671,7 @@ export function CatalystDataToolsPanel({
                                 onChange={(next) => updateBlockEdit(block, next)}
                                 onSave={() => void saveBlock(block)}
                               />)}
-                              {blocks.length < blockTotal ? <Button disabled={blocksLoading} onClick={() => void loadMoreBlocks()}>{blocksLoading ? l("Loading...") : l("Load more passages")}</Button> : null}
+                              {blocks.length < blockTotal ? <Button className="catalyst-tools__load-more" disabled={blocksLoading} loading={blocksLoading} onClick={() => void loadMoreBlocks()}>{blocksLoading ? l("Loading...") : l("Load more passages")}</Button> : null}
                             </div>
                           )}
 
@@ -662,13 +681,13 @@ export function CatalystDataToolsPanel({
                           <textarea value={reviewNote} rows={2} onChange={(event) => setReviewNote(event.target.value)} placeholder={l("Add a note for the review record")} />
                         </Field>
                         <div className="form-actions">
-                          <Button tone="primary" disabled={busyAction !== null || approvalBlocked} onClick={() => void perform("approve", async () => {
+                          <Button tone="primary" disabled={busyAction !== null || approvalBlocked} loading={busyAction === "approve"} onClick={() => void perform("approve", async () => {
                             const reviewed = await client.reviewContent(selectedRevision.id, "APPROVE", reviewNote);
                             setRevisions((current) => replaceRevision(current, reviewed));
                             setReviewNote("");
                             setNotice(locale === "zh-CN" ? `内容修订 ${reviewed.revision} 已批准。` : `Content revision ${reviewed.revision} is approved.`);
                           })}>{l("Approve content")}</Button>
-                          <Button tone="danger" disabled={busyAction !== null} onClick={() => void perform("reject", async () => {
+                          <Button tone="danger" disabled={busyAction !== null} loading={busyAction === "reject"} onClick={() => void perform("reject", async () => {
                             const reviewed = await client.reviewContent(selectedRevision.id, "REJECT", reviewNote);
                             setRevisions((current) => replaceRevision(current, reviewed));
                             setReviewNote("");
@@ -683,7 +702,7 @@ export function CatalystDataToolsPanel({
                 ) : <StateBlock kind="empty" title={l("No content to review yet")} detail={l("Upload and process a PDF or DOCX file to create the first content revision.")} />}
           </Panel>
 
-          <Panel title={l("Build knowledge and training packages")} meta={<span className="mono-label">{l("TWO EXPLICIT RECIPES")}</span>}>
+          <Panel id="catalyst-build" title={l("Build knowledge and training packages")} meta={<span className="mono-label">{l("TWO EXPLICIT RECIPES")}</span>}>
             {!approvedRevision ? (
               <StateBlock kind="empty" title={l("Approve content before building")} detail={l("Select an approved revision or review and approve the current passages first.")} />
             ) : (
@@ -696,7 +715,7 @@ export function CatalystDataToolsPanel({
                     <span className="eyebrow">{l("KNOWLEDGE")}</span>
                     <h3>{l("Searchable knowledge package")}</h3>
                     <p>{l("Build cited passages with page locations, source history, and use policies.")}</p>
-                    <Button tone="primary" disabled={busyAction !== null} onClick={() => void perform("buildKnowledge", () => startRun({ operation: "buildKnowledge", contentRevisionId: approvedRevision.id }))}>
+                    <Button disabled={busyAction !== null} loading={busyAction === "buildKnowledge"} onClick={() => void perform("buildKnowledge", () => startRun({ operation: "buildKnowledge", contentRevisionId: approvedRevision.id }))}>
                       {busyAction === "buildKnowledge" ? l("Starting...") : l("Build knowledge package")}
                     </Button>
                     {selectedKnowledgeRunId ? <small>{l("Ready to publish from the latest successful run.")}</small> : null}
@@ -717,7 +736,7 @@ export function CatalystDataToolsPanel({
                       <PercentField label={l("Test %")} value={testPercent} onChange={setTestPercent} />
                     </div>
                     {!splitIsValid ? <p className="inline-error">{l("Split percentages must add up to 100.")}</p> : null}
-                    <Button tone="primary" disabled={busyAction !== null || !splitIsValid} onClick={() => void perform("prepareSft", () => startRun({
+                    <Button disabled={busyAction !== null || !splitIsValid} loading={busyAction === "prepareSft"} onClick={() => void perform("prepareSft", () => startRun({
                       operation: "prepareSft",
                       contentRevisionId: approvedRevision.id,
                       config: {
@@ -739,7 +758,7 @@ export function CatalystDataToolsPanel({
                     <label className="field"><span className="field__label">{l("Maximum examples")}</span><input type="number" min={1} max={500} value={maxExamples} onChange={(event) => setMaxExamples(Number(event.target.value))} /></label>
                     <label className="field"><span className="field__label">{l("Maximum model calls")}</span><input type="number" min={1} max={100} value={maxCalls} onChange={(event) => setMaxCalls(Number(event.target.value))} /></label>
                   </div>
-                  <Button disabled={busyAction !== null || maxExamples < 1 || maxCalls < 1} onClick={() => void perform("generateQa", () => startRun({
+                  <Button disabled={busyAction !== null || maxExamples < 1 || maxCalls < 1} loading={busyAction === "generateQa"} onClick={() => void perform("generateQa", () => startRun({
                     operation: "generateQa",
                     contentRevisionId: approvedRevision.id,
                     config: { generation: { maxExamples, maxCalls } },
@@ -749,11 +768,11 @@ export function CatalystDataToolsPanel({
             )}
           </Panel>
 
-          <Panel title={l("Published data versions")} meta={versions ? `${versions.length} ${l("versions")}` : l("IMMUTABLE VERSIONS")}>
+          <Panel id="catalyst-versions" title={l("Published data versions")} meta={versions ? `${versions.length} ${l("versions")}` : l("IMMUTABLE VERSIONS")}>
             {approvedRevision && selectedKnowledgeRunId && selectedSftRunId ? (
               <div className="catalyst-tools__publish-bar">
                 <div><strong>{l("Ready to publish")}</strong><span>{l("One version will include both approved package artifacts.")}</span></div>
-                <Button tone="primary" disabled={busyAction !== null} onClick={() => void perform("publish", async () => {
+                <Button tone={selectedRevision?.state === "DRAFT" ? undefined : "primary"} disabled={busyAction !== null} loading={busyAction === "publish"} onClick={() => void perform("publish", async () => {
                   const version = await client.publishVersion(datasetId, {
                     contentRevisionId: approvedRevision.id,
                     knowledgeRunId: selectedKnowledgeRunId,
@@ -810,7 +829,7 @@ function BlockEditor({
       <div className="catalyst-tools__block-heading">
         <strong>{`${l(blockKindLabel(block.kind))} · ${l("Block")} ${block.ordinal + 1}`}</strong>
         <span>{blockLocation(block, locale)}</span>
-        <StatusPill value={l(blockOriginLabel(block.origin))} />
+        <StatusPill value={l(blockOriginLabel(block.origin))} tone={block.origin === "GENERATED" ? "warn" : "muted"} />
       </div>
       <label className="field catalyst-tools__block-text">
         <span className="field__label">{l("Passage text")}</span>
@@ -855,7 +874,7 @@ function BlockEditor({
         />
         <small>{l("Leave blank to deny access to this passage.")}</small>
       </label>
-      {!disabled ? <div className="catalyst-tools__block-actions"><Button disabled={saving || !edit || (edit.text === block.text && samePolicy(edit.policy, block.policy))} onClick={onSave}>{saving ? l("Saving...") : l("Save new revision")}</Button></div> : null}
+      {!disabled ? <div className="catalyst-tools__block-actions"><Button disabled={saving || !edit || (edit.text === block.text && samePolicy(edit.policy, block.policy))} loading={saving} onClick={onSave}>{saving ? l("Saving...") : l("Save new revision")}</Button></div> : null}
     </article>
   );
 }
@@ -867,20 +886,107 @@ function PercentField({ label, value, onChange }: { label: string; value: number
 function VersionCard({ version, locale, busyAction, onDownload }: { version: DatasetVersion; locale: "zh-CN" | "en-US"; busyAction: string | null; onDownload: (profile: "knowledge" | "sft") => void }) {
   const l = (value: string) => catalystText(value, locale);
   const tools = version.dataTools;
+  const versionState = tools?.stale ? "OUT OF DATE" : tools ? "CURRENT" : "LEGACY VERSION";
   return (
     <article className="catalyst-tools__version">
       <div className="catalyst-tools__version-heading">
-        <div><strong>{l("Dataset version")}</strong><span className="catalyst-tools__version-id">{version.id}</span></div>
-        <StatusPill value={l(tools?.stale ? "OUT OF DATE" : tools ? "CURRENT" : "LEGACY VERSION")} />
+        <div><strong>{l("Dataset version")}</strong><span className="catalyst-tools__version-id dh-id">{version.id}</span></div>
+        <StatusPill value={l(versionState)} tone={statusTone(versionState)} />
       </div>
       <p>{formatDate(version.publishedAt ?? version.createdAt)}</p>
-      {tools ? <p>{l("Content revision")} {tools.contentRevisionId} · {tools.sourceRevisionIds.length} {l("source revisions")}</p> : <p>{l("This version was published through the existing preparation flow.")}</p>}
+      {tools ? <p>{l("Content revision")} <span className="dh-id">{tools.contentRevisionId}</span> · {tools.sourceRevisionIds.length} {l("source revisions")}</p> : <p>{l("This version was published through the existing preparation flow.")}</p>}
       {tools ? <div className="catalyst-tools__download-actions">
-        <Button disabled={busyAction !== null} onClick={() => onDownload("knowledge")}>{l("Download knowledge package")}</Button>
-        <Button disabled={busyAction !== null} onClick={() => onDownload("sft")}>{l("Download training package")}</Button>
+        <Button disabled={busyAction !== null} loading={busyAction === `download:${version.id}:knowledge`} onClick={() => onDownload("knowledge")}>{l("Download knowledge package")}</Button>
+        <Button disabled={busyAction !== null} loading={busyAction === `download:${version.id}:sft`} onClick={() => onDownload("sft")}>{l("Download training package")}</Button>
       </div> : <span className="catalyst-tools__legacy-note">{l("Package downloads are available for data-tools versions.")}</span>}
     </article>
   );
+}
+
+interface CatalystWorkflowInput {
+  locale: "zh-CN" | "en-US";
+  sources: SourceRevision[] | null;
+  runs: ProcessingRun[] | null;
+  revisions: ContentRevision[] | null;
+  versions: DatasetVersion[] | null;
+  unavailable: LoadErrors;
+  selectedRevision: ContentRevision | null;
+  approvedRevision: ContentRevision | null;
+  selectedRuns: ProcessingRun[];
+  knowledgeReady: boolean;
+  sftReady: boolean;
+}
+
+/**
+ * Derive the document workflow horizon from data already loaded by the panel.
+ * A list that is still loading or failed to load never reads as an empty result.
+ * 中文：仅根据面板已读取的数据推导文档流程进度，不额外请求接口；读取中或读取失败
+ *       的列表不会被显示成“没有数据”。
+ */
+function catalystWorkflow(input: CatalystWorkflowInput): WorkflowStep[] {
+  const zh = input.locale === "zh-CN";
+  const tx = (chinese: string, english: string) => zh ? chinese : english;
+  const isFailed = (run: ProcessingRun) => run.state === "FAILED" || run.state === "INTERRUPTED";
+  const mark = (step: WorkflowStep, state: WorkflowStepState, detail: string) => { step.state = state; step.detail = detail; };
+  const loadingText = tx("读取中…", "Loading…");
+  const unavailableText = tx("无法读取", "Unavailable");
+
+  const upload: WorkflowStep = { id: "upload", label: tx("上传原文", "Upload"), targetId: "catalyst-sources", state: "pending", detail: tx("尚无文件", "No files yet") };
+  if (input.unavailable.sources) mark(upload, "attention", unavailableText);
+  else if (input.sources === null) upload.detail = loadingText;
+  else if (input.sources.length > 0) {
+    const count = input.sources.length;
+    mark(upload, "done", tx(`${count} 个文件`, `${count} ${count === 1 ? "file" : "files"}`));
+  }
+
+  const extract: WorkflowStep = { id: "extract", label: tx("解析校对", "Extract"), targetId: "catalyst-activity", state: "pending", detail: tx("未开始", "Not started") };
+  if (input.unavailable.runs) mark(extract, "attention", unavailableText);
+  else if (input.runs === null) extract.detail = loadingText;
+  else {
+    const parseRuns = input.runs.filter((run) => run.operation === "parse");
+    const parsed = parseRuns.filter((run) => run.state === "SUCCEEDED").length;
+    const parseFailed = parseRuns.filter(isFailed).length;
+    if (parseRuns.some(isRunActive)) mark(extract, "running", tx("处理中", "Processing"));
+    else if (parsed > 0 && parseFailed > 0) mark(extract, "attention", tx(`${parseFailed} 个失败`, `${parseFailed} failed`));
+    else if (parsed > 0) mark(extract, "done", tx(`已解析 ${parsed} 个`, `${parsed} extracted`));
+    else if (parseFailed > 0) mark(extract, "blocked", tx("解析失败", "Failed"));
+  }
+
+  const revision = input.selectedRevision;
+  const review: WorkflowStep = { id: "review", label: tx("审核批准", "Review"), targetId: "catalyst-review", state: "pending", detail: tx("尚无修订", "No revision") };
+  if (input.unavailable.revisions) mark(review, "attention", unavailableText);
+  else if (input.revisions === null) review.detail = loadingText;
+  else if (revision?.state === "APPROVED") mark(review, "done", tx(`修订 ${revision.revision} 已批准`, `Rev ${revision.revision} approved`));
+  else if (revision?.state === "DRAFT") mark(review, "current", tx(`修订 ${revision.revision} 待审核`, `Rev ${revision.revision} · draft`));
+  else if (revision?.state === "REJECTED") mark(review, "blocked", tx(`修订 ${revision.revision} 已拒绝`, `Rev ${revision.revision} rejected`));
+  else if (input.revisions.length > 0) review.detail = tx(`${input.revisions.length} 个修订`, `${input.revisions.length} revisions`);
+
+  const buildRuns = input.selectedRuns.filter((run) => run.operation === "buildKnowledge" || run.operation === "prepareSft");
+  const built = Number(input.knowledgeReady) + Number(input.sftReady);
+  const buildFailed = !input.knowledgeReady && buildRuns.some((run) => run.operation === "buildKnowledge" && isFailed(run))
+    || !input.sftReady && buildRuns.some((run) => run.operation === "prepareSft" && isFailed(run));
+  const build: WorkflowStep = { id: "build", label: tx("构建数据包", "Build"), targetId: "catalyst-build", state: "pending", detail: tx("需先批准", "Needs approval") };
+  if (input.approvedRevision) {
+    if (input.runs === null && !input.unavailable.runs) build.detail = loadingText;
+    else if (buildRuns.some(isRunActive)) mark(build, "running", tx("构建中", "Building"));
+    else if (built === 2) mark(build, "done", tx("两个数据包已就绪", "Both packages built"));
+    else if (buildFailed) mark(build, built === 0 ? "blocked" : "attention", tx("构建失败", "Build failed"));
+    else mark(build, "current", tx(`已构建 ${built}/2`, `${built} of 2 built`));
+  } else if (input.revisions === null && !input.unavailable.revisions) {
+    build.detail = loadingText;
+  }
+
+  const publish: WorkflowStep = { id: "publish", label: tx("发布版本", "Publish"), targetId: "catalyst-versions", state: "pending", detail: tx("尚未发布", "Not published") };
+  if (input.unavailable.versions) mark(publish, "attention", unavailableText);
+  else if (input.versions === null) publish.detail = loadingText;
+  else if (input.approvedRevision && input.versions.some((version) => version.dataTools?.contentRevisionId === input.approvedRevision!.id)) mark(publish, "done", tx("已发布", "Published"));
+  else if (input.approvedRevision && built === 2) mark(publish, "current", tx("可以发布", "Ready to publish"));
+  else if (input.versions.length > 0) {
+    const count = input.versions.length;
+    publish.detail = tx(`${count} 个历史版本`, `${count} earlier ${count === 1 ? "version" : "versions"}`);
+  }
+
+  return [upload, extract, review, build, publish];
 }
 
 function sourceStatus(run: ProcessingRun | undefined): string {

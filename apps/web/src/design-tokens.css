@@ -1,0 +1,183 @@
+/* ---------------------------------------------------------------------------
+ * Module: src/design-tokens.css
+ * Role: DoHorizon Product Design System tokens shared by the Studio shell
+ *       (title bar, editor tabs, tool windows, status bar) and every Product
+ *       surface (Navigator pages, Catalyst data tools, Echo workbench).
+ * 中文：模块职责：DoHorizon 设计系统 token，由 Studio 外壳（标题栏、编辑区标签、
+ *       工具窗口、状态栏）与所有 Product 页面共用。
+ *
+ * Usage rules / 使用约定:
+ * - Surfaces step up by a few luminance points; separate with hairlines, not
+ *   shadows. 层级只靠轻微明度差与细线区分，不使用重阴影。
+ * - The coral→orchid gradient is reserved for horizon dividers, workflow
+ *   progress, and active indicators. Buttons, cards, and statuses never use it.
+ *   品牌渐变只用于地平线分隔、流程进度和激活指示。
+ * - The hollow diamond only appears on horizons (page header, workflow
+ *   progress, progress meters). Status markers are dots.
+ *   空心菱形只出现在地平线上；状态标记使用圆点。
+ * - One filled primary button per workflow: the action that advances the
+ *   current step. 每个流程只有一个实心主按钮，即推进当前步骤的动作。
+ * - Success / warning / danger keep their own hues; never reuse brand coral
+ *   for errors. 语义色独立于品牌色。
+ * - Monospace is for machine values only (UUID, digest, model id, paths).
+ *   等宽字体只用于机器值。
+ * --------------------------------------------------------------------------- */
+
+:root {
+  /* Neutral ramp — cool violet-gray sampled from dohorizon.com (dark). */
+  --dh-gray-0: #0f1115;
+  --dh-gray-50: #121419;
+  --dh-gray-100: #15171d;
+  --dh-gray-150: #1a1c23;
+  --dh-gray-200: #1e2129;
+  --dh-gray-250: #242731;
+  --dh-gray-300: #2a2d37;
+  --dh-gray-350: #393d4a;
+  --dh-gray-400: #4a4f5c;
+  --dh-gray-500: #5f6372;
+  --dh-gray-600: #77757f;
+  --dh-gray-700: #8f8d9a;
+  --dh-gray-800: #b4b1bc;
+  --dh-gray-900: #f2f0ec;
+  --dh-white: #ffffff;
+
+  /* Brand. */
+  --dh-coral: #e4958f;
+  --dh-orchid: #bd83cf;
+  --dh-brand-mid: #d18caf;
+  --dh-gradient: linear-gradient(90deg, var(--dh-coral) 0%, var(--dh-orchid) 100%);
+  --dh-gradient-vertical: linear-gradient(180deg, var(--dh-coral) 0%, var(--dh-orchid) 100%);
+  --dh-gradient-mark: linear-gradient(140deg, var(--dh-coral) 0%, var(--dh-orchid) 100%);
+
+  /* Surfaces. */
+  --dh-bg-canvas: var(--dh-gray-100);
+  --dh-bg-sheet: var(--dh-gray-150);
+  --dh-bg-raised: var(--dh-gray-200);
+  --dh-bg-hover: var(--dh-gray-250);
+  --dh-bg-selected: var(--dh-gray-250);
+  --dh-bg-active: var(--dh-gray-300);
+  --dh-bg-field: #1f2229;
+  --dh-bg-inset: var(--dh-gray-50);
+  --dh-bg-well: var(--dh-gray-100);
+
+  /* Lines. */
+  --dh-border-subtle: #22252e;
+  --dh-border: var(--dh-gray-300);
+  --dh-border-strong: var(--dh-gray-350);
+  --dh-border-hover: var(--dh-gray-400);
+
+  /* Text. */
+  --dh-text-primary: var(--dh-gray-900);
+  --dh-text-secondary: var(--dh-gray-800);
+  --dh-text-tertiary: var(--dh-gray-700);
+  --dh-text-placeholder: #7f7d8a;
+  --dh-text-disabled: var(--dh-gray-600);
+  --dh-text-inverse: var(--dh-gray-100);
+
+  /* Semantic states — independent from the brand hues. */
+  --dh-success: #6cc9a0;
+  --dh-success-soft: rgb(108 201 160 / 0.09);
+  --dh-success-line: rgb(108 201 160 / 0.32);
+  --dh-warning: #e0b25c;
+  --dh-warning-soft: rgb(224 178 92 / 0.09);
+  --dh-warning-line: rgb(224 178 92 / 0.34);
+  --dh-danger: #f06c6c;
+  --dh-danger-soft: rgb(240 108 108 / 0.09);
+  --dh-danger-line: rgb(240 108 108 / 0.36);
+  --dh-info: var(--dh-orchid);
+  --dh-info-soft: rgb(189 131 207 / 0.09);
+  --dh-info-line: rgb(189 131 207 / 0.34);
+  --dh-neutral-soft: rgb(242 240 236 / 0.03);
+
+  /* Focus and interaction states. */
+  --dh-focus: var(--dh-orchid);
+  --dh-focus-ring: 0 0 0 3px rgb(189 131 207 / 0.22);
+  --dh-indicator: var(--dh-orchid);
+  --dh-selection: rgb(189 131 207 / 0.34);
+  --dh-pulse: rgb(189 131 207 / 0.5);
+  --dh-pulse-fade: rgb(189 131 207 / 0);
+  --dh-primary-bg: var(--dh-gray-900);
+  --dh-primary-bg-hover: var(--dh-white);
+  --dh-primary-bg-active: #d9d6cf;
+  --dh-primary-bg-disabled: rgb(242 240 236 / 0.13);
+  --dh-primary-fg-disabled: rgb(242 240 236 / 0.42);
+  --dh-danger-press: rgb(240 108 108 / 0.16);
+  --dh-danger-line-disabled: rgb(240 108 108 / 0.18);
+  --dh-danger-fg-disabled: rgb(240 108 108 / 0.45);
+  --dh-shadow-overlay: 0 10px 28px rgb(0 0 0 / 0.36);
+
+  /* Typography. Space Grotesk is a display face: titles, eyebrows, numerals.
+   * 中文：Space Grotesk 只用于标题、眉题与数字；控件与正文使用系统字体。 */
+  --dh-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --dh-font-display: "Space Grotesk Variable", "Space Grotesk", var(--dh-font-sans);
+  --dh-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  --dh-fs-micro: 10.5px;
+  --dh-fs-xs: 11px;
+  --dh-fs-mono: 11.5px;
+  --dh-fs-sm: 12px;
+  --dh-fs-base: 13px;
+  --dh-fs-md: 14px;
+  --dh-fs-lg: 16px;
+  --dh-fs-xl: 19px;
+  --dh-fs-2xl: 25px;
+  --dh-fs-metric: 25px;
+  --dh-lh-tight: 1.2;
+  --dh-lh-body: 1.5;
+  --dh-tracking-caps: 0.08em;
+  --dh-tracking-eyebrow: 0.16em;
+
+  /* Spacing — 4px grid. */
+  --dh-space-1: 4px;
+  --dh-space-2: 8px;
+  --dh-space-3: 12px;
+  --dh-space-4: 16px;
+  --dh-space-5: 20px;
+  --dh-space-6: 24px;
+  --dh-space-8: 32px;
+  --dh-space-10: 40px;
+  --dh-space-12: 48px;
+
+  /* Shape — small radii keep sheets from reading as SaaS cards. */
+  --dh-radius-xs: 2px;
+  --dh-radius-sm: 3px;
+  --dh-radius-md: 4px;
+  --dh-radius-lg: 6px;
+  --dh-radius-pill: 999px;
+
+  /* Controls. */
+  --dh-control-h-sm: 26px;
+  --dh-control-h: 30px;
+  --dh-control-h-lg: 34px;
+
+  /* Motion. */
+  --dh-dur-fast: 120ms;
+  --dh-dur: 160ms;
+  --dh-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout. */
+  --dh-content-max: 1560px;
+  --dh-horizon-lead: 120px;
+}
+
+/* Compatibility aliases for Product modules that predate the --dh-* tokens.
+ * Scoped so generic names never leak into the Studio shell.
+ * 中文：旧变量名兼容层，仅限 Product 工作区，避免通用变量名影响外壳；新代码请直接使用 --dh-* token。 */
+.product-workspace {
+  --ink: var(--dh-bg-canvas);
+  --ink-soft: var(--dh-bg-field);
+  --panel: var(--dh-bg-sheet);
+  --panel-strong: var(--dh-bg-raised);
+  --line: var(--dh-border);
+  --line-strong: var(--dh-border-strong);
+  --text: var(--dh-text-primary);
+  --muted: var(--dh-text-secondary);
+  --faint: var(--dh-text-tertiary);
+  --lime: var(--dh-success);
+  --lime-dark: var(--dh-success-soft);
+  --orange: var(--dh-warning);
+  --blue: var(--dh-info);
+  --red: var(--dh-danger);
+  --mono: var(--dh-font-mono);
+  --sans: var(--dh-font-sans);
+  --color-bg-subtle: var(--dh-bg-inset);
+}
