@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { pipeline as pipe } from "node:stream/promises";
-import { productPermission } from "../../tooling/product-proxy";
+import { admittedLoopbackTarget, directProductId, directProductUpstreamPath, productPermission, type DirectProductId } from "../../tooling/product-proxy";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { StoreFactory } from "../../packages/control-storage";
@@ -40,6 +40,8 @@ export interface ControlOptions {
   publicOrigins: string[];
   workspaceId?: string;
   navigatorUrl?: string;
+  /** Explicit server-side Product origins and credentials for local-only direct mode. */
+  productTargets?: Partial<Record<DirectProductId, { origin: string; token: string }>>;
   /** Dedicated local stdio clients; never exposed through a browser endpoint. */
   localApiToken?: string;
   loadPackages?: () => Promise<unknown[]>;
@@ -87,6 +89,20 @@ export function createControlApplication(options: ControlOptions) {
   const origins = options.publicOrigins.map(raw => new URL(raw).origin);
   if (!origins.length) throw new Error("At least one public origin is required");
   if (options.mode === "local" && origins.some(origin => !["127.0.0.1", "localhost", "[::1]"].includes(new URL(origin).hostname))) throw new Error("Local mode only admits loopback origins");
+  const directProductEnabled = Object.values(options.productTargets ?? {}).some(Boolean);
+  if (directProductEnabled) {
+    if (options.mode !== "local" || options.navigatorUrl) throw new Error("Direct Product origins are available only in local mode without Navigator.");
+    if (!options.productTargets?.catalyst) throw new Error("Direct Product mode requires an explicit Catalyst origin and credential.");
+    for (const [service, target] of Object.entries(options.productTargets)) {
+      if (!target) continue;
+      if (admittedLoopbackTarget(target.origin) !== target.origin) throw new Error(`${service} direct Product origin must be a canonical loopback origin.`);
+      if (!target.token || target.token !== target.token.trim() || target.token.length > 8192 || /[\r\n]/.test(target.token)) throw new Error(`${service} direct Product credential is invalid.`);
+    }
+    if (options.publicOrigins.some(raw => {
+      const parsed = new URL(raw);
+      return raw !== parsed.origin;
+    })) throw new Error("Direct Product mode requires exact public origin values without paths or credentials.");
+  }
   const workspaceId = options.workspaceId ?? "local";
   const localToken = randomBytes(32).toString("hex");
   const pipelineStore = options.stores.state("pipelines", pipelineDatabase, emptyPipelineDatabase);
@@ -130,6 +146,10 @@ export function createControlApplication(options: ControlOptions) {
     const context = await team.authenticate(cookie(req), "browser");
     if (mutation && (typeof req.headers["x-studio-control-token"] !== "string" || !secretEqual(req.headers["x-studio-control-token"], context.csrf))) throw new ControlError("FORBIDDEN", "缺少有效的会话 CSRF 凭据。", 403);
     return context;
+  }
+  function authorizeDirectProductMutation(req: IncomingMessage) {
+    const csrf = req.headers["x-csrf-token"];
+    if (typeof csrf !== "string" || !secretEqual(csrf, localToken)) throw new ControlError("FORBIDDEN", "缺少有效的本地会话 CSRF 凭据。", 403);
   }
   const groups = new Map<string, { commands: Record<string, { readOnly: boolean; scope?: string; description?: string }>; execute(raw: unknown, actor: Actor): Promise<unknown> }>([
     ["/studio-pipelines", { commands: pipelineCommands, execute: (raw, actor) => pipelines.execute(raw, actor) }],
@@ -253,7 +273,16 @@ export function createControlApplication(options: ControlOptions) {
         const permission = productPermission(req.method ?? "GET", path);
         const legacy = allowedSettingsRequest(req.method ?? "GET", path);
         if (!permission && !legacy) throw new ControlError("STUDIO_SETTINGS_ONLY", "此代理只允许节点设置接口。", 403);
-        const { actor } = await authorize(req, !!permission && !legacy && req.method !== "GET");
+        const directService = directProductId(path);
+        const directProductRequest = directProductEnabled && !!directService;
+        const localSessionCompatibility = directProductEnabled && path === "/api/v1/auth/session" && ["GET", "DELETE"].includes(req.method ?? "GET");
+        if (directProductRequest || localSessionCompatibility) {
+          originBoundary(req);
+          if (req.headers.authorization) throw new ControlError("FORBIDDEN", "本地 Product 会话不接受浏览器 Bearer 凭据。", 403);
+        }
+        const directMutation = (directProductRequest || localSessionCompatibility) && req.method !== "GET" && req.method !== "HEAD";
+        const context = await authorize(req, !directProductRequest && !localSessionCompatibility && !!permission && !legacy && req.method !== "GET");
+        const { actor } = context;
         if (permission && !actor.scopes.includes(permission)) throw new ControlError("FORBIDDEN", "没有此产品操作权限。", 403);
         // Product settings already use Navigator's CSRF protocol. Team writes
         // additionally require Studio editor permission; browser Origin is checked.
@@ -266,14 +295,38 @@ export function createControlApplication(options: ControlOptions) {
           || path === "/api/v1/navigator/tasks" || path.startsWith("/api/v1/navigator/tasks/")) {
           if (!actor.workspaceIds.includes(workspaceId)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
         }
-        if (!options.navigatorUrl) throw new ControlError("STUDIO_HOST_NOT_CONFIGURED", "尚未配置 Navigator。", 503);
-        const headers = new Headers();
-        for (const name of ["content-type", "accept", "last-event-id", "x-csrf-token", "idempotency-key", "origin", "host"]) {
-          const value = req.headers[name]; if (typeof value === "string") headers.set(name, value);
+        if (localSessionCompatibility) {
+          if (directMutation) authorizeDirectProductMutation(req);
+          if (req.method === "GET") return send(res, 200, {
+            authenticated: true,
+            state: "AUTHENTICATED",
+            sessionId: "local",
+            expiresAt: null,
+            refreshExpiresAt: null,
+            refreshable: false,
+            csrfToken: context.csrf,
+            refreshed: false,
+          });
+          return send(res, 200, { ok: true });
         }
-        const upstreamCookies = (req.headers.cookie ?? "").split(";").filter(p => !p.trim().startsWith(`${cookieName}=`)).join(";");
-        if (upstreamCookies) headers.set("cookie", upstreamCookies);
-        if (path === "/api/proxy/exchange-gateway/v1/chat/completions" && typeof req.headers["x-product-authorization"] === "string") headers.set("authorization", req.headers["x-product-authorization"]);
+        const directTarget = directProductRequest ? options.productTargets?.[directService!] : undefined;
+        if (directProductRequest && !directTarget) throw new ControlError("STUDIO_HOST_NOT_CONFIGURED", "尚未配置此 Product 服务。", 503);
+        if (directMutation) authorizeDirectProductMutation(req);
+        if (!directTarget && !options.navigatorUrl) throw new ControlError("STUDIO_HOST_NOT_CONFIGURED", "尚未配置 Navigator。", 503);
+        const headers = new Headers();
+        if (directTarget) {
+          for (const name of ["content-type", "accept", "last-event-id", "idempotency-key", "if-match", "if-none-match", "if-range", "range"]) {
+            const value = req.headers[name]; if (typeof value === "string") headers.set(name, value);
+          }
+          headers.set("authorization", `Bearer ${directTarget.token}`);
+        } else {
+          for (const name of ["content-type", "accept", "last-event-id", "x-csrf-token", "idempotency-key", "origin", "host"]) {
+            const value = req.headers[name]; if (typeof value === "string") headers.set(name, value);
+          }
+          const upstreamCookies = (req.headers.cookie ?? "").split(";").filter(p => !p.trim().startsWith(`${cookieName}=`)).join(";");
+          if (upstreamCookies) headers.set("cookie", upstreamCookies);
+          if (path === "/api/proxy/exchange-gateway/v1/chat/completions" && typeof req.headers["x-product-authorization"] === "string") headers.set("authorization", req.headers["x-product-authorization"]);
+        }
         let body: Buffer | undefined;
         if (req.method !== "GET" && req.method !== "HEAD") {
           const limit = /^\/api\/v1\/catalyst\/datasets\/[^/]+\/preparations$/.test(path)
@@ -290,13 +343,22 @@ export function createControlApplication(options: ControlOptions) {
         const closed = () => abort.abort(); res.once("close", closed);
         const deadline = setTimeout(() => abort.abort(), 10000);
         let upstream: Response;
-        try { upstream = await fetch(`${options.navigatorUrl}${navigatorUpstreamPath(req.url ?? path, workspaceId)}`, { method: req.method, headers, body: body ? new Uint8Array(body) : undefined, redirect: "manual", signal: abort.signal }); }
+        const upstreamUrl = directTarget
+          ? `${directTarget.origin}${directProductUpstreamPath(req.url ?? path)}`
+          : `${options.navigatorUrl}${navigatorUpstreamPath(req.url ?? path, workspaceId)}`;
+        try { upstream = await fetch(upstreamUrl, { method: req.method, headers, body: body ? new Uint8Array(body) : undefined, redirect: "manual", signal: abort.signal }); }
         catch (error) { res.off("close", closed); throw error; }
         finally { clearTimeout(deadline); }
         res.statusCode = upstream.status;
         res.setHeader("cache-control", "no-store");
         res.setHeader("content-type", upstream.headers.get("content-type") ?? "application/json");
-        const cookies = upstream.headers.getSetCookie(); if (cookies.length) res.setHeader("set-cookie", cookies);
+        if (directTarget) {
+          for (const name of ["content-disposition", "etag", "last-modified", "content-range", "accept-ranges"]) {
+            const value = upstream.headers.get(name); if (value) res.setHeader(name, value);
+          }
+        } else {
+          const cookies = upstream.headers.getSetCookie(); if (cookies.length) res.setHeader("set-cookie", cookies);
+        }
         if (upstream.headers.get("content-type")?.includes("text/event-stream")) res.setHeader("x-accel-buffering", "no");
         try { if (upstream.body) await pipe(Readable.fromWeb(upstream.body as any), res); else res.end(); }
         finally { res.off("close", closed); abort.abort(); }
