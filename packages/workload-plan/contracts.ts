@@ -184,11 +184,11 @@ export const workloadSelectedComponentSchema = z.object({
   version: z.string().min(1).max(128),
   targetId: workloadTargetId,
   artifactKind: z.string().min(1).max(80),
-  releaseId: z.string().min(1).max(200).nullable(),
+  releaseId: z.string().min(1).max(200),
   manifestUri: z.string().url().refine(value => value.startsWith("https://"), "Expected an HTTPS manifest URL.").nullable(),
-  manifestDigest: nullableDigest,
-  manifestAssetDigest: nullableDigest,
-  digest: nullableDigest,
+  manifestDigest: digest,
+  manifestAssetDigest: digest,
+  digest,
   indexIdentity: indexIdentitySchema.nullable(),
   publisherIdentity: publisherIdentitySchema.nullable(),
   reason: z.string().min(1).max(128),
@@ -204,6 +204,9 @@ export const workloadSelectedComponentSchema = z.object({
 }).strict().superRefine((component, context) => {
   if (component.sourcePolicy === null && component.bindingId !== null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["bindingId"], message: "A source binding requires its catalog-authored source policy." });
+  }
+  if (component.artifactKind !== "plugin-package" && component.installationId !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["installationId"], message: "Non-plugin deployment components do not have Package Runtime installation IDs." });
   }
 });
 
@@ -264,11 +267,21 @@ export const workloadResolutionSchema = z.object({
     }
     result.selectedComponents.forEach((component, index) => {
       if ((component.artifactKind === "plugin-package" && component.installationId === null)
+        || (component.artifactKind !== "plugin-package" && component.installationId !== null)
         || component.installedIdentity === null || component.componentId !== result.selectionBinding.includeComponentIds[0]) {
         context.addIssue({ code: z.ZodIssueCode.custom, path: ["selectedComponents", index], message: "Uninstall rows must bind the selected component's exact installed identity." });
       }
     });
   }
+  result.selectedComponents.forEach((component, index) => {
+    if (result.action === "install" && (component.publisherIdentity === null || component.indexIdentity === null)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["selectedComponents", index], message: "Install rows must resolve through a verified publisher and release index." });
+    }
+    if (result.action === "install" && component.indexIdentity !== null
+      && stableJson(component.indexIdentity.publisherIdentity) !== stableJson(component.publisherIdentity)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["selectedComponents", index, "indexIdentity", "publisherIdentity"], message: "Install index publisher identity must match the selected component authority." });
+    }
+  });
   const expectedMaterial = {
     schemaVersion: result.schemaVersion,
     catalogDigest: result.catalogDigest,
@@ -322,7 +335,7 @@ const appliedComponentSchema = z.object({
   digest: nullableDigest,
   installationId: z.string().min(1).max(200).nullable(),
   installedIdentity: boundedJsonObjectSchema,
-  alreadyAbsent: z.boolean().optional(),
+  alreadyAbsent: z.literal(true).optional(),
 }).strict();
 
 /** Read-only local inventory result returned by the status operation. */
@@ -430,6 +443,12 @@ export const workloadApplyResultSchema = z.object({
   if (result.components.some(component => component.alreadyAbsent === true && (result.resolution.action !== "uninstall"
     || result.resolution.selectedComponents.find(selected => selected.componentId === component.componentId)?.artifactKind !== "plugin-package"))) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["components"], message: "alreadyAbsent is valid only for a plugin uninstall receipt." });
+  }
+  if (result.components.some((component, index) => {
+    const selected = result.resolution.selectedComponents[index];
+    return selected?.artifactKind !== "plugin-package" && component.installationId !== null;
+  })) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["components"], message: "Non-plugin deployment components do not have Package Runtime installation IDs." });
   }
 });
 

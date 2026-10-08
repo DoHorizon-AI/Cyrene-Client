@@ -11,6 +11,7 @@ import {
   workloadPlanHelperEnvelopeSchema,
   workloadPlanHelperRequestSchema,
   workloadResolutionSchema,
+  workloadSelectedComponentSchema,
   workloadStageResultSchema,
   workloadStatusResultSchema,
   stableJson,
@@ -140,7 +141,9 @@ function makeApplyResult(resolved = resolution) {
       componentId: component.componentId,
       version: component.version,
       digest: component.digest,
-      installationId: uninstall ? component.installationId : component.installationId ?? "installation-1",
+      installationId: component.artifactKind === "plugin-package"
+        ? uninstall ? component.installationId : component.installationId ?? "installation-1"
+        : null,
       installedIdentity: component.installedIdentity ?? { componentId: component.componentId, installationId: "installation-1" },
     })),
     resolution: resolved,
@@ -150,6 +153,26 @@ function makeApplyResult(resolved = resolution) {
 }
 
 describe("local workload plan contract and bridge", () => {
+  it("requires release identity digests and keeps Package Runtime IDs off typed deployments", () => {
+    expect(() => workloadSelectedComponentSchema.parse({ ...selectedComponents[0], releaseId: null })).toThrow();
+    expect(() => workloadSelectedComponentSchema.parse({ ...selectedComponents[0], manifestDigest: null })).toThrow();
+    expect(() => workloadSelectedComponentSchema.parse({ ...selectedComponents[0], manifestAssetDigest: null })).toThrow();
+    expect(() => workloadSelectedComponentSchema.parse({ ...selectedComponents[0], digest: null })).toThrow();
+    expect(() => workloadSelectedComponentSchema.parse({ ...selectedComponents[0], installationId: "invented-installation-id" })).toThrow("Package Runtime installation IDs");
+  });
+
+  it("requires install candidates to carry the verified catalog publisher and index", () => {
+    for (const field of ["publisherIdentity", "indexIdentity"] as const) {
+      const invalidResolution = JSON.parse(JSON.stringify(resolution)) as Record<string, any>;
+      invalidResolution.selectedComponents[0][field] = null;
+      invalidResolution.planDigestMaterial.selectedComponents[0][field] = null;
+      const digestValue = `sha256:${createHash("sha256").update(stableJson(invalidResolution.planDigestMaterial), "utf8").digest("hex")}`;
+      invalidResolution.planDigest = digestValue;
+      invalidResolution.planId = `plan-${digestValue.slice("sha256:".length, "sha256:".length + 32)}`;
+      expect(() => workloadResolutionSchema.parse(invalidResolution)).toThrow("verified publisher and release index");
+    }
+  });
+
   it("uses the fixed Linux workload CLI and refuses other host platforms", () => {
     const ubuntu2404 = 'ID=ubuntu\nVERSION_ID="24.04"\n';
     expect(resolveWorkloadHelperCommand("linux", "x64", ubuntu2404)).toEqual({ executable: "/usr/bin/cyrene", args: ["workload", "--json"] });
