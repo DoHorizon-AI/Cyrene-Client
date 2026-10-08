@@ -9,7 +9,7 @@ on:
         description: Exact merged Workspace authority commit used for schemas and Catalog v2
         required: false
         type: string
-        default: "0000000000000000000000000000000000000000"
+        default: "5d489807d49d29b75721b735ea04c1c844f64ddd"
 
 permissions:
   contents: read
@@ -35,7 +35,7 @@ jobs:
       SOURCE_COMMIT: ${{ github.sha }}
       SOURCE_REF: ${{ github.ref }}
       PREDICATE_TYPE: https://slsa.dev/provenance/v1
-      WORKSPACE_SCHEMA_SHA: ${{ github.event.inputs.schema_sha || '0000000000000000000000000000000000000000' }}
+      WORKSPACE_SCHEMA_SHA: ${{ github.event.inputs.schema_sha || '5d489807d49d29b75721b735ea04c1c844f64ddd' }}
 
     steps:
       - name: Check out the exact integration-branch source
