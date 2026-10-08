@@ -130,6 +130,8 @@ const ZH_MAP: Record<string, string> = {
   // Generic
   "Loading…": "加载中…",
   "Try again": "重试",
+  "Execution failed": "执行失败",
+  "No workloads available": "暂无可用的工作负载",
   "No description available.": "暂无说明。",
   "Installed version": "已安装版本",
   "Available version": "可用版本",

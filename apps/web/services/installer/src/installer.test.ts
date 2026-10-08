@@ -5,12 +5,14 @@
 // │                                                                          │
 // │  中文：模块职责：安装器契约辅助函数与 Mock 计划构建器的单元测试。              │
 // └─────────────────────────────────────────────────────────────────────────┘
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   MOCK_WORKLOAD_CATALOG,
   MOCK_COMPONENT_CATALOG,
   KNOWN_COMPONENT_IDS,
   type ComponentAffinity,
+  type InstallationPlan,
+  type InstallerOperationStatus,
 } from "./contracts";
 
 // ---------------------------------------------------------------------------
@@ -260,9 +262,20 @@ describe("DemoInstallerProvider", () => {
 });
 
 describe("RealInstallerProvider", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   it("unconfigured provider throws NotConnectedError on fetch", async () => {
     const provider = new RealInstallerProvider({ baseUrl: "" });
     expect(provider.isConnected).toBe(false);
+    expect(provider.isConfigured).toBe(false);
     await expect(provider.getWorkloadCatalog()).rejects.toThrow(NotConnectedError);
   });
 
@@ -276,6 +289,373 @@ describe("RealInstallerProvider", () => {
 
     const confErr = new PlanExpiredOrConflictError("conflict");
     expect(confErr.name).toBe("PlanExpiredOrConflictError");
+  });
+
+  it("distinguishes between configured baseUrl and verified service availability", async () => {
+    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
+    // Configured baseUrl alone does NOT mean connected/verified
+    expect(provider.isConfigured).toBe(true);
+    expect(provider.isConnected).toBe(false);
+
+    // Mock successful healthcheck
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: "healthy" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const verified = await provider.verifyConnection();
+    expect(verified).toBe(true);
+    expect(provider.isConnected).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "https://installer.api/v1/health",
+      expect.objectContaining({ method: "GET" }),
+    );
+
+    // Failed healthcheck leaves provider unverified
+    const failingProvider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response("Service Unavailable", { status: 503 }),
+    );
+    const failVerified = await failingProvider.verifyConnection();
+    expect(failVerified).toBe(false);
+    expect(failingProvider.isConnected).toBe(false);
+  });
+
+  it("unconnected/unverified provider causes zero real installation side-effects", async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
+    expect(provider.isConnected).toBe(false);
+
+    // executePlan must reject without calling fetch
+    await expect(provider.executePlan("plan-test")).rejects.toThrow(NotConnectedError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // executeComponentOperation must reject without calling fetch
+    await expect(
+      provider.executeComponentOperation({ componentId: "comp-1", operation: "install" }),
+    ).rejects.toThrow(NotConnectedError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // stream remains closed and reports error without calling fetch
+    let streamError: Error | null = null;
+    const unsub = provider.getOperationStream(
+      "op-1",
+      () => {},
+      (err) => {
+        streamError = err;
+      },
+    );
+    expect(streamError).toBeInstanceOf(NotConnectedError);
+    expect(fetchMock).not.toHaveBeenCalled();
+    unsub();
+  });
+
+  it("fetches workload/component catalogs and resolves plan with Authorization header", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/workloads")) {
+        return Promise.resolve(
+          new Response(JSON.stringify(MOCK_WORKLOAD_CATALOG), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.endsWith("/components")) {
+        return Promise.resolve(
+          new Response(JSON.stringify(MOCK_COMPONENT_CATALOG), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.endsWith("/plans/resolve")) {
+        const plan: InstallationPlan = {
+          planId: "plan-resolved-1",
+          catalogGeneration: 1,
+          workloadIds: ["catalyst"],
+          additionalComponentIds: [],
+          components: [],
+          totalDownloadBytes: 5000,
+          targetPlatform: { os: "linux", architecture: "x86_64" },
+          deploymentMode: "container",
+          permissionsRequired: [],
+          knownLimitations: [],
+          alreadyInstalledComponentIds: [],
+          resolvedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        };
+        return Promise.resolve(
+          new Response(JSON.stringify(plan), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({
+      baseUrl: "https://installer.api/v1",
+      authToken: "bearer-token-123",
+    });
+
+    const workloads = await provider.getWorkloadCatalog();
+    expect(workloads.workloads.length).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://installer.api/v1/workloads",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer bearer-token-123",
+        }),
+      }),
+    );
+
+    const components = await provider.getComponentCatalog();
+    expect(components.components.length).toBeGreaterThan(0);
+
+    const resolved = await provider.resolvePlan({
+      workloadIds: ["catalyst"],
+      manualComponentIds: [],
+    });
+    expect(resolved.planId).toBe("plan-resolved-1");
+    expect(resolved.targetPlatform?.os).toBe("linux");
+  });
+
+  it("handles 401 and 403 PermissionDeniedError", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Unauthorized", { status: 401 }));
+    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
+    await expect(provider.getWorkloadCatalog()).rejects.toThrow(PermissionDeniedError);
+
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Forbidden", { status: 403 }));
+    await expect(provider.getComponentCatalog()).rejects.toThrow(PermissionDeniedError);
+  });
+
+  it("handles 409 PlanExpiredOrConflictError", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Conflict", { status: 409 }));
+    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1", verified: true });
+    await expect(
+      provider.resolvePlan({ workloadIds: [], manualComponentIds: [] }),
+    ).rejects.toThrow(PlanExpiredOrConflictError);
+
+    await expect(provider.executePlan("plan-expired-server")).rejects.toThrow(PlanExpiredOrConflictError);
+  });
+
+  it("handles 500 Internal Server Error and network interruption distinctly", async () => {
+    // 500 Internal Server Error
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response("Internal Server Error", { status: 500, statusText: "Internal Server Error" }),
+    );
+    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
+    await expect(provider.getWorkloadCatalog()).rejects.toThrow(/server error|500/i);
+
+    // Network interruption (TypeError / fetch rejection)
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    await expect(provider.getWorkloadCatalog()).rejects.toThrow(NotConnectedError);
+  });
+
+  it("prohibits execution of stale/expired plans", async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1", verified: true });
+    const expiredTimestamp = new Date(Date.now() - 30_000).toISOString();
+
+    // Client-side expiry check prevents network call
+    await expect(
+      provider.executePlan("plan-old", undefined, { expiresAt: expiredTimestamp }),
+    ).rejects.toThrow(PlanExpiredOrConflictError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("executes valid plan when verified and backend returns operation status", async () => {
+    const opStatus: InstallerOperationStatus = {
+      operationId: "op-101",
+      kind: "install",
+      componentId: "cyrene.tools.document-parsing",
+      phase: "pending",
+      progressPercent: 0,
+      message: "Queued for installation",
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      userDataRetained: null,
+    };
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(opStatus), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({
+      baseUrl: "https://installer.api/v1",
+      verified: true,
+      authToken: "exec-token",
+    });
+
+    const result = await provider.executePlan("plan-valid-1", "confirm-token");
+    expect(result.operationId).toBe("op-101");
+    expect(result.phase).toBe("pending");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://installer.api/v1/plans/plan-valid-1/execute",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer exec-token",
+        }),
+        body: JSON.stringify({ confirmationToken: "confirm-token" }),
+      }),
+    );
+  });
+
+  it("streams operation progress using fetch-based ReadableStream with Bearer auth", async () => {
+    const statusPayload: InstallerOperationStatus = {
+      operationId: "op-stream-1",
+      kind: "install",
+      componentId: "comp-1",
+      phase: "running",
+      progressPercent: 65,
+      message: "Unpacking component archives",
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      userDataRetained: null,
+    };
+
+    const sseBody = `data: ${JSON.stringify(statusPayload)}\n\n`;
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(sseBody, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+    );
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({
+      baseUrl: "https://installer.api/v1",
+      authToken: "sse-bearer-token",
+      verified: true,
+    });
+
+    const received: InstallerOperationStatus[] = [];
+    const unsub = provider.getOperationStream(
+      "op-stream-1",
+      (status) => received.push(status),
+      (err) => {
+        throw err;
+      },
+    );
+
+    // Allow event loop microtasks for stream reading
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://installer.api/v1/operations/op-stream-1/stream",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Accept: "text/event-stream",
+          Authorization: "Bearer sse-bearer-token",
+        }),
+      }),
+    );
+    expect(received.length).toBe(1);
+    expect(received[0].operationId).toBe("op-stream-1");
+    expect(received[0].progressPercent).toBe(65);
+
+    unsub();
+  });
+
+  it("enters progress view ONLY after execution is accepted by backend", async () => {
+    let currentStep: "plan" | "progress" = "plan";
+    let inPageError: string | null = null;
+    let operationId: string | null = null;
+
+    const handleInstallFlow = async (
+      provider: RealInstallerProvider,
+      plan: InstallationPlan,
+    ) => {
+      if (provider.isDemo || !provider.isConnected) {
+        inPageError = "Operation disabled in demo mode.";
+        return;
+      }
+      if (plan.expiresAt && new Date(plan.expiresAt).getTime() <= Date.now()) {
+        inPageError = "The installation plan has expired.";
+        return;
+      }
+
+      try {
+        const res = await provider.executePlan(plan.planId, undefined, { expiresAt: plan.expiresAt });
+        if (!res || !res.operationId) {
+          throw new Error("No operation ID returned");
+        }
+        operationId = res.operationId;
+        currentStep = "progress";
+      } catch (err: unknown) {
+        inPageError = err instanceof Error ? err.message : String(err);
+      }
+    };
+
+    const validPlan: InstallationPlan = {
+      planId: "p1",
+      catalogGeneration: 1,
+      workloadIds: [],
+      additionalComponentIds: [],
+      components: [],
+      totalDownloadBytes: 100,
+      targetPlatform: null,
+      deploymentMode: null,
+      permissionsRequired: [],
+      knownLimitations: [],
+      alreadyInstalledComponentIds: [],
+      resolvedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+
+    // Case 1: unverified provider -> remains on plan view
+    const unverifiedProvider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
+    await handleInstallFlow(unverifiedProvider, validPlan);
+    expect(currentStep).toBe("plan");
+    expect(inPageError).toContain("Operation disabled");
+    expect(operationId).toBeNull();
+
+    // Case 2: verified provider but execution fails (500) -> remains on plan view
+    inPageError = null;
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response("Server Error", { status: 500, statusText: "Internal Server Error" }),
+    );
+    const verifiedProvider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1", verified: true });
+    await handleInstallFlow(verifiedProvider, validPlan);
+    expect(currentStep).toBe("plan");
+    expect(inPageError).toMatch(/server error|500/i);
+    expect(operationId).toBeNull();
+
+    // Case 3: execution accepted -> switches to progress
+    inPageError = null;
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        operationId: "op-success-777",
+        kind: "install",
+        componentId: "comp-1",
+        phase: "pending",
+        progressPercent: 0,
+        message: null,
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        userDataRetained: null,
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await handleInstallFlow(verifiedProvider, validPlan);
+    expect(currentStep).toBe("progress");
+    expect(inPageError).toBeNull();
+    expect(operationId).toBe("op-success-777");
   });
 });
 

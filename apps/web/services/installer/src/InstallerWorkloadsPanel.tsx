@@ -201,6 +201,14 @@ function WorkloadsTab({
   componentMap: ReadonlyMap<string, InstallerComponent>;
   l: (v: string) => string;
 }) {
+  if (workloads.length === 0) {
+    return (
+      <div className="installer-state">
+        <p className="installer-state__detail">{l("No workloads available")}</p>
+      </div>
+    );
+  }
+
   return (
     <div className="installer-workloads" role="group" aria-label="Workload choices">
       {workloads.map((wl) => {
@@ -535,25 +543,56 @@ export function InstallerWorkloadsPanel({
   const l = useCallback((v: string) => installerText(v, locale), [locale]);
   const provider = useInstallerProvider();
 
-  const [workloads, setWorkloads] = useState(MOCK_WORKLOAD_CATALOG.workloads);
-  const [components, setComponents] = useState(MOCK_COMPONENT_CATALOG.components);
+  const [workloads, setWorkloads] = useState<WorkloadEntry[]>(() =>
+    provider.isDemo ? MOCK_WORKLOAD_CATALOG.workloads : [],
+  );
+  const [components, setComponents] = useState<InstallerComponent[]>(() =>
+    provider.isDemo ? MOCK_COMPONENT_CATALOG.components : [],
+  );
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(!provider.isDemo);
+  const [retryTrigger, setRetryTrigger] = useState(0);
 
   useEffect(() => {
     let active = true;
-    Promise.all([provider.getWorkloadCatalog(), provider.getComponentCatalog()])
+
+    if (provider.isDemo) {
+      setWorkloads(MOCK_WORKLOAD_CATALOG.workloads);
+      setComponents(MOCK_COMPONENT_CATALOG.components);
+      setCatalogLoading(false);
+      setCatalogError(null);
+      return;
+    }
+
+    setCatalogLoading(true);
+    setCatalogError(null);
+
+    Promise.all([
+      provider.getWorkloadCatalog(),
+      provider.getComponentCatalog(),
+      provider.verifyConnection ? provider.verifyConnection() : Promise.resolve(false),
+    ])
       .then(([w, c]) => {
         if (active) {
-          setWorkloads(w.workloads);
-          setComponents(c.components);
+          setWorkloads(w.workloads || []);
+          setComponents(c.components || []);
+          setCatalogLoading(false);
         }
       })
-      .catch(() => {
-        // Safe fallback to mock defaults
+      .catch((err) => {
+        if (active) {
+          // Strictly clear catalog and do NOT fall back to mock catalog on failure
+          setWorkloads([]);
+          setComponents([]);
+          setCatalogError(err instanceof Error ? err.message : String(err));
+          setCatalogLoading(false);
+        }
       });
+
     return () => {
       active = false;
     };
-  }, [provider]);
+  }, [provider, retryTrigger]);
 
   const componentMap = useMemo(() => new Map(components.map((c) => [c.id, c])), [components]);
 
@@ -648,9 +687,38 @@ export function InstallerWorkloadsPanel({
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
       {/* NOT_CONNECTED banner */}
-      <div className="installer-not-connected" role="status">
-        {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
-      </div>
+      {(provider.isDemo || !provider.isConnected) && (
+        <div className="installer-not-connected" role="status">
+          {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
+        </div>
+      )}
+
+      {/* Explicit catalog error banner and retry button */}
+      {catalogError && (
+        <div
+          className="installer-affinity-warning"
+          role="alert"
+          style={{
+            margin: "var(--dh-space-2) var(--dh-space-4)",
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div>
+            <strong style={{ display: "block" }}>{l("Network interruption")}</strong>
+            <span>{catalogError}</span>
+          </div>
+          <button
+            type="button"
+            className="installer-btn"
+            onClick={() => setRetryTrigger((r) => r + 1)}
+          >
+            {l("Try again")}
+          </button>
+        </div>
+      )}
 
       <div className="installer-body" style={{ flex: 1, overflow: "hidden" }}>
         {/* Sidebar */}
@@ -722,7 +790,7 @@ export function InstallerWorkloadsPanel({
         </span>
         <button
           className="installer-btn installer-btn--primary"
-          disabled={selection.size === 0}
+          disabled={selection.size === 0 || catalogLoading || Boolean(catalogError)}
           onClick={handleNext}
         >
           {l("Review installation plan")} →

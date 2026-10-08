@@ -75,9 +75,13 @@ export interface InstallerProvider {
   resolvePlan(selection: PlanSelectionRequest): Promise<InstallationPlan>;
 
   /** Execute a previously resolved and confirmed plan */
-  executePlan(planId: string, confirmationToken?: string): Promise<InstallerOperationStatus>;
+  executePlan(
+    planId: string,
+    confirmationToken?: string,
+    options?: { expiresAt?: string },
+  ): Promise<InstallerOperationStatus>;
 
-  /** Stream operation progress updates (SSE or polling) */
+  /** Stream operation progress updates (SSE via fetch + ReadableStream) */
   getOperationStream(
     operationId: string,
     onUpdate: (status: InstallerOperationStatus) => void,
@@ -89,6 +93,12 @@ export interface InstallerProvider {
 
   /** Execute a managed component lifecycle operation */
   executeComponentOperation(req: ComponentOperationRequest): Promise<InstallerOperationStatus>;
+
+  /** Actively verify connection availability with backend service */
+  verifyConnection?(): Promise<boolean>;
+
+  /** Health check probe alias */
+  healthcheck?(): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +108,14 @@ export interface InstallerProvider {
 export class DemoInstallerProvider implements InstallerProvider {
   readonly isDemo = true;
   readonly isConnected = false;
+
+  async verifyConnection(): Promise<boolean> {
+    return false;
+  }
+
+  async healthcheck(): Promise<boolean> {
+    return false;
+  }
 
   async getWorkloadCatalog(): Promise<WorkloadCatalog> {
     return MOCK_WORKLOAD_CATALOG;
@@ -176,7 +194,11 @@ export class DemoInstallerProvider implements InstallerProvider {
     };
   }
 
-  async executePlan(_planId: string, _confirmationToken?: string): Promise<InstallerOperationStatus> {
+  async executePlan(
+    _planId: string,
+    _confirmationToken?: string,
+    _options?: { expiresAt?: string },
+  ): Promise<InstallerOperationStatus> {
     throw new OperationNotPermittedError(
       "Cannot execute installation in demo / NOT_CONNECTED mode. Connect to a valid Installer API first.",
     );
@@ -219,11 +241,13 @@ export interface RealInstallerProviderOptions {
   baseUrl?: string;
   authToken?: string;
   timeoutMs?: number;
+  verified?: boolean;
 }
 
 export class RealInstallerProvider implements InstallerProvider {
   readonly isDemo = false;
-  readonly isConnected: boolean;
+  readonly isConfigured: boolean;
+  private _verified = false;
   private readonly baseUrl: string;
   private readonly authToken?: string;
   private readonly timeoutMs: number;
@@ -232,12 +256,63 @@ export class RealInstallerProvider implements InstallerProvider {
     this.baseUrl = (options.baseUrl ?? "/api/installer/v1").replace(/\/+$/, "");
     this.authToken = options.authToken;
     this.timeoutMs = options.timeoutMs ?? 15_000;
-    // Considered connected if a non-empty baseUrl is configured
-    this.isConnected = Boolean(options.baseUrl);
+    this.isConfigured = Boolean(options.baseUrl);
+    // Explicitly unverified on init unless options.verified is explicitly true AND isConfigured
+    this._verified = Boolean(options.verified && this.isConfigured);
+  }
+
+  /**
+   * Whether a live connection to the backend installer service is verified.
+   * Having baseUrl alone is NOT enough to consider install executable.
+   */
+  get isConnected(): boolean {
+    return this.isConfigured && this._verified;
+  }
+
+  /**
+   * Actively verify connection availability with the backend service.
+   */
+  async verifyConnection(): Promise<boolean> {
+    if (!this.isConfigured) {
+      this._verified = false;
+      return false;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      const headers: Record<string, string> = {
+        Accept: "application/json",
+        ...(this.authToken ? { Authorization: `Bearer ${this.authToken}` } : {}),
+      };
+
+      const response = await fetch(`${this.baseUrl}/health`, {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+
+      if (response.ok) {
+        this._verified = true;
+        return true;
+      }
+      this._verified = false;
+      return false;
+    } catch {
+      this._verified = false;
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async healthcheck(): Promise<boolean> {
+    return this.verifyConnection();
   }
 
   private async fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-    if (!this.isConnected) {
+    if (!this.isConfigured) {
       throw new NotConnectedError("Installer service endpoint is not configured.");
     }
 
@@ -245,10 +320,10 @@ export class RealInstallerProvider implements InstallerProvider {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     const headers: Record<string, string> = {
-      "Accept": "application/json",
+      Accept: "application/json",
       "Content-Type": "application/json",
       ...(this.authToken ? { Authorization: `Bearer ${this.authToken}` } : {}),
-      ...(init?.headers as Record<string, string> || {}),
+      ...((init?.headers as Record<string, string>) || {}),
     };
 
     try {
@@ -264,13 +339,20 @@ export class RealInstallerProvider implements InstallerProvider {
       if (response.status === 409) {
         throw new PlanExpiredOrConflictError("Catalog conflict or expired plan token.");
       }
+      if (response.status >= 500) {
+        throw new Error(`Installer API server error: ${response.status} ${response.statusText}`);
+      }
       if (!response.ok) {
         throw new Error(`Installer API error: ${response.status} ${response.statusText}`);
       }
 
       return (await response.json()) as T;
     } catch (err: unknown) {
-      if (err instanceof PermissionDeniedError || err instanceof PlanExpiredOrConflictError) {
+      if (
+        err instanceof PermissionDeniedError ||
+        err instanceof PlanExpiredOrConflictError ||
+        (err instanceof Error && err.message.startsWith("Installer API server error"))
+      ) {
         throw err;
       }
       if (err instanceof Error && err.name === "AbortError") {
@@ -299,7 +381,19 @@ export class RealInstallerProvider implements InstallerProvider {
     });
   }
 
-  async executePlan(planId: string, confirmationToken?: string): Promise<InstallerOperationStatus> {
+  async executePlan(
+    planId: string,
+    confirmationToken?: string,
+    options?: { expiresAt?: string },
+  ): Promise<InstallerOperationStatus> {
+    if (!this.isConnected) {
+      throw new NotConnectedError(
+        "Installer service connection has not been verified. Real installation operations are disabled.",
+      );
+    }
+    if (options?.expiresAt && new Date(options.expiresAt).getTime() <= Date.now()) {
+      throw new PlanExpiredOrConflictError("The installation plan has expired and cannot be executed.");
+    }
     return this.fetchJson<InstallerOperationStatus>(`/plans/${encodeURIComponent(planId)}/execute`, {
       method: "POST",
       body: JSON.stringify({ confirmationToken }),
@@ -311,30 +405,92 @@ export class RealInstallerProvider implements InstallerProvider {
     onUpdate: (status: InstallerOperationStatus) => void,
     onError?: (err: Error) => void,
   ): () => void {
-    if (!this.isConnected || typeof EventSource === "undefined") {
-      if (onError) onError(new NotConnectedError("SSE is unavailable or provider not connected."));
+    if (!this.isConnected) {
+      if (onError) {
+        onError(
+          new NotConnectedError(
+            "Installer service connection has not been verified. Stream remains closed.",
+          ),
+        );
+      }
       return () => {};
     }
 
-    const url = `${this.baseUrl}/operations/${encodeURIComponent(operationId)}/stream`;
-    const es = new EventSource(url);
+    const controller = new AbortController();
+    let isClosed = false;
 
-    es.onmessage = (event) => {
+    const runStream = async () => {
       try {
-        const data = JSON.parse(event.data) as InstallerOperationStatus;
-        onUpdate(data);
-      } catch (err) {
-        if (onError) onError(err instanceof Error ? err : new Error(String(err)));
+        const headers: Record<string, string> = {
+          Accept: "text/event-stream",
+          ...(this.authToken ? { Authorization: `Bearer ${this.authToken}` } : {}),
+        };
+
+        const response = await fetch(
+          `${this.baseUrl}/operations/${encodeURIComponent(operationId)}/stream`,
+          {
+            method: "GET",
+            headers,
+            credentials: "same-origin",
+            signal: controller.signal,
+          },
+        );
+
+        if (response.status === 401 || response.status === 403) {
+          throw new PermissionDeniedError(`Installer stream permission denied (${response.status})`);
+        }
+        if (response.status >= 500) {
+          throw new Error(`Installer stream server error: ${response.status} ${response.statusText}`);
+        }
+        if (!response.ok) {
+          throw new Error(`Installer stream HTTP error: ${response.status} ${response.statusText}`);
+        }
+
+        if (!response.body || typeof response.body.getReader !== "function") {
+          throw new Error("Streaming is not supported or response body is missing.");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (!isClosed) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() ?? "";
+
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (line.startsWith("data:")) {
+              const payload = line.slice(5).trim();
+              if (payload && payload !== "[DONE]") {
+                try {
+                  const status = JSON.parse(payload) as InstallerOperationStatus;
+                  onUpdate(status);
+                } catch {
+                  // Ignore parse errors on heartbeats or comments
+                }
+              }
+            }
+          }
+        }
+      } catch (err: unknown) {
+        if (isClosed) return;
+        if (err instanceof Error && err.name === "AbortError") return;
+        if (onError) {
+          onError(err instanceof Error ? err : new Error(String(err)));
+        }
       }
     };
 
-    es.onerror = (e) => {
-      es.close();
-      if (onError) onError(new Error("EventSource connection error"));
-    };
+    runStream();
 
     return () => {
-      es.close();
+      isClosed = true;
+      controller.abort();
     };
   }
 
@@ -343,6 +499,11 @@ export class RealInstallerProvider implements InstallerProvider {
   }
 
   async executeComponentOperation(req: ComponentOperationRequest): Promise<InstallerOperationStatus> {
+    if (!this.isConnected) {
+      throw new NotConnectedError(
+        "Installer service connection has not been verified. Component operations are disabled.",
+      );
+    }
     return this.fetchJson<InstallerOperationStatus>(
       `/components/${encodeURIComponent(req.componentId)}/operations`,
       {

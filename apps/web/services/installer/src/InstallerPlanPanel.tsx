@@ -87,12 +87,16 @@ export function InstallerPlanPanel({
   excludedComponentIds = [],
   onBack,
   onInstall,
+  installError,
+  isInstalling,
 }: {
   workloadIds: string[];
   componentIds: string[];
   excludedComponentIds?: string[];
   onBack: () => void;
-  onInstall: (plan: InstallationPlan) => void;
+  onInstall: (plan: InstallationPlan) => void | Promise<void>;
+  installError?: string | null;
+  isInstalling?: boolean;
 }) {
   const { locale } = useI18n();
   const l = useCallback((v: string) => installerText(v, locale), [locale]);
@@ -102,21 +106,36 @@ export function InstallerPlanPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [workloads, setWorkloads] = useState(MOCK_WORKLOAD_CATALOG.workloads);
+  const [components, setComponents] = useState(MOCK_COMPONENT_CATALOG.components);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    provider
-      .resolvePlan({
+    const catalogPromises = provider.isDemo
+      ? Promise.resolve([MOCK_WORKLOAD_CATALOG, MOCK_COMPONENT_CATALOG] as const)
+      : Promise.all([provider.getWorkloadCatalog(), provider.getComponentCatalog()]);
+
+    const verifyPromise = (!provider.isDemo && provider.verifyConnection)
+      ? provider.verifyConnection()
+      : Promise.resolve(provider.isConnected);
+
+    Promise.all([
+      provider.resolvePlan({
         workloadIds,
         manualComponentIds: componentIds,
         excludedRecommendedComponentIds: excludedComponentIds,
-      })
-      .then((resolved) => {
+      }),
+      catalogPromises,
+      verifyPromise,
+    ])
+      .then(([resolved, [wCat, cCat]]) => {
         if (!cancelled) {
           setPlan(resolved);
+          setWorkloads(wCat.workloads || []);
+          setComponents(cCat.components || []);
           setLoading(false);
         }
       })
@@ -133,12 +152,12 @@ export function InstallerPlanPanel({
   }, [provider, workloadIds, componentIds, excludedComponentIds, reloadKey]);
 
   const componentMap = useMemo(
-    () => new Map(MOCK_COMPONENT_CATALOG.components.map((c) => [c.id, c])),
-    [],
+    () => new Map(components.map((c) => [c.id, c])),
+    [components],
   );
   const workloadMap = useMemo(
-    () => new Map(MOCK_WORKLOAD_CATALOG.workloads.map((w) => [w.id, w])),
-    [],
+    () => new Map(workloads.map((w) => [w.id, w])),
+    [workloads],
   );
 
   const products = plan
@@ -162,7 +181,7 @@ export function InstallerPlanPanel({
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
       {/* Provider demo / unconnected notice */}
-      {provider.isDemo && (
+      {(provider.isDemo || !provider.isConnected) && (
         <div className="installer-not-connected" role="status">
           {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
         </div>
@@ -177,6 +196,13 @@ export function InstallerPlanPanel({
           </p>
         </div>
         <hr className="installer-horizon" />
+
+        {installError && (
+          <div className="installer-affinity-warning" role="alert" style={{ margin: "var(--dh-space-4) 0" }}>
+            <p style={{ margin: 0, fontWeight: 600 }}>{l("Execution failed")}</p>
+            <p style={{ margin: "var(--dh-space-2) 0" }}>{installError}</p>
+          </div>
+        )}
 
         {loading ? (
           <div className="installer-state" role="status" aria-live="polite">
@@ -329,10 +355,10 @@ export function InstallerPlanPanel({
             ? ` · ${formatBytes(plan.totalDownloadBytes)}`
             : ""}
         </span>
-        {/* Primary action — disabled if provider isDemo or not connected, or if loading/error */}
+        {/* Primary action — disabled if provider isDemo or not connected, or if loading/error/installing */}
         <button
           className="installer-btn installer-btn--primary"
-          disabled={!plan || loading || Boolean(error) || provider.isDemo || !provider.isConnected}
+          disabled={!plan || loading || Boolean(isInstalling) || Boolean(error) || provider.isDemo || !provider.isConnected}
           title={
             provider.isDemo || !provider.isConnected
               ? l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")
@@ -340,7 +366,7 @@ export function InstallerPlanPanel({
           }
           onClick={() => plan && onInstall(plan)}
         >
-          {l("Install")}
+          {isInstalling ? l("Loading…") : l("Install")}
         </button>
       </div>
     </div>
