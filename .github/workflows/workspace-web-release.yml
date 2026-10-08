@@ -35,8 +35,6 @@ jobs:
       SOURCE_COMMIT: ${{ github.sha }}
       SOURCE_REF: ${{ github.ref }}
       PREDICATE_TYPE: https://slsa.dev/provenance/v1
-      RELEASE_DIR: ${{ runner.temp }}/workspace-web-release
-      SCHEMA_DIR: ${{ runner.temp }}/workspace-schema/governance
       WORKSPACE_SCHEMA_SHA: ${{ github.event.inputs.schema_sha || '0000000000000000000000000000000000000000' }}
 
     steps:
@@ -45,6 +43,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Define isolated workflow temp paths
+        run: |
+          set -euo pipefail
+          echo "RELEASE_DIR=$RUNNER_TEMP/workspace-web-release" >> "$GITHUB_ENV"
+          echo "SCHEMA_DIR=$RUNNER_TEMP/workspace-schema/governance" >> "$GITHUB_ENV"
 
       - name: Wait for successful Client CI on this exact pushed source
         run: |
