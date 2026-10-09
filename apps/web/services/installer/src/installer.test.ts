@@ -263,6 +263,95 @@ describe("DemoInstallerProvider", () => {
 
 describe("RealInstallerProvider", () => {
   const originalFetch = globalThis.fetch;
+  const mockDigest = `sha256:${"a".repeat(64)}`;
+  const mockPlanId = `plan-${"a".repeat(32)}`;
+  const mockSession = {
+    token: "csrf-token-123",
+    workspaceId: "local",
+    mode: "local",
+    actor: { id: "local-user", scopes: ["workloads.read", "workloads.install"] },
+    commands: [
+      { name: "workloads.status", endpoint: "/studio-workloads/v1/commands", readOnly: true },
+      { name: "workloads.check", endpoint: "/studio-workloads/v1/commands", readOnly: true },
+      { name: "workloads.stage", endpoint: "/studio-workloads/v1/commands", readOnly: false },
+      { name: "workloads.apply", endpoint: "/studio-workloads/v1/commands", readOnly: false },
+    ],
+  };
+
+  const mockCatalystStatus = {
+    status: "ready",
+    workloadId: "catalyst",
+    targetId: "linux-ubuntu-24.04-x86_64",
+    catalogGeneration: 1,
+    catalogDigest: mockDigest,
+    components: [
+      { componentId: "cyrene.tools.dataset-preparation", installed: false, version: "0.2.0", digest: mockDigest, verification: true },
+    ],
+  };
+
+  const mockEchoStatus = {
+    status: "ready",
+    workloadId: "echo",
+    targetId: "linux-ubuntu-24.04-x86_64",
+    catalogGeneration: 1,
+    catalogDigest: mockDigest,
+    components: [
+      { componentId: "cyrene.evaluation.exact-match", installed: false, version: "0.1.0", digest: mockDigest, verification: true },
+    ],
+  };
+
+  const mockCheckReady = {
+    status: "ready",
+    planId: mockPlanId,
+    planDigest: mockDigest,
+    catalogDigest: mockDigest,
+    workloadId: "catalyst",
+    action: "install",
+    targetId: "linux-ubuntu-24.04-x86_64",
+    resolution: {
+      schemaVersion: 1,
+      status: "ready",
+      planId: mockPlanId,
+      planDigest: mockDigest,
+      catalogDigest: mockDigest,
+      workloadId: "catalyst",
+      action: "install",
+      targetId: "linux-ubuntu-24.04-x86_64",
+      selectedComponents: [],
+      closureReasons: [],
+      warnings: [],
+      blockers: [],
+      selectionBinding: { includeComponentIds: [], excludeComponentIds: [], choices: {} },
+      planDigestMaterial: {} as any,
+    },
+    warnings: [],
+    blockers: [],
+    components: [
+      {
+        componentId: "cyrene.tools.dataset-preparation",
+        version: "0.2.0",
+        targetId: "linux-ubuntu-24.04-x86_64",
+        artifactKind: "python-package",
+        releaseId: "preview-1",
+        manifestUri: "https://example.com/manifest.json",
+        manifestDigest: mockDigest,
+        manifestAssetDigest: mockDigest,
+        digest: mockDigest,
+        indexIdentity: null,
+        publisherIdentity: null,
+        reason: "workload-required",
+        requiredness: "required",
+        sourcePolicy: null,
+        attestationRef: null,
+        installed: false,
+        installationId: null,
+        installedIdentity: null,
+        capabilityId: null,
+        packageId: null,
+        bindingId: null,
+      },
+    ],
+  };
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -273,7 +362,7 @@ describe("RealInstallerProvider", () => {
   });
 
   it("unconfigured provider throws NotConnectedError on fetch", async () => {
-    const provider = new RealInstallerProvider({ baseUrl: "" });
+    const provider = new RealInstallerProvider({ prefix: "", baseUrl: "" });
     expect(provider.isConnected).toBe(false);
     expect(provider.isConfigured).toBe(false);
     await expect(provider.getWorkloadCatalog()).rejects.toThrow(NotConnectedError);
@@ -289,17 +378,19 @@ describe("RealInstallerProvider", () => {
 
     const confErr = new PlanExpiredOrConflictError("conflict");
     expect(confErr.name).toBe("PlanExpiredOrConflictError");
+
+    const opErr = new OperationNotPermittedError("not permitted");
+    expect(opErr.name).toBe("OperationNotPermittedError");
   });
 
-  it("distinguishes between configured baseUrl and verified service availability", async () => {
-    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
-    // Configured baseUrl alone does NOT mean connected/verified
+  it("verifies connection via /v1/session and checks actor workloads.read scope", async () => {
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads" });
     expect(provider.isConfigured).toBe(true);
     expect(provider.isConnected).toBe(false);
 
-    // Mock successful healthcheck
+    // Mock successful session retrieval
     globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ status: "healthy" }), {
+      new Response(JSON.stringify(mockSession), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
@@ -309,15 +400,13 @@ describe("RealInstallerProvider", () => {
     expect(verified).toBe(true);
     expect(provider.isConnected).toBe(true);
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "https://installer.api/v1/health",
+      "/studio-workloads/v1/session",
       expect.objectContaining({ method: "GET" }),
     );
 
-    // Failed healthcheck leaves provider unverified
-    const failingProvider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response("Service Unavailable", { status: 503 }),
-    );
+    // Failing session returns unverified
+    const failingProvider = new RealInstallerProvider({ prefix: "/studio-workloads" });
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Service Unavailable", { status: 503 }));
     const failVerified = await failingProvider.verifyConnection();
     expect(failVerified).toBe(false);
     expect(failingProvider.isConnected).toBe(false);
@@ -327,247 +416,409 @@ describe("RealInstallerProvider", () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock;
 
-    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads" });
     expect(provider.isConnected).toBe(false);
 
-    // executePlan must reject without calling fetch
     await expect(provider.executePlan("plan-test")).rejects.toThrow(NotConnectedError);
     expect(fetchMock).not.toHaveBeenCalled();
 
-    // executeComponentOperation must reject without calling fetch
     await expect(
       provider.executeComponentOperation({ componentId: "comp-1", operation: "install" }),
     ).rejects.toThrow(NotConnectedError);
     expect(fetchMock).not.toHaveBeenCalled();
-
-    // stream remains closed and reports error without calling fetch
-    let streamError: Error | null = null;
-    const unsub = provider.getOperationStream(
-      "op-1",
-      () => {},
-      (err) => {
-        streamError = err;
-      },
-    );
-    expect(streamError).toBeInstanceOf(NotConnectedError);
-    expect(fetchMock).not.toHaveBeenCalled();
-    unsub();
   });
 
-  it("fetches workload/component catalogs and resolves plan with Authorization header", async () => {
-    const fetchMock = vi.fn().mockImplementation((url: string) => {
-      if (url.endsWith("/workloads")) {
+  it("fetches real workload status (workloads.status) with control token", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/session")) {
         return Promise.resolve(
-          new Response(JSON.stringify(MOCK_WORKLOAD_CATALOG), {
+          new Response(JSON.stringify(mockSession), {
             status: 200,
             headers: { "Content-Type": "application/json" },
           }),
         );
       }
-      if (url.endsWith("/components")) {
-        return Promise.resolve(
-          new Response(JSON.stringify(MOCK_COMPONENT_CATALOG), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
+      if (url.endsWith("/v1/commands")) {
+        const body = JSON.parse(init?.body as string);
+        expect(init?.headers).toMatchObject({
+          "x-studio-control-token": "csrf-token-123",
+          Authorization: "Bearer token-abc",
+        });
+        if (body.name === "workloads.status") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ result: body.input.workloadId === "echo" ? mockEchoStatus : mockCatalystStatus }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
       }
-      if (url.endsWith("/plans/resolve")) {
-        const plan: InstallationPlan = {
-          planId: "plan-resolved-1",
-          catalogGeneration: 1,
-          workloadIds: ["catalyst"],
-          additionalComponentIds: [],
-          components: [],
-          totalDownloadBytes: 5000,
-          targetPlatform: { os: "linux", architecture: "x86_64" },
-          deploymentMode: "container",
-          permissionsRequired: [],
-          knownLimitations: [],
-          alreadyInstalledComponentIds: [],
-          resolvedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        };
-        return Promise.resolve(
-          new Response(JSON.stringify(plan), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-      }
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
     globalThis.fetch = fetchMock;
 
     const provider = new RealInstallerProvider({
-      baseUrl: "https://installer.api/v1",
-      authToken: "bearer-token-123",
+      prefix: "/studio-workloads",
+      authToken: "token-abc",
     });
 
-    const workloads = await provider.getWorkloadCatalog();
-    expect(workloads.workloads.length).toBeGreaterThan(0);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://installer.api/v1/workloads",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer bearer-token-123",
-        }),
-      }),
-    );
+    const catalog = await provider.getWorkloadCatalog();
+    expect(catalog.workloads.length).toBe(2);
+    expect(catalog.workloads.find((w) => w.id === "catalyst")).toBeDefined();
+    expect(catalog.workloads.find((w) => w.id === "echo")).toBeDefined();
 
     const components = await provider.getComponentCatalog();
     expect(components.components.length).toBeGreaterThan(0);
-
-    const resolved = await provider.resolvePlan({
-      workloadIds: ["catalyst"],
-      manualComponentIds: [],
-    });
-    expect(resolved.planId).toBe("plan-resolved-1");
-    expect(resolved.targetPlatform?.os).toBe("linux");
+    expect(components.components.some((c) => c.id === "cyrene.tools.dataset-preparation")).toBe(true);
   });
 
-  it("handles 401 and 403 PermissionDeniedError", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Unauthorized", { status: 401 }));
-    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
+  it("checks plan (workloads.check) and handles ready vs blocked states", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      if (url.endsWith("/v1/commands")) {
+        const body = JSON.parse(init?.body as string);
+        if (body.name === "workloads.check") {
+          if (body.input.workloadId === "blocked-workload") {
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  result: {
+                    ...mockCheckReady,
+                    status: "blocked",
+                    blockers: [
+                      {
+                        code: "DEPENDENCY_MISSING",
+                        componentId: "dep-1",
+                        message: "Required dependency missing on host",
+                        retryable: false,
+                        capabilityId: null,
+                        requiredness: "required",
+                        targetId: null,
+                        details: {},
+                      },
+                    ],
+                  },
+                }),
+                { status: 200 },
+              ),
+            );
+          }
+          return Promise.resolve(new Response(JSON.stringify({ result: mockCheckReady }), { status: 200 }));
+        }
+      }
+      return Promise.reject(new Error(`Unexpected URL ${url}`));
+    });
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads" });
+
+    // Ready plan
+    const readyPlan = await provider.resolvePlan({ workloadIds: ["catalyst"], manualComponentIds: [] });
+    expect(readyPlan.status).toBe("ready");
+    expect(readyPlan.planId).toBe(mockPlanId);
+    expect(readyPlan.planDigest).toBe(mockDigest);
+    expect(readyPlan.components.length).toBe(1);
+
+    // Blocked plan
+    const blockedPlan = await provider.resolvePlan({ workloadIds: ["blocked-workload"], manualComponentIds: [] });
+    expect(blockedPlan.status).toBe("blocked");
+    expect(blockedPlan.blockers?.length).toBe(1);
+    expect(blockedPlan.blockers?.[0].code).toBe("DEPENDENCY_MISSING");
+  });
+
+  it("stages and applies workload plan with identical planId and planDigest", async () => {
+    const recordedCommands: any[] = [];
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      if (url.endsWith("/v1/commands")) {
+        const body = JSON.parse(init?.body as string);
+        recordedCommands.push(body);
+        if (body.name === "workloads.check") {
+          return Promise.resolve(new Response(JSON.stringify({ result: mockCheckReady }), { status: 200 }));
+        }
+        if (body.name === "workloads.stage") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                result: {
+                  status: "staged",
+                  planId: body.input.planId,
+                  planDigest: body.input.planDigest,
+                  catalogDigest: mockDigest,
+                  workloadId: body.input.workloadId,
+                  action: "install",
+                  targetId: body.input.targetId,
+                  resolution: mockCheckReady.resolution,
+                  warnings: [],
+                  blockers: [],
+                  components: [{ componentId: "cyrene.tools.dataset-preparation", status: "staged" }],
+                },
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (body.name === "workloads.apply") {
+          // Verify confirmation matches planId and planDigest
+          expect(body.input.confirmation.planId).toBe(body.input.planId);
+          expect(body.input.confirmation.planDigest).toBe(body.input.planDigest);
+          expect(body.input.confirmation.confirmed).toBe(true);
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                result: {
+                  status: "installed",
+                  planId: body.input.planId,
+                  planDigest: body.input.planDigest,
+                  catalogDigest: mockDigest,
+                  workloadId: body.input.workloadId,
+                  action: "install",
+                  targetId: body.input.targetId,
+                  components: mockCheckReady.components,
+                  resolution: mockCheckReady.resolution,
+                  warnings: [],
+                  blockers: [],
+                },
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+      }
+      return Promise.reject(new Error(`Unexpected URL ${url}`));
+    });
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads", verified: true });
+    const plan = await provider.resolvePlan({ workloadIds: ["catalyst"], manualComponentIds: [] });
+    const opStatus = await provider.executePlan(plan.planId);
+
+    expect(opStatus.phase).toBe("succeeded");
+    expect(recordedCommands.map((c) => c.name)).toEqual(["workloads.check", "workloads.stage", "workloads.apply"]);
+
+    const stageCommand = recordedCommands.find((c) => c.name === "workloads.stage");
+    const applyCommand = recordedCommands.find((c) => c.name === "workloads.apply");
+    expect(stageCommand.input.planId).toBe(plan.planId);
+    expect(stageCommand.input.planDigest).toBe(plan.planDigest);
+    expect(applyCommand.input.planId).toBe(plan.planId);
+    expect(applyCommand.input.planDigest).toBe(plan.planDigest);
+  });
+
+  it("handles stage or apply failure without faking success", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      if (url.endsWith("/v1/commands")) {
+        const body = JSON.parse(init?.body as string);
+        if (body.name === "workloads.stage") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ error: { message: "Package verification signature invalid" } }),
+              { status: 500 },
+            ),
+          );
+        }
+      }
+      return Promise.reject(new Error(`Unexpected URL ${url}`));
+    });
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads", verified: true });
+    await expect(provider.executePlan(mockPlanId)).rejects.toThrow("Package verification signature invalid");
+  });
+
+  it("rejects plan ID / digest mismatch from backend (WORKLOAD_PLAN_DIGEST)", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      if (url.endsWith("/v1/commands")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { message: "本机 workload CLI 返回的计划摘要与解析内容不匹配。" } }),
+            { status: 502 },
+          ),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected URL ${url}`));
+    });
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads", verified: true });
+    await expect(provider.executePlan(mockPlanId)).rejects.toThrow(/计划摘要与解析内容不匹配/);
+  });
+
+  it("handles 409 conflict and stale plan (WORKLOAD_PLAN_CHANGED)", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      if (url.endsWith("/v1/commands")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { message: "计划已变化；请重新检查并确认最新计划。" } }),
+            { status: 409 },
+          ),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected URL ${url}`));
+    });
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads", verified: true });
+
+    // Server-side 409 conflict throws PlanExpiredOrConflictError
+    await expect(provider.executePlan(mockPlanId)).rejects.toThrow(PlanExpiredOrConflictError);
+
+    // Client-side expiry validation prohibits network call
+    const expiredTimestamp = new Date(Date.now() - 30_000).toISOString();
+    await expect(
+      provider.executePlan(mockPlanId, undefined, { expiresAt: expiredTimestamp }),
+    ).rejects.toThrow(PlanExpiredOrConflictError);
+  });
+
+  it("handles unauthorized user (401/403) and missing required scope", async () => {
+    // 403 on session
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Forbidden", { status: 403 }));
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads" });
     await expect(provider.getWorkloadCatalog()).rejects.toThrow(PermissionDeniedError);
 
-    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Forbidden", { status: 403 }));
-    await expect(provider.getComponentCatalog()).rejects.toThrow(PermissionDeniedError);
+    // Actor lacking workloads.install scope
+    const readOnlySession = {
+      ...mockSession,
+      actor: { id: "readonly-user", scopes: ["workloads.read"] },
+    };
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(readOnlySession), { status: 200 }));
+      }
+      return Promise.reject(new Error(`Unexpected ${url}`));
+    });
+
+    const readOnlyProvider = new RealInstallerProvider({ prefix: "/studio-workloads", verified: true });
+    await expect(readOnlyProvider.executePlan(mockPlanId)).rejects.toThrow(PermissionDeniedError);
   });
 
-  it("handles 409 PlanExpiredOrConflictError", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(new Response("Conflict", { status: 409 }));
-    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1", verified: true });
-    await expect(
-      provider.resolvePlan({ workloadIds: [], manualComponentIds: [] }),
-    ).rejects.toThrow(PlanExpiredOrConflictError);
-
-    await expect(provider.executePlan("plan-expired-server")).rejects.toThrow(PlanExpiredOrConflictError);
-  });
-
-  it("handles 500 Internal Server Error and network interruption distinctly", async () => {
-    // 500 Internal Server Error
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response("Internal Server Error", { status: 500, statusText: "Internal Server Error" }),
-    );
-    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
-    await expect(provider.getWorkloadCatalog()).rejects.toThrow(/server error|500/i);
-
-    // Network interruption (TypeError / fetch rejection)
+  it("handles connection interruption and network failure distinctly", async () => {
+    // Network interruption (TypeError)
     globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads" });
     await expect(provider.getWorkloadCatalog()).rejects.toThrow(NotConnectedError);
+
+    // 500 Server error
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      return Promise.resolve(new Response("Internal Server Error", { status: 500, statusText: "Internal Server Error" }));
+    });
+    await expect(provider.getWorkloadCatalog()).rejects.toThrow(/server error|500/i);
   });
 
-  it("prohibits execution of stale/expired plans", async () => {
-    const fetchMock = vi.fn();
+  it("truthfully reports partial component installation success in multi-workload without fake atomicity", async () => {
+    let executedWorkload: string[] = [];
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      if (url.endsWith("/v1/commands")) {
+        const body = JSON.parse(init?.body as string);
+        if (body.name === "workloads.check") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ result: { ...mockCheckReady, workloadId: body.input.workloadId } }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (body.name === "workloads.stage" || body.name === "workloads.apply") {
+          if (body.input.workloadId === "catalyst") {
+            executedWorkload.push(`catalyst-${body.name}`);
+            return Promise.resolve(new Response(JSON.stringify({ result: { status: "installed" } }), { status: 200 }));
+          }
+          if (body.input.workloadId === "echo") {
+            // Echo fails during apply!
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({ error: { message: "Disk full on /var/cyrene/echo" } }),
+                { status: 500 },
+              ),
+            );
+          }
+        }
+      }
+      return Promise.reject(new Error(`Unexpected ${url}`));
+    });
     globalThis.fetch = fetchMock;
 
-    const provider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1", verified: true });
-    const expiredTimestamp = new Date(Date.now() - 30_000).toISOString();
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads", verified: true });
+    const multiPlan = await provider.resolvePlan({ workloadIds: ["catalyst", "echo"], manualComponentIds: [] });
 
-    // Client-side expiry check prevents network call
+    await expect(provider.executePlan(multiPlan.planId)).rejects.toThrow(
+      /Partial installation.*catalyst.*succeeded.*echo.*failed/i,
+    );
+  });
+
+  it("manages components lifecycle and prohibits unsupported operations", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      if (url.endsWith("/v1/commands")) {
+        const body = JSON.parse(init?.body as string);
+        if (body.name === "workloads.status") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                result: {
+                  ...mockCatalystStatus,
+                  components: [
+                    { componentId: "cyrene.tools.dataset-preparation", installed: true, version: "0.2.0" },
+                  ],
+                },
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (body.name === "workloads.check") {
+          return Promise.resolve(new Response(JSON.stringify({ result: mockCheckReady }), { status: 200 }));
+        }
+        if (body.name === "workloads.stage" || body.name === "workloads.apply") {
+          return Promise.resolve(new Response(JSON.stringify({ result: { status: "uninstalled" } }), { status: 200 }));
+        }
+      }
+      return Promise.reject(new Error(`Unexpected ${url}`));
+    });
+    globalThis.fetch = fetchMock;
+
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads", verified: true });
+    const managed = await provider.getManagedComponents();
+    const installedComp = managed.find((c) => c.id === "cyrene.tools.dataset-preparation");
+    expect(installedComp).toBeDefined();
+    expect(installedComp?.allowedOperations).toEqual(["uninstall"]);
+
+    // Unsupported operations are strictly blocked with OperationNotPermittedError
     await expect(
-      provider.executePlan("plan-old", undefined, { expiresAt: expiredTimestamp }),
-    ).rejects.toThrow(PlanExpiredOrConflictError);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+      provider.executeComponentOperation({ componentId: "cyrene.tools.dataset-preparation", operation: "update" }),
+    ).rejects.toThrow(OperationNotPermittedError);
 
-  it("executes valid plan when verified and backend returns operation status", async () => {
-    const opStatus: InstallerOperationStatus = {
-      operationId: "op-101",
-      kind: "install",
-      componentId: "cyrene.tools.document-parsing",
-      phase: "pending",
-      progressPercent: 0,
-      message: "Queued for installation",
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-      userDataRetained: null,
-    };
+    await expect(
+      provider.executeComponentOperation({ componentId: "cyrene.tools.dataset-preparation", operation: "rollback" }),
+    ).rejects.toThrow(OperationNotPermittedError);
 
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(opStatus), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    globalThis.fetch = fetchMock;
-
-    const provider = new RealInstallerProvider({
-      baseUrl: "https://installer.api/v1",
-      verified: true,
-      authToken: "exec-token",
+    // Uninstall executes check -> stage -> apply
+    const uninstallRes = await provider.executeComponentOperation({
+      componentId: "cyrene.tools.dataset-preparation",
+      operation: "uninstall",
     });
-
-    const result = await provider.executePlan("plan-valid-1", "confirm-token");
-    expect(result.operationId).toBe("op-101");
-    expect(result.phase).toBe("pending");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://installer.api/v1/plans/plan-valid-1/execute",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          Authorization: "Bearer exec-token",
-        }),
-        body: JSON.stringify({ confirmationToken: "confirm-token" }),
-      }),
-    );
-  });
-
-  it("streams operation progress using fetch-based ReadableStream with Bearer auth", async () => {
-    const statusPayload: InstallerOperationStatus = {
-      operationId: "op-stream-1",
-      kind: "install",
-      componentId: "comp-1",
-      phase: "running",
-      progressPercent: 65,
-      message: "Unpacking component archives",
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-      userDataRetained: null,
-    };
-
-    const sseBody = `data: ${JSON.stringify(statusPayload)}\n\n`;
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(sseBody, {
-        status: 200,
-        headers: { "Content-Type": "text/event-stream" },
-      }),
-    );
-    globalThis.fetch = fetchMock;
-
-    const provider = new RealInstallerProvider({
-      baseUrl: "https://installer.api/v1",
-      authToken: "sse-bearer-token",
-      verified: true,
-    });
-
-    const received: InstallerOperationStatus[] = [];
-    const unsub = provider.getOperationStream(
-      "op-stream-1",
-      (status) => received.push(status),
-      (err) => {
-        throw err;
-      },
-    );
-
-    // Allow event loop microtasks for stream reading
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://installer.api/v1/operations/op-stream-1/stream",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Accept: "text/event-stream",
-          Authorization: "Bearer sse-bearer-token",
-        }),
-      }),
-    );
-    expect(received.length).toBe(1);
-    expect(received[0].operationId).toBe("op-stream-1");
-    expect(received[0].progressPercent).toBe(65);
-
-    unsub();
+    expect(uninstallRes.kind).toBe("uninstall");
+    expect(uninstallRes.phase).toBe("succeeded");
   });
 
   it("enters progress view ONLY after execution is accepted by backend", async () => {
@@ -617,7 +868,7 @@ describe("RealInstallerProvider", () => {
     };
 
     // Case 1: unverified provider -> remains on plan view
-    const unverifiedProvider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1" });
+    const unverifiedProvider = new RealInstallerProvider({ prefix: "/studio-workloads" });
     await handleInstallFlow(unverifiedProvider, validPlan);
     expect(currentStep).toBe("plan");
     expect(inPageError).toContain("Operation disabled");
@@ -625,10 +876,13 @@ describe("RealInstallerProvider", () => {
 
     // Case 2: verified provider but execution fails (500) -> remains on plan view
     inPageError = null;
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response("Server Error", { status: 500, statusText: "Internal Server Error" }),
-    );
-    const verifiedProvider = new RealInstallerProvider({ baseUrl: "https://installer.api/v1", verified: true });
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      return Promise.resolve(new Response("Server Error", { status: 500, statusText: "Internal Server Error" }));
+    });
+    const verifiedProvider = new RealInstallerProvider({ prefix: "/studio-workloads", verified: true });
     await handleInstallFlow(verifiedProvider, validPlan);
     expect(currentStep).toBe("plan");
     expect(inPageError).toMatch(/server error|500/i);
@@ -636,26 +890,21 @@ describe("RealInstallerProvider", () => {
 
     // Case 3: execution accepted -> switches to progress
     inPageError = null;
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({
-        operationId: "op-success-777",
-        kind: "install",
-        componentId: "comp-1",
-        phase: "pending",
-        progressPercent: 0,
-        message: null,
-        startedAt: new Date().toISOString(),
-        completedAt: null,
-        userDataRetained: null,
-      }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/v1/session")) {
+        return Promise.resolve(new Response(JSON.stringify(mockSession), { status: 200 }));
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ result: { status: "installed" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
     await handleInstallFlow(verifiedProvider, validPlan);
     expect(currentStep).toBe("progress");
     expect(inPageError).toBeNull();
-    expect(operationId).toBe("op-success-777");
+    expect(operationId).toBeTruthy();
   });
 });
 

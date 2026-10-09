@@ -112,7 +112,6 @@ export interface PlannedComponent {
   version: string | null;
 }
 
-/** A full installation plan returned by the Workload Resolver. */
 export interface InstallationPlan {
   planId: string;
   catalogGeneration: number;
@@ -129,6 +128,39 @@ export interface InstallationPlan {
   alreadyInstalledComponentIds: string[];
   resolvedAt: string; // ISO-8601
   expiresAt?: string; // ISO-8601 plan validity window
+  /** Official Workload Control protocol extensions */
+  planDigest?: string;
+  catalogDigest?: string;
+  status?: "ready" | "blocked";
+  blockers?: Array<{
+    code: string;
+    componentId: string | null;
+    capabilityId?: string | null;
+    requiredness?: string | null;
+    targetId?: string | null;
+    message: string;
+    retryable: boolean;
+  }>;
+  warnings?: Array<{
+    code: string;
+    componentId: string | null;
+    message: string;
+  }>;
+  workloadPlans?: Record<string, {
+    workloadId: string;
+    planId: string;
+    planDigest: string;
+    catalogDigest: string;
+    status: "ready" | "blocked";
+    blockers: Array<{ code: string; message: string; componentId: string | null }>;
+    warnings: Array<{ code: string; message: string; componentId: string | null }>;
+    action: "install" | "uninstall";
+    selections: {
+      includeComponentIds: string[];
+      excludeComponentIds: string[];
+      choices: Record<string, string>;
+    };
+  }>;
 }
 
 // ---------------------------------------------------------------------------

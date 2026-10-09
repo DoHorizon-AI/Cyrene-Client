@@ -223,6 +223,36 @@ export function InstallerPlanPanel({
           </div>
         ) : plan ? (
           <div className="installer-plan">
+            {/* Blockers */}
+            {plan.status === "blocked" && plan.blockers && plan.blockers.length > 0 && (
+              <div className="installer-affinity-warning" role="alert" style={{ margin: "var(--dh-space-4) 0", borderColor: "var(--dh-color-danger, #d32f2f)" }}>
+                <p style={{ margin: 0, fontWeight: 600, color: "var(--dh-color-danger, #d32f2f)" }}>
+                  {l("Installation blocked")}
+                </p>
+                <ul className="installer-plan__limitation-list" style={{ marginTop: "var(--dh-space-2)" }}>
+                  {plan.blockers.map((b, idx) => (
+                    <li key={idx}>
+                      <strong>{b.code}</strong>: {b.message} {b.componentId ? `(${b.componentId})` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Warnings */}
+            {plan.warnings && plan.warnings.length > 0 && (
+              <div className="installer-affinity-warning" role="alert" style={{ margin: "var(--dh-space-4) 0" }}>
+                <p style={{ margin: 0, fontWeight: 600 }}>{l("Warnings")}</p>
+                <ul className="installer-plan__limitation-list" style={{ marginTop: "var(--dh-space-2)" }}>
+                  {plan.warnings.map((w, idx) => (
+                    <li key={idx}>
+                      <strong>{w.code}</strong>: {w.message} {w.componentId ? `(${w.componentId})` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Products */}
             {products.length > 0 && (
               <section className="installer-plan__section">
@@ -327,6 +357,16 @@ export function InstallerPlanPanel({
             <div className="installer-plan__meta-card">
               <p className="installer-plan__meta-label">Plan ID</p>
               <p className="installer-plan__meta-value">{plan.planId}</p>
+              {plan.planDigest && (
+                <>
+                  <p className="installer-plan__meta-label" style={{ marginTop: "var(--dh-space-1)" }}>
+                    Plan Digest
+                  </p>
+                  <p className="installer-plan__meta-value" style={{ fontFamily: "var(--dh-font-mono)", fontSize: "var(--dh-fs-xs)", wordBreak: "break-all" }}>
+                    {plan.planDigest}
+                  </p>
+                </>
+              )}
               <p className="installer-plan__meta-label" style={{ marginTop: "var(--dh-space-1)" }}>
                 Resolved at
               </p>
@@ -355,13 +395,15 @@ export function InstallerPlanPanel({
             ? ` · ${formatBytes(plan.totalDownloadBytes)}`
             : ""}
         </span>
-        {/* Primary action — disabled if provider isDemo or not connected, or if loading/error/installing */}
+        {/* Primary action — disabled if provider isDemo or not connected, or if loading/error/installing or plan is blocked */}
         <button
           className="installer-btn installer-btn--primary"
-          disabled={!plan || loading || Boolean(isInstalling) || Boolean(error) || provider.isDemo || !provider.isConnected}
+          disabled={!plan || loading || Boolean(isInstalling) || Boolean(error) || provider.isDemo || !provider.isConnected || plan.status === "blocked"}
           title={
             provider.isDemo || !provider.isConnected
               ? l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")
+              : plan?.status === "blocked"
+              ? l("Installation plan is blocked by dependency or system requirements.")
               : undefined
           }
           onClick={() => plan && onInstall(plan)}
