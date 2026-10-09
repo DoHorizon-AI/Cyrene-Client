@@ -72,6 +72,7 @@ test("Work Assistant streams a task selected after a terminal task and coalesces
   await page.route("**/api/v1/**", route => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/system/status") return route.fulfill({ json: { service: "Navigator", status: "OK", version: "test", workspaceId: "local", authenticated: true, proxyPrefixes: [], credentials: { active: 0, revoked: 0 }, observedAt: new Date().toISOString() } });
+    if (path === "/api/v1/navigator/assistant/capabilities") return route.fulfill({ json: { workspaceId: "local", defaultRuntime: "harness", mcpConfigured: true, runtimes: [], providers: [] } });
     if (path === "/api/v1/navigator/tasks") return route.fulfill({ json: { items: [task("task-a", "completed"), task("task-b", "queued")], nextCursor: null } });
     if (path.endsWith("/task-a")) return route.fulfill({ json: task("task-a", "completed") });
     if (path.endsWith("/task-b")) { reads++; return route.fulfill({ json: task("task-b", streamed ? "completed" : "queued") }); }

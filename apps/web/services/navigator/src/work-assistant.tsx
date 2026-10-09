@@ -27,6 +27,9 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const { t } = useI18n();
   const [loading, setLoading] = useState(false), [pageError, setPageError] = useState("");
   const [hostWorkspaceId, setHostWorkspaceId] = useState<string | null>(null);
+  const [capabilityWorkspaceId, setCapabilityWorkspaceId] = useState<string | null>(null);
+  const [workspaceLoading, setWorkspaceLoading] = useState(true), [workspaceError, setWorkspaceError] = useState("");
+  const workspaceProbe = useRef(0);
   const [tasks, setTasks] = useState<NavigatorTaskRecord[]>([]), [tasksError, setTasksError] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState(""), [taskDetail, setTaskDetail] = useState<NavigatorTaskRecord | null>(null), [detailError, setDetailError] = useState("");
   const [taskEvents, setTaskEvents] = useState<NavigatorTaskEvent[]>([]), [streamError, setStreamError] = useState("");
@@ -44,16 +47,23 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const streamCursors = useRef(new Map<string, number>());
   const inputMessageIdsRef = useRef(new Map<string, { answer: string; messageId: string }>());
   useEffect(() => { taskDetailRef.current = taskDetail; }, [taskDetail]);
-  const effectiveWorkspaceId = hostWorkspaceId || workspaceId;
-  const workspaceAligned = !hostWorkspaceId || !workspaceId || hostWorkspaceId === workspaceId;
+  const effectiveWorkspaceId = workspaceId;
+  const workspaceKnown = !!hostWorkspaceId && !!capabilityWorkspaceId;
+  const workspaceAligned = workspaceKnown && hostWorkspaceId === workspaceId && capabilityWorkspaceId === workspaceId;
   const mayOperate = canOperate && workspaceAligned;
   const mayWrite = canWrite && workspaceAligned;
 
-  useEffect(() => {
-    let active = true;
-    void api.getSystemStatus().then(status => { if (active) setHostWorkspaceId(status.workspaceId || null); }, () => { if (active) setHostWorkspaceId(null); });
-    return () => { active = false; };
-  }, [api]);
+  const reloadWorkspace = useCallback(async () => {
+    const generation = ++workspaceProbe.current;
+    setWorkspaceLoading(true); setWorkspaceError(""); setHostWorkspaceId(null); setCapabilityWorkspaceId(null);
+    try {
+      const [status, capabilities] = await Promise.all([api.getSystemStatus(), api.getAssistantCapabilities()]);
+      if (!status.workspaceId) throw new Error(t("Navigator did not report a workspace identity."));
+      if (generation === workspaceProbe.current) { setHostWorkspaceId(status.workspaceId); setCapabilityWorkspaceId(capabilities.workspaceId); }
+    } catch (error) { if (generation === workspaceProbe.current) setWorkspaceError(errorText(error)); }
+    finally { if (generation === workspaceProbe.current) setWorkspaceLoading(false); }
+  }, [api, t]);
+  useEffect(() => { void reloadWorkspace(); return () => { workspaceProbe.current++; }; }, [reloadWorkspace]);
 
   const refreshAll = useCallback(async () => {
     setLoading(true); setPageError("");
@@ -207,6 +217,7 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   };
 
   const resolveApproval = async (approvalId: string, decision: "approved" | "rejected") => {
+    if (!mayOperate || approvalBusy) return;
     setApprovalBusy(approvalId);
     try {
       await api.resolveWorkApproval(effectiveWorkspaceId, approvalId, decision);
@@ -263,7 +274,7 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const uploadAttachment = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
-    if (!file) return;
+    if (!file || !mayWrite || attachmentBusy) return;
     setAttachmentError("");
     if (file.size > MAX_ATTACHMENT_BYTES) { setAttachmentError(t("Attachments are limited to 10 MB.")); return; }
     setAttachmentBusy(true);
@@ -311,8 +322,9 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const taskActive = !!taskDetail && !TERMINAL_TASK_STATES.has(taskDetail.status);
   return <div className="page-container work-assistant">
     <PageHeader eyebrow={t("WORK ASSISTANT")} title={t("Work assistant")} description={t("Tasks run beside the paired Navigator host; workspace data stays with its owner.")} action={<Button onClick={() => void refreshAll()} disabled={loading}>{loading ? t("Refreshing...") : t("Refresh all")}</Button>} />
-    {!workspaceAligned && <p role="alert" className="work-assistant__notice work-assistant__notice--error">{t("Selected workspace does not match the Navigator host configuration.")} {workspaceId} ≠ {hostWorkspaceId}</p>}
-    {!mayOperate && <p className="work-assistant__notice">{t("Execution permission is required to create tasks, resolve approvals, answer requests, or start QQ login.")}</p>}
+    {!workspaceKnown && <p role={workspaceError ? "alert" : "status"} className="work-assistant__notice">{workspaceLoading ? t("Verifying Navigator workspace identity...") : workspaceError || t("Navigator did not report a workspace identity.")} <Button disabled={workspaceLoading} onClick={() => void reloadWorkspace()}>{t("Retry workspace connection")}</Button></p>}
+    {workspaceKnown && !workspaceAligned && <p role="alert" className="work-assistant__notice work-assistant__notice--error">{t("Selected workspace does not match the Navigator host configuration.")} {workspaceId} / {hostWorkspaceId} / {capabilityWorkspaceId} <Button onClick={() => void reloadWorkspace()}>{t("Retry workspace connection")}</Button></p>}
+    {!canOperate && <p className="work-assistant__notice">{t("Execution permission is required to create tasks, resolve approvals, answer requests, or start QQ login.")}</p>}
     {pageError && <p role="alert" className="work-assistant__notice work-assistant__notice--error">{pageError}</p>}
 
     <div className="work-assistant__grid">
