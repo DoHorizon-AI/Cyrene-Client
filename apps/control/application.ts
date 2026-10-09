@@ -299,10 +299,12 @@ export function createControlApplication(options: ControlOptions) {
           if (chunks.length) body = Buffer.concat(chunks);
         }
         const taskSubmission = path === "/api/v1/navigator/tasks" && req.method === "POST";
-        const taskPatch = /^\/api\/v1\/workspaces\/[^/]+\/work\/tasks\/[^/]+$/.test(path) && req.method === "PATCH";
-        if ((taskSubmission || taskPatch) && body) {
+        if (taskSubmission && body) {
           let input: unknown;
           try { input = JSON.parse(body.toString("utf8")); } catch { throw new ControlError("INVALID_JSON", "请求不是有效 JSON。"); }
+          if (input && typeof input === "object" && ["cwd", "agentPreset", "timeoutMs"].some(field => Object.hasOwn(input, field))) {
+            throw new ControlError("RESERVED_EXECUTION_FIELD", "执行目录、预设和超时由宿主管理，不能通过浏览器任务指定。", 403);
+          }
           if (input && typeof input === "object" && "metadata" in input && input.metadata && typeof input.metadata === "object" && "navigator" in input.metadata) {
             throw new ControlError("RESERVED_EXECUTION_METADATA", "Navigator 执行配置由宿主管理，不能通过任务 metadata 修改。", 403);
           }

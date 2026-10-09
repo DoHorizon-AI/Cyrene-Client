@@ -2,6 +2,12 @@
 
 聊天界面归 Client，Harness 运行、原生智能体适配和权威会话事件归 Navigator。每轮对话使用现有 Navigator executor Task；任务、事件、审批、人工输入和附件使用既有 Work API，Client 不再启动独立 `assistant` daemon，也不创建 `assistant.sqlite`。
 
+## 2026-10-09 审查修复：第一期
+
+现有整合已分别保存为本地检查点 Client `3f25743`、Navigator `aaa64f0`，没有推送。Client 不再代理任务 PATCH 和执行器事件 POST；任务提交携带 `cwd`、`agentPreset` 或 `timeoutMs` 时返回 `403 RESERVED_EXECUTION_FIELD`，即使值为 null 或零也拒绝。正常任务提交与读取保留。相关 Client HTTP 与代理回归 8 项通过。
+
+执行目录、预设和超时由 Navigator 宿主配置。取消继续使用现有 Work 状态 `aborted`。后续权限矩阵、Web principal、MCP 契约和前端会话修复分期提交，实际验证记录随各期补充。
+
 ## 源码与接口
 
 - `apps/web/src/assistant/` 提供同一实例在右侧栏与主编辑区之间移动的对话界面。新版 Navigator 工作助手管理页与聊天界面读取同一任务记录。

@@ -72,8 +72,6 @@ export function productPermission(method: string, path: string): string | null {
     ["POST", `workspaces/${workId}/work/inputs/${workId}/resolve`, "operate"],
     ["GET", `workspaces/${workId}/work/tasks(?:/${workId}(?:/events)?)?`, "read"],
     ["POST", `workspaces/${workId}/work/tasks/${workId}/approvals`, "operate"],
-    ["PATCH", `workspaces/${workId}/work/tasks/${workId}`, "operate"],
-    ["POST", `workspaces/${workId}/work/tasks/${workId}/events`, "operate"],
     ["GET", `workspaces/${workId}/work/memory/facts`, "read"],
     ["POST", `workspaces/${workId}/work/memory/facts`, "write"],
     ["POST", `workspaces/${workId}/work/memory/query`, "read"],
