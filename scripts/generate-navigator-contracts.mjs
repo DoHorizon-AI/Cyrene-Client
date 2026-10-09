@@ -74,6 +74,7 @@ for (const source of sources) {
   }
   output += '}\n\n';
 }
+output = output.trimEnd() + '\n';
 if (process.argv.includes('--check')) {
   const current = (await readFile(target, 'utf8')).replace(/\r\n/g, '\n');
   if (current !== output) throw new Error('Navigator generated types are stale; run npm run contracts:navigator');

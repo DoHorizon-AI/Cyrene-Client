@@ -107,4 +107,3 @@ export interface WorkSchemas {
   "WorkflowScheduleEventList": { "items": Array<WorkSchemas["WorkflowScheduleEvent"]>; "nextCursor": (string) | (null); };
   "WorkflowTarget": { "id": string; "kind": string; "label": string; "uri"?: (string) | (null); };
 }
-
