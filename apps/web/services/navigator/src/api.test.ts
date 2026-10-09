@@ -123,7 +123,7 @@ describe("NavigatorApi", () => {
       calls.push({ key: new Headers(init?.headers).get("Idempotency-Key"), body: JSON.parse(String(init?.body)) });
       return response(task);
     });
-    const input = { prompt: "Hello", execution: { runtime: "codex", model: "model-1", effort: "high", permission: "ask" as const } };
+    const input = { prompt: "Hello", execution: { runtime: "codex" as const, model: "model-1", effort: "high", permission: "ask" as const } };
     await api.createAssistantTask(input, "request-1"); await api.createAssistantTask(input, "request-1");
     expect(calls).toEqual([{ key: "request-1", body: input }, { key: "request-1", body: input }]);
   });

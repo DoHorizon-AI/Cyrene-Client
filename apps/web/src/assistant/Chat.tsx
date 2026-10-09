@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { NavigatorApi, NavigatorHttpError, makeIdempotencyKey, type AssistantCapabilities, type AssistantExecution, type AssistantPermission, type AssistantProtocol, type AssistantProvider, type NavigatorTaskEvent, type NavigatorTaskRecord, type SessionPayload, type WorkApproval, type WorkAttachment, type WorkInput } from "../../services/navigator/src/api";
+import { NavigatorApi, NavigatorHttpError, makeIdempotencyKey, type AssistantCapabilities, type AssistantExecution, type AssistantPermission, type AssistantProtocol, type AssistantProvider, type AssistantRuntime, type NavigatorTaskEvent, type NavigatorTaskRecord, type SessionPayload, type WorkApproval, type WorkAttachment, type WorkInput } from "../../services/navigator/src/api";
+import type { ExecutorSchemas } from "../../services/navigator/src/generated/contracts";
 import { assistantEventLabel, readAssistantTaskEvents } from "../../services/navigator/src/task-event-stream";
 import { useNavigatorSession } from "../services/NavigatorSessionProvider";
 import { useTeamIdentity } from "../team/TeamGate";
@@ -20,7 +21,7 @@ const statusLabels: Record<NavigatorTaskRecord["status"], [string, string]> = {
 };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-function executionFor(task?: NavigatorTaskRecord): Partial<AssistantExecution> {
+function executionFor(task?: NavigatorTaskRecord): Partial<AssistantExecution> & { providerId?: string } {
   const navigator = task?.metadata.navigator;
   const owned = navigator && typeof navigator === "object" && !Array.isArray(navigator) ? navigator as Record<string, unknown> : {};
   const value = owned.execution ?? task?.execution ?? task?.metadata.execution;
@@ -38,7 +39,7 @@ export default function Chat(props: AssistantWindowProps) {
   const selectionKey = `cyrene.assistant.selection.v1:${actorId}:${workspaceId}`;
   const [sessionId, setSessionId] = useState(() => { try { return localStorage.getItem(selectionKey) ?? ""; } catch { return ""; } });
   const [draft, setDraft] = useState(""), [attachments, setAttachments] = useState<WorkAttachment[]>([]);
-  const [runtimeId, setRuntimeId] = useState("harness"), [providerId, setProviderId] = useState("");
+  const [runtimeId, setRuntimeId] = useState<AssistantRuntime["id"]>("harness"), [providerId, setProviderId] = useState("");
   const [model, setModel] = useState(""), [effort, setEffort] = useState(""), [permission, setPermission] = useState<AssistantPermission>("ask");
   const [view, setView] = useState<"chat" | "history" | "settings" | "mcp" | "legacy">("chat");
   const [legacyChats, setLegacyChats] = useState<LegacyChat[]>([]), [legacyId, setLegacyId] = useState("");
@@ -250,9 +251,16 @@ export default function Chat(props: AssistantWindowProps) {
     if (!retry && attachments.some(item => item.mediaType.startsWith("image/")) && modelInfo?.images !== true) {
       setError(tx("当前模型不支持已附加的图像，请移除图像或切换模型。", "Remove image attachments or choose an image-capable model.")); return;
     }
-    const submission = retry ?? { requestId: makeIdempotencyKey(), input: {
+    if (!retry && runtimeId === "harness" && permission !== "read-only" && permission !== "ask") {
+      setError(tx("Harness 支持只读和逐次确认模式。", "Harness supports Read only and Ask permissions.")); return;
+    }
+    const selection = { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+    const execution: AssistantExecution = runtimeId === "harness"
+      ? { ...selection, runtime: runtimeId, ...(providerId ? { providerId } : {}), permission: permission === "read-only" ? "read-only" : "ask" }
+      : { ...selection, runtime: runtimeId, permission };
+    const submission: Submission = retry ?? { requestId: makeIdempotencyKey(), input: {
       prompt: draft.trim(), ...(sessionId ? { sessionId } : {}),
-      execution: { runtime: runtimeId, ...(runtimeId === "harness" && providerId ? { providerId } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), permission },
+      execution,
       metadata: { workflow: workflowSnapshot(props.document, props.serverBase, props.selectedId), attachments: attachments.map(({ id, sha256, name, mediaType, size }) => ({ id, sha256, name, mediaType, size })) },
     } };
     setPending(submission);
@@ -389,7 +397,7 @@ export default function Chat(props: AssistantWindowProps) {
             </div>
           </div>
           <div className="assistant-model-bar">
-            <select aria-label={tx("智能体", "Agent")} value={runtimeId} disabled={!!sessionId || !!activeTask || !!pending} onChange={event => setRuntimeId(event.target.value)}>{caps?.runtimes.map(item => <option key={item.id} value={item.id} disabled={!item.available}>{item.name}{!item.available ? tx("（不可用）", " (unavailable)") : ""}</option>)}</select>
+            <select aria-label={tx("智能体", "Agent")} value={runtimeId} disabled={!!sessionId || !!activeTask || !!pending} onChange={event => setRuntimeId(event.target.value as AssistantRuntime["id"])}>{caps?.runtimes.map(item => <option key={item.id} value={item.id} disabled={!item.available}>{item.name}{!item.available ? tx("（不可用）", " (unavailable)") : ""}</option>)}</select>
             {runtimeId === "harness" && <select aria-label={tx("API 提供方", "API provider")} value={providerId} disabled={!!sessionId || !!activeTask || !!pending} onChange={event => setProviderId(event.target.value)}><option value="" disabled={!runtime?.models.length && !!caps?.providers.length}>{tx("宿主默认模型", "Host default model")}</option>{caps?.providers.map(item => <option key={item.id} value={item.id} disabled={!item.configured}>{item.name}</option>)}</select>}
             {models.length > 0 && <select aria-label={tx("模型", "Model")} value={model} disabled={!!activeTask || !!pending} onChange={event => setModel(event.target.value)}>{models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>}
             {!!modelInfo?.efforts.length && <select aria-label={tx("思考深度", "Reasoning effort")} value={effort} disabled={!!activeTask || !!pending} onChange={event => setEffort(event.target.value)}><option value="">{tx("默认思考深度", "Default reasoning")}</option>{modelInfo.efforts.map(value => <option key={value} value={value}>{value}</option>)}</select>}
@@ -429,12 +437,15 @@ function ProviderSettings({ providers, api, onChanged, tx }: { providers: Assist
   return <form className="assistant-aux assistant-provider" onSubmit={event => {
     event.preventDefault(); if (busy) return; setBusy(true); setError("");
     const previous = providers.find(provider => provider.id === id);
+    const supportedEfforts = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
     const levelValues = efforts.split(",").map(item => item.trim()).filter(Boolean);
+    if (levelValues.some(value => !supportedEfforts.has(value))) { setError(tx("思考深度必须是 minimal、low、medium、high、xhigh 或 max。", "Reasoning effort must be minimal, low, medium, high, xhigh, or max.")); setBusy(false); return; }
     const defaultsChanged = efforts !== (previous?.models[0]?.efforts.join(",") ?? "") || images !== (previous?.models[0]?.images === true);
-    const input = { name: name.trim(), protocol, baseUrl: baseUrl.trim(), ...(apiKey ? { apiKey } : {}),
+    const input: ExecutorSchemas["ApiProviderInput"] = { name: name.trim(), protocol, baseUrl: baseUrl.trim(), ...(apiKey ? { apiKey } : {}),
       models: models.split(/[\n,]/).map(value => value.trim()).filter(Boolean).map(value => {
         const existing = previous?.models.find(model => model.id === value);
-        return existing && !defaultsChanged ? existing : { id: value, efforts: levelValues, images };
+        const model = existing && !defaultsChanged ? existing : { id: value, efforts: levelValues, images };
+        return { ...model, efforts: model.efforts.filter((value): value is NonNullable<ExecutorSchemas["ModelInput"]["efforts"]>[number] => supportedEfforts.has(value)) };
       }) };
     // Clear the credential field immediately. It is never persisted in browser storage.
     setApiKey(""); void api.saveAssistantProvider(id.trim(), input).then(onChanged, reason => setError(message(reason))).finally(() => setBusy(false));

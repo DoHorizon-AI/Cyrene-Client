@@ -26,9 +26,9 @@ async function fixture(page: Page, hostDefault = false, restoreOldSession = fals
       if (failStatus) return reply({ code: "HOST_UNAVAILABLE", detail: "Host status unavailable" }, 503);
       return reply({ service: "Navigator", status: "OK", version: "test", workspaceId: "local", authenticated: true, proxyPrefixes: [], credentials: { active: 0, revoked: 0 }, observedAt: new Date().toISOString() });
     }
-    if (path === "/api/v1/navigator/assistant/capabilities") return reply({ defaultRuntime: "harness", workspaceId: "local", providers: hostDefault ? [] : [provider], runtimes: [
-      { id: "harness", name: "Harness", available: true, models: hostDefault ? [{ id: "exchange-model", name: "Host Exchange model", efforts: [] }] : [], permissions: ["ask", "full-access"], approvalScopes: ["once", "task"], resume: true },
-      { id: "codex", name: "Codex", available: true, models: [{ id: "codex-model", name: "Codex model", efforts: ["low", "high"] }], permissions: ["read-only", "ask", "full-access"], resume: true },
+    if (path === "/api/v1/navigator/assistant/capabilities") return reply({ defaultRuntime: "harness", workspaceId: "local", mcpConfigured: true, providers: hostDefault ? [] : [provider], runtimes: [
+      { id: "harness", name: "Harness", available: true, models: hostDefault ? [{ id: "exchange-model", name: "Host Exchange model", efforts: [] }] : [], permissions: ["read-only", "ask"], approvalScopes: ["once", "task"], resume: true },
+      { id: "codex", name: "Codex", available: true, models: [{ id: "codex-model", name: "Codex model", efforts: ["low", "high"] }], permissions: ["read-only", "ask", "auto", "full-access"], approvalScopes: ["once", "task"], resume: true },
       { id: "workbuddy", name: "WorkBuddy", available: false, reason: "Not installed", models: [], permissions: [], resume: false },
     ] });
     if (path === "/api/v1/navigator/assistant/providers/test-api" && method === "PUT") return reply(provider);
@@ -152,6 +152,7 @@ test("API credentials stay out of browser storage and lost task responses do not
 
 test("task approval scope is sent to Navigator and a new chat resets permission mode", async ({ page }) => {
   const state = await fixture(page);
+  await page.getByLabel("智能体", { exact: true }).selectOption("codex");
   await page.getByLabel("消息", { exact: true }).fill("Approve this turn");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect.poll(() => state.tasks.length).toBe(1);
