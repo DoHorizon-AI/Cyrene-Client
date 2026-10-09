@@ -36,22 +36,31 @@ export function useTaskStream(options: TaskStreamOptions): void {
     if (!taskId || !enabled || !pageVisible || (terminal && !replayTerminal)) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let refreshing = false, refreshAgain = false, failures = 0;
+    let refreshing = false, refreshAgain = false, resourcesRefreshing = false, resourcesAgain = false, failures = 0;
     const active = () => !controller.signal.aborted && identity.current === observationKey;
+    const refreshResources = () => {
+      if (!active() || !callbacks.current.onRefresh) return;
+      if (resourcesRefreshing) { resourcesAgain = true; return; }
+      resourcesRefreshing = true;
+      void Promise.resolve().then(() => {
+        if (active()) return callbacks.current.onRefresh?.(controller.signal);
+      }).catch(error => { if (active()) callbacks.current.onError(error, "resources"); })
+        .finally(() => {
+          resourcesRefreshing = false;
+          if (resourcesAgain && active()) { resourcesAgain = false; refreshResources(); }
+        });
+    };
     const refresh = async () => {
       if (!active()) return;
       if (refreshing) { refreshAgain = true; return; }
       refreshing = true;
+      refreshResources();
       try {
-        const taskRead = api.getAssistantTask(taskId, controller.signal).then(task => {
-          if (!active()) return;
-          if (task.id !== taskId) throw new NavigatorContractError("Navigator returned another task while refreshing the selected task.");
-          callbacks.current.onTask(task);
-        }).catch(error => { if (active()) callbacks.current.onError(error, "refresh"); });
-        const resources = Promise.resolve().then(() => {
-          if (active()) return callbacks.current.onRefresh?.(controller.signal);
-        }).catch(error => { if (active()) callbacks.current.onError(error, "resources"); });
-        await Promise.allSettled([taskRead, resources]);
+        const task = await api.getAssistantTask(taskId, controller.signal);
+        if (!active()) return;
+        if (task.id !== taskId) throw new NavigatorContractError("Navigator returned another task while refreshing the selected task.");
+        callbacks.current.onTask(task);
+      } catch (error) { if (active()) callbacks.current.onError(error, "refresh");
       } finally {
         refreshing = false;
         if (refreshAgain && active()) { refreshAgain = false; scheduleRefresh(); }

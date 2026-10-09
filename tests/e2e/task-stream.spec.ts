@@ -39,20 +39,23 @@ test("shared task stream ignores late previous-task refreshes, resumes its curso
 
 for (const resources of ["fail", "slow"] as const) test(`a successful terminal task observation stops streaming when auxiliary refreshes ${resources}`, async ({ page }) => {
   const entry = `/@fs/${resolve("tests/fixtures/task-stream.tsx").replaceAll("\\", "/")}`;
-  let streamReads = 0;
+  let streamReads = 0, finished = resources === "fail";
   await page.route("**/src/main.tsx", route => route.fulfill({ contentType: "text/javascript", body: `import ${JSON.stringify(entry)};` }));
   await page.route("**/api/v1/navigator/tasks/**", route => {
-    if (route.request().url().endsWith("/events?after=0")) {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/events")) {
       streamReads++;
-      return route.fulfill({ contentType: "text/event-stream", body: "id: 1\nevent: task.completed\ndata: {\"status\":\"completed\"}\n\n" });
+      const after = Number(url.searchParams.get("after"));
+      if (after) finished = true;
+      return route.fulfill({ contentType: "text/event-stream", body: `id: ${after + 1}\nevent: task.status_changed\ndata: {"status":"${finished ? "completed" : "running"}"}\n\n` });
     }
-    return route.fulfill({ json: { id: "task-a", workspaceId: "local", sessionId: "session", prompt: "Task", status: "completed", createdAt: 1,
-      startedAt: 1, endedAt: 2, output: "Finished", reasoning: "", error: null, durationMs: 0, sequence: 1, metadata: {} } });
+    return route.fulfill({ json: { id: "task-a", workspaceId: "local", sessionId: "session", prompt: "Task", status: finished ? "completed" : "running", createdAt: 1,
+      startedAt: 1, endedAt: finished ? 2 : null, output: "Finished", reasoning: "", error: null, durationMs: 0, sequence: finished ? 2 : 1, metadata: {} } });
   });
   await page.goto(`/?resources-${resources}`);
   await expect(page.getByLabel("Task observations", { exact: true })).toContainText('"status":"completed"');
   await page.clock.install(); await page.clock.fastForward(30_000);
-  expect(streamReads).toBe(1);
+  expect(streamReads).toBe(resources === "slow" ? 2 : 1);
 });
 
 test("the same task ID in a new scope starts at zero and cannot receive the old scope's late observation", async ({ page }) => {
