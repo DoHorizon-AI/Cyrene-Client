@@ -55,6 +55,7 @@ it("rejects privilege and CSRF violations before forwarding, preserves raw uploa
   expect((await f.request("/api/v1/yield/training-drafts/x/actions/start", editor, "POST", "{}")).status).toBe(403);
   expect(f.received).toHaveLength(2);
   expect((await f.request("/api/v1/navigator/harness/workspaces/other/sessions", viewer)).status).toBe(403);
+  expect((await f.request("/api/v1/navigator/harness/workspaces/other:tenant/sessions", viewer)).status).toBe(403);
   expect(f.received).toHaveLength(2);
   expect((await f.request("/api/v1/auth/pair", { ...viewer, "content-type": "application/json" }, "POST", '{"code":"one-time-code"}')).status).toBe(200);
   expect(f.received[2].url).toBe("/api/v1/auth/pair");

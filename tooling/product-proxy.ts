@@ -14,7 +14,7 @@ interface NavigatorPolicyOptions {
 export interface NavigatorProxyPolicy extends NavigatorPolicyOptions {
   method: string;
   path: RegExp;
-  permission: string;
+  permission: string | null;
   maxBodyBytes: number;
 }
 
@@ -32,8 +32,8 @@ function taskBodyViolation(input: unknown, mode: "local" | "team"): ProxyBodyVio
   return null;
 }
 
-function policy(method: string, path: string, access: string, options: NavigatorPolicyOptions = {}): NavigatorProxyPolicy {
-  return { method, path: new RegExp(`^/api/v1/${path}$`), permission: `products.${access}`, maxBodyBytes: defaultBodyLimit, ...options };
+function policy(method: string, path: string, access: string | null, options: NavigatorPolicyOptions = {}): NavigatorProxyPolicy {
+  return { method, path: new RegExp(`^/api/v1/${path}$`), permission: access === null ? null : `products.${access}`, maxBodyBytes: defaultBodyLimit, ...options };
 }
 
 /** One policy owns admission, workspace checks, body checks, limits and rewrites. */
@@ -45,6 +45,9 @@ export const navigatorProxyPolicies: readonly NavigatorProxyPolicy[] = [
   policy("PUT", `navigator/assistant/providers/${providerId}`, "admin", { workspace: "host", browserOnly: true, upstream: "assistant" }),
   policy("DELETE", `navigator/assistant/providers/${providerId}`, "admin", { workspace: "host", browserOnly: true, upstream: "assistant" }),
   policy("GET", `navigator/harness/workspaces/(${id})/sessions`, "read", { workspace: "path" }),
+  // The settings bridge accepts other opaque workspace IDs. Keep its original
+  // admission while enforcing the same workspace boundary before forwarding.
+  policy("GET", "navigator/harness/workspaces/([^/]+)/sessions", null, { workspace: "path" }),
   policy("GET", "navigator/tasks", "read", { workspace: "host", upstream: "tasks" }),
   policy("POST", "navigator/tasks", "operate", { workspace: "host", upstream: "tasks", validateBody: taskBodyViolation }),
   policy("GET", `navigator/tasks/${id}(?:/events)?`, "read", { workspace: "host", upstream: "tasks" }),
