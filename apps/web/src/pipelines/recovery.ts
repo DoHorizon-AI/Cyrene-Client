@@ -14,6 +14,14 @@ export const recoverySchema = z.object({
   view: z.object({ scale: z.number().positive().max(100), offset: z.tuple([z.number().finite(), z.number().finite()]) }).optional(),
 });
 export type Recovery = z.infer<typeof recoverySchema>;
+export function retainRecoveries(rows: Recovery[]): Recovery[] {
+  const counts = new Map<string, number>();
+  return [...rows].sort((a, b) => b.savedAt.localeCompare(a.savedAt) || b.sequence - a.sequence).filter(row => {
+    const key = JSON.stringify([row.actorId, row.workspaceId, row.document.id]);
+    const count = (counts.get(key) ?? 0) + 1; counts.set(key, count);
+    return count <= 20;
+  });
+}
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("cyrene-studio-recovery", 1);
@@ -28,7 +36,17 @@ export async function saveRecovery(value: Recovery) {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction("drafts", "readwrite"), store = tx.objectStore("drafts");
       const request = store.get(record.id);
-      request.onsuccess = () => { if (!request.result || request.result.sequence < record.sequence) store.put(record); };
+      request.onsuccess = () => {
+        if (!request.result || request.result.sequence < record.sequence) store.put(record);
+        const all = store.getAll();
+        all.onsuccess = () => {
+          const rows = all.result.flatMap(row => { const parsed = recoverySchema.safeParse(row); return parsed.success
+            && parsed.data.actorId === record.actorId && parsed.data.workspaceId === record.workspaceId
+            && parsed.data.document.id === record.document.id ? [parsed.data] : []; });
+          const retained = new Set(retainRecoveries(rows).map(row => row.id));
+          for (const row of rows) if (!retained.has(row.id)) store.delete(row.id);
+        };
+      };
       tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error ?? new Error("恢复写入已中断。"));
     });
   } finally { db.close(); }

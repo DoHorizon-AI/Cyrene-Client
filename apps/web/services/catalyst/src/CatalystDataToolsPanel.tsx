@@ -4,7 +4,7 @@
 // 中文：提供来源审核、双 recipe 准备、发布与下载界面。
 // -----------------------------------------------------------------------------
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button, Field, Panel, StateBlock, StatusPill } from "../../navigator/src/components";
 import { useI18n } from "../../navigator/src/i18n";
@@ -93,6 +93,14 @@ export function CatalystDataToolsPanel({
   const [maxExamples, setMaxExamples] = useState(20);
   const [maxCalls, setMaxCalls] = useState(3);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const currentReview = useRef({ datasetId, selectedRevisionId, blocks, edits });
+  currentReview.current = { datasetId, selectedRevisionId, blocks, edits };
+  const blocksGeneration = useRef(0), mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; blocksGeneration.current++; }; }, []);
+  const hasPendingEdits = () => currentReview.current.blocks.some(block => {
+    const edit = currentReview.current.edits[block.id];
+    return edit && (edit.text !== block.text || !samePolicy(edit.policy, block.policy));
+  });
 
   const selectedRevision = revisions?.find((revision) => revision.id === selectedRevisionId) ?? null;
   const approvedRevision = selectedRevision?.state === "APPROVED" ? selectedRevision : null;
@@ -163,6 +171,7 @@ export function CatalystDataToolsPanel({
   }, [client, datasetId, reloadKey]);
 
   useEffect(() => {
+    blocksGeneration.current++;
     if (!selectedRevisionId) {
       setBlocks([]);
       setBlockTotal(0);
@@ -172,6 +181,7 @@ export function CatalystDataToolsPanel({
     }
     let active = true;
     setBlocksLoading(true);
+    setBlocks([]);
     setBlocksError(null);
     setEdits({});
     void client.getBlocks(selectedRevisionId, 0, 50).then(
@@ -187,8 +197,8 @@ export function CatalystDataToolsPanel({
         setBlocksLoading(false);
       },
     );
-    return () => { active = false; };
-  }, [client, selectedRevisionId, blockReloadKey]);
+    return () => { active = false; blocksGeneration.current++; };
+  }, [client, datasetId, selectedRevisionId, blockReloadKey]);
 
   const activeRunIds = runs?.filter(isRunActive).map((run) => run.id).sort().join("|") ?? "";
   useEffect(() => {
@@ -221,7 +231,12 @@ export function CatalystDataToolsPanel({
           return next.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
         });
         if (completedRuns.length > 0) {
-          if (newReviewAvailable) setSelectedRevisionId("");
+          if (newReviewAvailable) {
+            if (hasPendingEdits()) setNotice(locale === "zh-CN"
+              ? "已有新的内容修订。当前未保存编辑已保留，请保存后选择新修订。"
+              : "A new content revision is available. Your unsaved edits were preserved; save them before selecting the new revision.");
+            else setSelectedRevisionId("");
+          }
           setReloadKey((value) => value + 1);
         }
       });
@@ -295,6 +310,8 @@ export function CatalystDataToolsPanel({
   };
 
   const openRevision = (revisionId: string) => {
+    if (revisionId !== currentReview.current.selectedRevisionId && hasPendingEdits()
+      && !window.confirm(locale === "zh-CN" ? "切换内容修订会丢弃当前未保存编辑，是否继续？" : "Discard unsaved passage edits and switch revisions?")) return;
     setSelectedRevisionId(revisionId);
     window.requestAnimationFrame(() => document.querySelector(".catalyst-tools__revision-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   };
@@ -358,14 +375,18 @@ export function CatalystDataToolsPanel({
 
   const loadMoreBlocks = async () => {
     if (!selectedRevisionId || blocksLoading) return;
+    const sentRevision = selectedRevisionId, sentDataset = datasetId, generation = blocksGeneration.current;
+    const current = () => mounted.current && generation === blocksGeneration.current
+      && currentReview.current.selectedRevisionId === sentRevision && currentReview.current.datasetId === sentDataset;
     setBlocksLoading(true);
     setBlocksError(null);
     try {
-      const page = await client.getBlocks(selectedRevisionId, blocks.length, 50);
+      const page = await client.getBlocks(sentRevision, blocks.length, 50);
+      if (!current() || page.revisionId !== sentRevision) return;
       setBlocks((current) => [...current, ...page.blocks]);
       setBlockTotal(page.total);
-    } catch (error) { setBlocksError(userFacingCatalystError(error)); }
-    finally { setBlocksLoading(false); }
+    } catch (error) { if (current()) setBlocksError(userFacingCatalystError(error)); }
+    finally { if (current()) setBlocksLoading(false); }
   };
 
   const download = async (versionId: string, profile: "knowledge" | "sft") => {
@@ -624,7 +645,7 @@ export function CatalystDataToolsPanel({
                   <>
                     <div className="catalyst-tools__revision-toolbar">
                       <Field label={l("Content revision")}>
-                        <select value={selectedRevisionId} onChange={(event) => setSelectedRevisionId(event.target.value)}>
+                        <select value={selectedRevisionId} onChange={(event) => openRevision(event.target.value)}>
                           {revisions.map((revision) => {
                             const generatedCount = revision.blocks.filter((block) => block.origin === "GENERATED").length;
                             const generated = generatedCount > 0 ? ` · ${generatedCount} ${l("generated drafts")}` : "";

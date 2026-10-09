@@ -117,6 +117,7 @@ export class SettingsClient {
     private readonly fetcher: Fetcher = globalThis.fetch.bind(globalThis),
     private readonly timeoutMs = 10000,
     workspaceBff?: WorkspaceBffClient,
+    private readonly navigator?: import("../../services/navigator/src/api").NavigatorApi,
   ) {
     this.workspaceBff = workspaceBff ?? new WorkspaceBffClient({ fetcher, timeoutMs });
   }
@@ -128,16 +129,19 @@ export class SettingsClient {
 
   connection(signal?: AbortSignal) { return this.read("/studio-api/connection", connectionSchema, signal); }
   async session(signal?: AbortSignal) {
+    if (this.navigator) { signal?.throwIfAborted(); return sessionSchema.parse(await this.navigator.restoreSession()); }
     const s = await this.request("/api/v1/auth/session", sessionSchema, { signal }); this.accept(s);
     if (!s.authenticated && s.refreshable) return this.refresh();
     return s;
   }
   async pair(code: string) {
+    if (this.navigator) return sessionSchema.parse(await this.navigator.pair(code));
     const value = code.trim(); if (!value) throw new Error("请输入 Web Host 的一次性配对码。");
     const s = await this.request("/api/v1/auth/pair", sessionSchema, { method: "POST", body: JSON.stringify({ pairingCode: value }) });
     this.accept(s); return s;
   }
   async disconnect() {
+    if (this.navigator) { await this.navigator.logout(); return; }
     await this.request("/api/v1/auth/session", z.unknown(), { method: "DELETE" }); this.csrf = null;
   }
   private accept(s: HostSession) { this.csrf = s.csrfToken ?? (s.refreshable ? this.cookieCsrf() : null); }
@@ -147,6 +151,7 @@ export class SettingsClient {
     return value ? decodeURIComponent(value) : null;
   }
   private refresh() {
+    if (this.navigator) return this.navigator.refreshSession().then(session => sessionSchema.parse(session));
     if (!this.refreshInFlight) {
       this.refreshInFlight = this.request("/api/v1/auth/session/refresh", sessionSchema, { method: "POST" })
         .then((s) => { this.accept(s); return s; })
@@ -245,7 +250,8 @@ export class SettingsClient {
     const headers = new Headers(init.headers); headers.set("Accept", "application/json");
     const method = init.method ?? "GET";
     if (init.body) headers.set("Content-Type", "application/json");
-    if (method !== "GET" && this.csrf) headers.set("X-CSRF-Token", this.csrf);
+    const csrf = this.navigator ? this.navigator.sessionCsrfToken : this.csrf;
+    if (method !== "GET" && csrf) headers.set("X-CSRF-Token", csrf);
     if (!headers.has("X-Request-ID")) {
       headers.set("X-Request-ID", `req-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`);
     }

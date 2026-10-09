@@ -15,6 +15,7 @@ interface Props {
   onApply(p: Pipeline): void; onLoad(p: Pipeline, options?: { reveal?: boolean }): void; onNotice(message: string): void;
   canUndo: boolean; onUndo(): void; canRedo: boolean; onRedo(): void;
   serverBase: PipelineRecord | null; onServerBase(record: PipelineRecord | null): void;
+  onOpenServerPipeline(pipelineId: string): Promise<void>;
   render?(parts: { file: ReactNode; edit: ReactNode; toolbar: ReactNode; status: ReactNode; conflict: ReactNode; history: ReactNode }): ReactNode;
 }
 export function PipelineControls(props: Props) {
@@ -29,6 +30,10 @@ export function PipelineControls(props: Props) {
   const mounted = useRef(false), lifetime = useRef(0);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; lifetime.current++; }; }, []);
   useEffect(() => { setRemote(null); setSummary([]); }, [props.document.id, workspaceId]);
+  useEffect(() => {
+    setRemote(current => current && base && current.document.id === base.document.id
+      && current.graphRevision <= base.graphRevision && current.layoutRevision <= base.layoutRevision ? null : current);
+  }, [base]);
   async function currentResult<T>(operation: Promise<T>): Promise<T> {
     const generation = lifetime.current;
     const result = await operation;
@@ -91,11 +96,7 @@ export function PipelineControls(props: Props) {
   }
   async function list() { const result = await currentResult(client.execute("pipelines.list", { workspaceId })); setItems(result.items); live.current.onNotice(result.items.length ? "请选择服务端流程，再点击载入。" : "服务端暂无流程，可先保存当前草稿。"); }
   async function load() {
-    const sent = structuredClone(live.current.document);
-    const result = await currentResult(client.execute("pipelines.get", { workspaceId, pipelineId: chosen }));
-    if (!same(live.current.document, sent) || live.current.disabled) throw new Error("载入期间画布已修改或开始预演，旧结果未应用，请重试。");
-    if ((!base || !same(live.current.document, base.document)) && !window.confirm("载入服务端流程会替换当前画布，是否继续？")) return;
-    live.current.onLoad(result.document, { reveal: true }); setBase(result); setRemote(null); setSummary([]); live.current.onNotice("已载入服务端流水线，后续 AI 修改会在无本地变更时自动同步。");
+    await live.current.onOpenServerPipeline(chosen);
   }
   async function layout(partial: boolean) {
     const p = structuredClone(live.current.document);
@@ -137,7 +138,7 @@ export function PipelineControls(props: Props) {
       {items.length > 0 && <><select aria-label={t("服务端流程")} value={chosen} disabled={locked} onChange={e => setChosen(e.target.value)}><option value="">{t("选择流程")}</option>{items.map(i => <option key={i.id} value={i.id}>{i.name} · {i.id}</option>)}</select><button disabled={locked || !chosen} onClick={() => void run(load)}>{t("载入服务端流程")}</button></>}
     </div>;
   const edit = <><button disabled={locked || !props.selectedId} onClick={() => void run(() => layout(true))}>{t("整理选中节点")}</button><button disabled={locked || !props.selectedId} onClick={pin}>{t(props.selectedId && props.document.presentation.nodes[props.selectedId]?.pinned ? "解锁节点位置" : "锁定节点位置")}</button><button disabled={locked || !props.canUndo} onClick={props.onUndo}>{t("撤销本地修改")}</button><button disabled={locked || !props.canRedo} onClick={props.onRedo}>{t("重做本地修改")}</button><button disabled={locked || !base || dirty} onClick={() => void run(undoRemote)}>{t("撤销服务端修改")}</button><button disabled={locked || !base || dirty} onClick={() => void run(redoRemote)}>{t("重做服务端修改")}</button></>;
-  const conflict = remote && <div className="pipeline-conflict" role="status">{locale === "zh-CN" ? `服务端已有新版本 v${remote.graphRevision}/${remote.layoutRevision}，本地修改已保留。` : `Server version v${remote.graphRevision}/${remote.layoutRevision} is available. Local changes were preserved.`}<button disabled={locked} onClick={() => { if (window.confirm(locale === "zh-CN" ? "用服务端版本替换当前未保存修改？" : "Replace current unsaved changes with the server version?")) { setBase(remote); live.current.onLoad(remote.document); setRemote(null); } }}>{t("载入新版本")}</button><span>{locale === "zh-CN" ? "可先导出 JSON 备份；提交同一文档域的旧版本会被拒绝。" : "You can export a JSON backup first. Submitting an old revision of the same document domain will be rejected."}</span></div>;
+  const conflict = remote && <div className="pipeline-conflict" role="status">{locale === "zh-CN" ? `服务端已有新版本 v${remote.graphRevision}/${remote.layoutRevision}，本地修改已保留。` : `Server version v${remote.graphRevision}/${remote.layoutRevision} is available. Local changes were preserved.`}<button disabled={locked} onClick={() => void run(() => live.current.onOpenServerPipeline(remote.document.id))}>{t("载入新版本")}</button><span>{locale === "zh-CN" ? "载入前会保存本地恢复备份；提交同一文档域的旧版本会被拒绝。" : "Local recovery is saved before loading. Submitting an old revision of the same document domain will be rejected."}</span></div>;
   const historyPanel = <div className="keep-menu-open"><button disabled={locked || !base} onClick={() => void run(history)}>{t("变更记录")}</button>{!!summary.length && <details className="pipeline-changes"><summary>{locale === "zh-CN" ? `最近变更 · ${summary.length} 条` : `Recent changes · ${summary.length}`}</summary>{summary.map((s, i) => <p key={i}>{s}</p>)}</details>}</div>;
   return props.render ? props.render({ file, edit, toolbar, status, conflict, history: historyPanel }) : <section className="pipeline-controls" aria-label={t("流程版本与排版")}><div className="pipeline-control-row">{status}{toolbar}{file}</div><div className="pipeline-control-row">{edit}{historyPanel}</div>{conflict}</section>;
 }

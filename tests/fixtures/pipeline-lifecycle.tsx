@@ -22,7 +22,7 @@ function Harness() {
   const record = (name: string) => { window.pipelineLifecycle.callbacks.push(name); };
   return <><button onClick={() => setOpen(false)}>关闭工作台</button>{open && <PipelineControls
     document={document} serverBase={base} onServerBase={setBase} selectedId={null} disabled={false} canUndo={false} canRedo={false}
-    onApply={() => record("apply")} onLoad={() => record("load")}
+    onApply={() => record("apply")} onLoad={() => record("load")} onOpenServerPipeline={async () => { record("open"); }}
     onNotice={() => record("notice")} onUndo={() => record("undo")} onRedo={() => record("redo")}
   />}</>;
 }

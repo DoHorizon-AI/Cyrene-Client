@@ -40,6 +40,19 @@ describe("Workspace identity and security boundary", () => {
     await expect(f.client.discoverWorkspaces()).rejects.toMatchObject({ code: "unauthenticated" });
     expect(f.requests).toHaveLength(1);
   });
+  it("retains discovery after cancelled, timed-out and offline session probes, but clears it after 401", async () => {
+    const f = fixture(); await f.client.discoverWorkspaces();
+    for (const reason of [new DOMException("Cancelled", "AbortError"), new DOMException("Timed out", "TimeoutError"), new TypeError("Offline")]) {
+      f.fetcher.mockRejectedValueOnce(reason);
+      await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_REFERENCES.listDatasets)).rejects.toBeDefined();
+      expect(f.client.identity?.subject).toBe("alice");
+      await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_REFERENCES.listDatasets)).resolves.toEqual([]);
+    }
+    f.fetcher.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 401, headers: { "content-type": "application/json" } }));
+    await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_REFERENCES.listDatasets)).rejects.toMatchObject({ status: 401 });
+    expect(f.client.identity).toBeNull();
+    await expect(f.client.invoke("ws", WORKSPACE_PRODUCT_REFERENCES.listDatasets)).rejects.toMatchObject({ code: "workspace_not_discovered" });
+  });
   it("does not accept another organization's discovery", async () => {
     const f = fixture(); f.session.organizationId = "foreign";
     await expect(f.client.discoverWorkspaces()).rejects.toMatchObject({ code: "workspace_discovery_invalid" });

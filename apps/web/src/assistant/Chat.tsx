@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavigatorApi, NavigatorHttpError, makeIdempotencyKey, type AssistantCapabilities, type AssistantExecution, type AssistantPermission, type AssistantProtocol, type AssistantProvider, type NavigatorTaskEvent, type NavigatorTaskRecord, type SessionPayload, type WorkApproval, type WorkAttachment, type WorkInput } from "../../services/navigator/src/api";
 import { assistantEventLabel, readAssistantTaskEvents } from "../../services/navigator/src/task-event-stream";
-import { studioProductFetch } from "../products/transport";
+import { useNavigatorSession } from "../services/NavigatorSessionProvider";
 import { useTeamIdentity } from "../team/TeamGate";
 import { useI18n } from "../i18n";
 import type { AssistantWindowProps } from "./AssistantWindow";
@@ -30,9 +30,10 @@ function executionFor(task?: NavigatorTaskRecord): Partial<AssistantExecution> {
 export default function Chat(props: AssistantWindowProps) {
   const { locale } = useI18n(), { actorId, workspaceId, scopes } = useTeamIdentity();
   const tx = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
-  const api = useMemo(() => new NavigatorApi(studioProductFetch), []);
-  const [auth, setAuth] = useState<SessionPayload | null>(null), [pairing, setPairing] = useState("");
+  const { api, session: auth, reconnect, pair, error: sessionError } = useNavigatorSession();
+  const [pairing, setPairing] = useState("");
   const [caps, setCaps] = useState<AssistantCapabilities | null>(null), [hostWorkspace, setHostWorkspace] = useState("");
+  const [hostLoading, setHostLoading] = useState(false), [hostError, setHostError] = useState("");
   const [tasks, setTasks] = useState<NavigatorTaskRecord[]>([]), [nextCursor, setNextCursor] = useState<string | null>(null);
   const selectionKey = `cyrene.assistant.selection.v1:${actorId}:${workspaceId}`;
   const [sessionId, setSessionId] = useState(() => { try { return localStorage.getItem(selectionKey) ?? ""; } catch { return ""; } });
@@ -56,8 +57,8 @@ export default function Chat(props: AssistantWindowProps) {
   const legacyInput = useRef<HTMLInputElement>(null);
   selected.current = sessionId;
   const effectiveWorkspace = hostWorkspace || workspaceId;
-  const aligned = !hostWorkspace || hostWorkspace === workspaceId;
-  const mayOperate = aligned && scopes.includes("products.operate");
+  const aligned = !!hostWorkspace && hostWorkspace === workspaceId && caps?.workspaceId === hostWorkspace;
+  const mayOperate = !!auth?.authenticated && aligned && scopes.includes("products.operate");
   const mayConfigure = scopes.includes("products.admin");
   const sessions = useMemo(() => chatSessions(tasks.filter(task => task.workspaceId === effectiveWorkspace)), [tasks, effectiveWorkspace]);
   const turns = sessions.find(session => session.id === sessionId)?.turns ?? [];
@@ -98,19 +99,22 @@ export default function Chat(props: AssistantWindowProps) {
     catch (reason) { if (mounted.current) setCapsError(message(reason)); }
   }, [api]);
 
-  useEffect(() => {
-    let active = true;
-    api.setSessionExpiredHandler(() => { if (active) setAuth(current => current ? { ...current, authenticated: false } : null); });
-    void api.restoreSession().then(value => { if (active) setAuth(value); }, reason => { if (active) fail(reason); });
-    return () => { active = false; api.setSessionExpiredHandler(null); };
-  }, [api]);
+  const reloadHostWorkspace = useCallback(async () => {
+    setHostLoading(true); setHostWorkspace(""); setHostError("");
+    try {
+      const status = await api.getSystemStatus();
+      if (!status.workspaceId) throw new Error(tx("Navigator 未返回工作空间身份。", "Navigator did not identify its workspace."));
+      if (mounted.current) setHostWorkspace(status.workspaceId);
+    } catch (reason) { if (mounted.current) setHostError(message(reason)); }
+    finally { if (mounted.current) setHostLoading(false); }
+  }, [api, locale]);
 
   useEffect(() => {
     if (!auth?.authenticated) return;
     void reloadTasks().catch(fail);
     void reloadCapabilities();
-    void api.getSystemStatus().then(status => { if (mounted.current) setHostWorkspace(status.workspaceId ?? ""); }, fail);
-  }, [api, auth?.authenticated, reloadTasks, reloadCapabilities]);
+    void reloadHostWorkspace();
+  }, [api, auth?.authenticated, reloadTasks, reloadCapabilities, reloadHostWorkspace]);
 
   useEffect(() => {
     if (!auth?.authenticated || !sessionId || turns.length || !nextCursor || restoredTargets.current.has(sessionId)) return;
@@ -137,14 +141,6 @@ export default function Chat(props: AssistantWindowProps) {
   }, [api, auth?.authenticated, sessionId, !turns.length, nextCursor, effectiveWorkspace]);
 
   useEffect(() => {
-    if (!auth?.authenticated || !auth.expiresAt) return;
-    let active = true;
-    const timer = setTimeout(() => void api.refreshSession().then(value => { if (active) setAuth(value); }, reason => { if (active) fail(reason); }),
-      Math.min(2_147_483_647, Math.max(1000, Date.parse(auth.expiresAt) - Date.now() - 30_000)));
-    return () => { active = false; clearTimeout(timer); };
-  }, [api, auth]);
-
-  useEffect(() => {
     if (!caps || sessionId) return;
     if (!caps.runtimes.some(value => value.id === runtimeId && value.available)) setRuntimeId(caps.defaultRuntime);
     if (!providerId && caps.runtimes.find(runtime => runtime.id === "harness")?.models.length) return;
@@ -161,7 +157,7 @@ export default function Chat(props: AssistantWindowProps) {
     setRuntimeId(execution.runtime || "harness"); setProviderId(execution.providerId || "");
     if (execution.model) setModel(execution.model);
     setEffort(execution.effort ?? "");
-    if (execution.permission) setPermission(execution.permission);
+    setPermission(execution.permission ?? "ask");
   }, [sessionId, lastTask?.id, !!caps]);
 
   useEffect(() => {
@@ -339,7 +335,7 @@ export default function Chat(props: AssistantWindowProps) {
         {!samePipeline && <p role="status">{tx("当前画布已切换；此审批仍属于上方任务。", "The canvas changed; this approval still belongs to the task above.")}</p>}
         <details><summary>{tx("操作详情", "Operation details")}</summary><pre>{JSON.stringify(approval.details, null, 2)}</pre></details>
         <div className="assistant-actions"><button disabled={busy || !mayOperate} onClick={() => decide(approval, "approved")}>{tx("允许本次", "Allow once")}</button>
-          {taskRuntime?.approvalScopes?.includes("task") && <button disabled={busy || !mayOperate} onClick={() => decide(approval, "approved", "task")}>{tx("允许本轮全部", "Allow for all")}</button>}
+          {taskRuntime?.approvalScopes?.includes("task") && <button disabled={busy || !mayOperate} onClick={() => decide(approval, "approved", "task")}>{tx("本任务内同类操作全部允许", "Allow this operation type for this task")}</button>}
           <button disabled={busy || !mayOperate} onClick={() => decide(approval, "rejected")}>{tx("拒绝", "Decline")}</button></div>
       </article>)}
       {inputs.filter(item => item.taskId === task.id).map(input => <article key={input.id} className="assistant-message approval"><strong>{input.summary}</strong><textarea aria-label={tx("补充信息", "Requested input")} value={answers[input.id] ?? ""} onChange={event => setAnswers(previous => ({ ...previous, [input.id]: event.target.value }))} /><button disabled={busy || !mayOperate || !answers[input.id]?.trim()} onClick={() => answer(input)}>{tx("回答", "Answer")}</button></article>)}
@@ -354,16 +350,21 @@ export default function Chat(props: AssistantWindowProps) {
     <header className="assistant-heading"><strong>AI Assistant</strong>
       <button aria-label={tx("新建聊天", "New chat")} title={tx("新建聊天", "New chat")} disabled={busy || uploading || !!pending} onClick={() => selectSession("")}>＋</button>
       <button aria-label={tx("聊天历史", "Chat history")} onClick={() => { setView(view === "history" ? "chat" : "history"); void reloadTasks().catch(fail); }}>◷</button>
-      <button aria-label={tx("刷新智能体", "Refresh agents")} disabled={busy} onClick={() => void act(async () => { const session = await api.restoreSession(); setAuth(session); if (session.authenticated) { await reloadCapabilities(); await reloadTasks(); } })}>↻</button>
+      <button aria-label={tx("刷新智能体", "Refresh agents")} disabled={busy} onClick={() => void act(async () => { await reconnect(); if (auth?.authenticated) { await reloadCapabilities(); await reloadTasks(); } })}>↻</button>
       {mayConfigure && <button aria-label={tx("助手设置", "Assistant settings")} onClick={() => setView(view === "settings" ? "chat" : "settings")}>⚙</button>}
       <button aria-label={tx("MCP 调试", "MCP tools")} onClick={() => { setMcpVisited(true); setView(view === "mcp" ? "chat" : "mcp"); }}>MCP</button>
       <button aria-label={props.expanded ? tx("停靠右侧", "Dock right") : tx("在主页面打开", "Open in editor")} onClick={props.onDock}>{props.expanded ? "⇥" : "↗"}</button>
     </header>
-    {(error || capsError) && <div className="assistant-error" role="alert">{error || capsError}<button aria-label={tx("关闭错误", "Dismiss error")} onClick={() => { setError(""); setCapsError(""); }}>×</button></div>}
+    {(error || capsError || sessionError) && <div className="assistant-error" role="alert">{error || capsError || sessionError}<button aria-label={tx("关闭错误", "Dismiss error")} onClick={() => { setError(""); setCapsError(""); }}>×</button></div>}
     {mcpVisited && <div className="assistant-aux" hidden={view !== "mcp"}><Suspense fallback={<p>MCP…</p>}><McpPanel key={props.document.id} document={props.document} selectedId={props.selectedId} onNotice={props.onNotice} onMonitor={props.onMonitor} /></Suspense></div>}
-    {!auth?.authenticated && view !== "mcp" && <form className="assistant-aux" onSubmit={event => { event.preventDefault(); void act(async () => { setAuth(await api.pair(pairing)); setPairing(""); }); }}><p>{tx("使用现有 Navigator 配对会话连接智能体。", "Connect using the existing Navigator paired session.")}</p><label>{tx("一次性配对码", "One-time pairing code")}<input value={pairing} autoComplete="one-time-code" onChange={event => setPairing(event.target.value)} /></label><button disabled={busy || !pairing.trim()}>{tx("连接", "Connect")}</button></form>}
+    {!auth?.authenticated && view !== "mcp" && <form className="assistant-aux" onSubmit={event => { event.preventDefault(); void act(async () => { await pair(pairing); setPairing(""); }); }}><p>{tx("使用现有 Navigator 配对会话连接智能体。", "Connect using the existing Navigator paired session.")}</p><label>{tx("一次性配对码", "One-time pairing code")}<input value={pairing} autoComplete="one-time-code" onChange={event => setPairing(event.target.value)} /></label><button disabled={busy || !pairing.trim()}>{tx("连接", "Connect")}</button></form>}
     {auth?.authenticated && <>
-      {!aligned && <p className="assistant-error" role="status">{tx("Navigator 工作空间与当前工作空间不一致，无法提交操作。", "Navigator is connected to a different workspace; operations are unavailable.")}</p>}
+      {!aligned && <p className="assistant-error" role="status">{hostLoading
+        ? tx("正在核对 Navigator 工作空间身份…", "Checking the Navigator workspace…")
+        : hostError || (!hostWorkspace || !caps?.workspaceId
+          ? tx("尚未核实 Navigator 工作空间身份，无法提交操作。", "Navigator workspace identity is not verified; operations are unavailable.")
+          : tx("Navigator 工作空间与当前工作空间不一致，无法提交操作。", "Navigator is connected to a different workspace; operations are unavailable."))}
+        <button disabled={hostLoading} onClick={() => { void reloadCapabilities(); void reloadHostWorkspace(); }}>{tx("重试工作空间连接", "Retry workspace connection")}</button></p>}
       {view !== "chat" && <button className="assistant-back" aria-label={tx("返回聊天", "Back to chat")} onClick={() => setView("chat")}>← {tx("返回聊天", "Back to chat")}</button>}
       {view === "history" && <div className="assistant-aux"><button onClick={() => legacyInput.current?.click()}>{tx("读取旧聊天导出", "Read legacy chat export")}</button>{legacyChats.length > 0 && <button onClick={() => setView("legacy")}>{tx("查看已读取的旧聊天", "View imported legacy chats")}</button>}{sessions.map(session => <div className="assistant-history" key={session.id}><button disabled={busy || uploading || !!pending} onClick={() => selectSession(session.id)}><strong>{session.turns[0].title || session.turns[0].prompt.slice(0, 60)}</strong><small>{session.turns.length} {tx("轮对话", "turns")} · {new Date(session.turns.at(-1)!.createdAt).toLocaleString(locale)} · {tx(...statusLabels[session.turns.at(-1)!.status])}</small></button></div>)}
         {nextCursor && <button disabled={busy} onClick={() => void act(async () => { const page = await api.getAssistantTasks(nextCursor); historyExtended.current = true; setTasks(previous => mergeTaskRecords(previous, page.items)); setNextCursor(page.nextCursor); })}>{tx("加载更早记录", "Load earlier history")}</button>}
@@ -392,12 +393,16 @@ export default function Chat(props: AssistantWindowProps) {
             {runtimeId === "harness" && <select aria-label={tx("API 提供方", "API provider")} value={providerId} disabled={!!sessionId || !!activeTask || !!pending} onChange={event => setProviderId(event.target.value)}><option value="" disabled={!runtime?.models.length && !!caps?.providers.length}>{tx("宿主默认模型", "Host default model")}</option>{caps?.providers.map(item => <option key={item.id} value={item.id} disabled={!item.configured}>{item.name}</option>)}</select>}
             {models.length > 0 && <select aria-label={tx("模型", "Model")} value={model} disabled={!!activeTask || !!pending} onChange={event => setModel(event.target.value)}>{models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>}
             {!!modelInfo?.efforts.length && <select aria-label={tx("思考深度", "Reasoning effort")} value={effort} disabled={!!activeTask || !!pending} onChange={event => setEffort(event.target.value)}><option value="">{tx("默认思考深度", "Default reasoning")}</option>{modelInfo.efforts.map(value => <option key={value} value={value}>{value}</option>)}</select>}
-            {!!runtime?.permissions.length && <select aria-label={tx("权限模式", "Permission mode")} value={permission} disabled={!!activeTask || !!pending} onChange={event => setPermission(event.target.value as AssistantPermission)}>{runtime.permissions.map(value => <option key={value} value={value}>{tx(...permissionLabels[value])}</option>)}</select>}
+            {!!runtime?.permissions.length && <select aria-label={tx("权限模式", "Permission mode")} value={permission} disabled={!!activeTask || !!pending} onChange={event => {
+              const next = event.target.value as AssistantPermission;
+              if ((next === "auto" || next === "full-access") && !window.confirm(tx("此权限模式会自动执行允许范围内的操作。确认为后续任务启用？", "This mode executes permitted operations automatically. Enable it for subsequent tasks?"))) return;
+              setPermission(next);
+            }}>{runtime.permissions.map(value => <option key={value} value={value}>{tx(...permissionLabels[value])}</option>)}</select>}
           </div>
           {runtime?.reason && <small className="assistant-muted">{runtime.reason}</small>}
           {runtime && !runtime.resume && sessionId && <small>{tx("该智能体不支持恢复会话，请新建聊天。", "This agent cannot resume sessions. Start a new chat.")}</small>}
           {permission === "full-access" && <small className="assistant-muted">{tx("智能体将按宿主能力自动执行；工作空间权限仍然生效。", "The agent uses its host permissions; workspace permissions still apply.")}</small>}
-          {!mayOperate && <small>{tx("当前账号没有智能体执行权限。", "This account cannot execute agent tasks.")}</small>}
+          {!scopes.includes("products.operate") && <small>{tx("当前账号没有智能体执行权限。", "This account cannot execute agent tasks.")}</small>}
           {sessionId && <details className="assistant-session-details"><summary>{tx("会话信息", "Session details")}</summary><code>{sessionId}</code><span>Navigator · {effectiveWorkspace}</span></details>}
         </div>
       </div>

@@ -19,8 +19,8 @@ export function AssistantWindow(props: AssistantWindowProps) {
   const [host] = useState(() => { const node = document.createElement("div"); node.className = "assistant-portal"; return node; });
   useLayoutEffect(() => {
     (props.expanded ? props.center : props.dock).current?.appendChild(host);
-    host.hidden = !props.visible;
     return () => host.remove();
-  }, [host, props.expanded, props.visible, props.center, props.dock]);
+  }, [host, props.expanded, props.center, props.dock]);
+  useLayoutEffect(() => { host.hidden = !props.visible; }, [host, props.visible]);
   return createPortal(<Suspense fallback={<p>AI Assistant…</p>}><Chat key={`${actorId}:${workspaceId}`} {...props} /></Suspense>, host);
 }

@@ -81,12 +81,12 @@ export interface GraphHandle {
   add(type: string): void;
   update(node: PipelineNode): void;
   remove(id: string): void;
-  select(id: string): void;
+  select(id: string, options?: { center?: boolean }): void;
   fit(): void;
   getView?(): { scale: number; offset: [number, number] } | undefined;
   setView?(view: { scale: number; offset: [number, number] }): void;
 }
-interface Props { initial: Pipeline; interactive?: boolean; onChange(p: Pipeline): void; onSelect(id: string | null): void }
+interface Props { initial: Pipeline; interactive?: boolean; onChange(p: Pipeline): void; onSelect(id: string | null): void; onInteractionChange?(active: boolean): void }
 
 export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(props, ref) {
   const container = useRef<HTMLDivElement>(null), canvasElement = useRef<HTMLCanvasElement>(null);
@@ -116,7 +116,7 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
       base.current = p;
       if (live.current) { loadGraph(live.current.graph, p); if (options?.fit !== false) fit(); }
       suppressed.current = false;
-      callbacks.current.onSelect(null); if (!options?.silent) emit.current();
+      if (!options?.silent) { callbacks.current.onSelect(null); emit.current(); }
     },
     add(type) {
       const c = live.current; if (!c || editorNodes(c.graph).length >= 200) return;
@@ -134,10 +134,15 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
       const n = editorNodes(c.graph).find((n) => n.properties.document.id === id);
       if (n) { c.graph.remove(n); callbacks.current.onSelect(null); emit.current(); }
     },
-    select(id) {
+    select(id, options) {
       const c = live.current; if (!c) return;
       const n = editorNodes(c.graph).find((n) => n.properties.document.id === id);
-      if (n) { c.canvas.selectNode(n); c.canvas.centerOnNode(n); callbacks.current.onSelect(id); }
+      if (n) {
+        suppressed.current = true;
+        try { c.canvas.selectNode(n); }
+        finally { suppressed.current = false; }
+        if (options?.center !== false) { c.canvas.centerOnNode(n); callbacks.current.onSelect(id); }
+      }
     },
     fit,
     getView() { const c = live.current?.canvas; return c ? { scale: c.ds.scale, offset: [c.ds.offset[0], c.ds.offset[1]] } : undefined; },
@@ -242,7 +247,7 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
     graph.onConnectionChange = emit.current;
     graph.onNodeRemoved = emit.current;
     canvas.onNodeMoved = emit.current;
-    canvas.onSelectionChange = (selected) => callbacks.current.onSelect((Object.values(selected)[0] as ClientNode | undefined)?.properties.document.id ?? null);
+    canvas.onSelectionChange = (selected) => { if (!suppressed.current) callbacks.current.onSelect((Object.values(selected)[0] as ClientNode | undefined)?.properties.document.id ?? null); };
     canvas.onShowNodePanel = (node) => callbacks.current.onSelect((node as ClientNode).properties.document.id);
     const resize = () => {
       const box = container.current!.getBoundingClientRect();
@@ -263,10 +268,19 @@ export const GraphCanvas = forwardRef<GraphHandle, Props>(function GraphCanvas(p
     };
     watchResolution();
     window.addEventListener("resize", resize);
+    let interacting = false;
+    const startInteraction = () => { if (!interacting) { interacting = true; callbacks.current.onInteractionChange?.(true); } };
+    const endInteraction = () => { if (interacting) { interacting = false; queueMicrotask(() => { if (!disposed) callbacks.current.onInteractionChange?.(false); }); } };
+    canvasElement.current!.addEventListener("pointerdown", startInteraction, true);
+    window.addEventListener("pointerup", endInteraction);
+    window.addEventListener("pointercancel", endInteraction);
+    window.addEventListener("blur", endInteraction);
     resize(); fit();
     return () => {
       disposed = true; observer.disconnect(); resolutionQuery.removeEventListener("change", onResolutionChange);
       window.removeEventListener("resize", resize); canvas.stopRendering(); canvas.unbindEvents();
+      canvasElement.current?.removeEventListener("pointerdown", startInteraction, true);
+      window.removeEventListener("pointerup", endInteraction); window.removeEventListener("pointercancel", endInteraction); window.removeEventListener("blur", endInteraction);
       graph.detachCanvas(canvas); graph.stop(); live.current = null;
       graph.onAfterChange = undefined; graph.onConnectionChange = undefined; graph.onNodeRemoved = undefined;
       graph.clear(); emit.current = () => {};

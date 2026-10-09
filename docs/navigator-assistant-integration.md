@@ -16,6 +16,14 @@ MCP wire 名称改为 `pipelines_get`、`runs_start` 等下划线形式，HTTP �
 
 错误区分 `outcome: rejected` 与 `unknown`，带 `requestId` 和恢复提示。执行开始后的未知异常或不符合输出 schema 的结果不能宣称未写入。同一进行中计划不能用换 key 再派发：`DUPLICATE_ACTIVE_RUN`/`DUPLICATE_ACTIVE_BUILD` 返回已有 ID。已删除 `/studio-assistant/v1/turn`、旧模型配置与面板对话；MCP 面板只做手工调试，聊天统一走 Navigator。实际 HTTP 发现 44 项工具；定向 91 项和 MCP 控制浏览器 2 项通过，未连接真实外部模型或 GitHub 运行。
 
+## 2026-10-09 审查修复：第三期
+
+助手与产品页面共享一个 Navigator 会话和 Workspace BFF 实例。配对、刷新和退出按顺序完成，防止晚到的 Set-Cookie 恢复已退出的登录；旧请求的响应或 401 不能覆盖新会话。BFF 网络取消或错误保留会话，仅 401 清空。发送、附件与审批须先核对 Client、能力发现和宿主的工作空间，未确认或不一致时停止操作并提供重试。
+
+远端画布同步保留视口与选中，拖拽结束后才应用；冲突载入先保存恢复备份，每条流水线每个身份保留最近 20 份。Catalyst 未保存编辑不会被新修订替换，分页结果固定到发起时的修订。构建终态停止轮询，旧 revision 不回写；工作助手推流依赖任务状态并防抖详情刷新。助手隐藏保留 DOM，文本输入不触发 Alt 菜单快捷键；缺省权限回到 ask，auto/full-access 切换要求确认。
+
+定向 68 项单元、33 项独立浏览器场景及 TypeScript 通过。浏览器覆盖实际 Cookie 顺序、共享会话刷新、未知/失败工作空间、编辑保护、同步视口和拖拽、窗口与快捷键。此期为本地源码和隔离测试，未推送或部署。
+
 ## 源码与接口
 
 - `apps/web/src/assistant/` 提供同一实例在右侧栏与主编辑区之间移动的对话界面。新版 Navigator 工作助手管理页与聊天界面读取同一任务记录。
@@ -54,7 +62,7 @@ npm run assistant
 
 启动器显式启用 `CYRENE_PERSONAL_RUNTIMES_ENABLED`，并把同一控制服务的 MCP URL 和专用机器凭据仅传给 Navigator 执行器。只读模式必须在工具执行边界限制 MCP 写入；Full Access 不扩大 MCP 凭据的权限。个人主代理选择目前用于 local 模式；team 模式继续走既有配置好的云任务，Client 拒绝个人 execution 选择，直到具备按调用者身份委派 MCP 权限的方案。
 
-`Allow for all` 对应 Work 服务端的 `scope: task`，只允许当前任务后续审批；`scope: once` 仅批准当前请求。新聊天恢复为确认模式。任务终止后不继续使用该授权，也不能借此跳过只读模式、原生拒绝或 MCP 权限。
+`Allow for all` 对应 Work 服务端的 `scope: task`，只允许当前任务内同类操作，MCP 按工具名区分；`scope: once` 仅批准当前请求。新聊天恢复为确认模式。任务终止后不继续使用该授权，也不能借此跳过只读模式、原生拒绝或 MCP 权限。
 
 Codex、Claude Code、Cursor Agent、CodeBuddy 使用执行宿主已有 CLI 和登录配置；安装编辑器不能视为 Agent CLI 已可用。缺少 CLI、模型或所需原生协议时显示不可用。WorkBuddy 的状态以实际接口检测为准，不将其他厂商 CLI 冒充它。
 

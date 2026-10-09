@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { SettingsClient, ServiceError } from "../../apps/web/src/services/client";
+import { NavigatorApi } from "../../apps/web/services/navigator/src/api";
 import { WorkspaceBffClient } from "../../apps/web/src/services/workspace-bff-client";
 import { trainingDraftSchema, trainingConfigurationSchema, suiteInputSchema, pathId } from "../../packages/service-settings/contracts";
 import { admittedTarget, allowedSettingsRequest } from "../../tooling/settings-proxy";
@@ -58,6 +59,29 @@ describe("Product settings projections", () => {
 });
 
 describe("settings client", () => {
+  it("shares refresh and rotated CSRF with Navigator page requests", async () => {
+    let refreshed = false, refreshes = 0;
+    const writes: Headers[] = [], sessions: boolean[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      const path = String(input);
+      if (path === "/api/v1/auth/session") return json(authSession);
+      if (path === "/api/v1/auth/session/refresh") {
+        refreshes++; await new Promise(resolve => setTimeout(resolve, 10)); refreshed = true;
+        return json({ ...authSession, csrfToken: "rotated", refreshed: true });
+      }
+      if (!refreshed) return json({ code: "SESSION_EXPIRED" }, 401);
+      if (init?.method === "PATCH") { writes.push(new Headers(init.headers)); return json(draft); }
+      return json([]);
+    };
+    const api = new NavigatorApi(fetcher), settings = new SettingsClient(fetcher, 10_000, undefined, api);
+    const unsubscribe = api.subscribeSession(session => sessions.push(session.authenticated));
+    await api.restoreSession();
+    await Promise.all([settings.models(), api.getCredentials()]);
+    expect(refreshes).toBe(1);
+    await settings.prepareDraft(ids.draft, draft.configuration);
+    expect(writes[0].get("x-csrf-token")).toBe("rotated");
+    expect(sessions).toEqual([true, true]); unsubscribe();
+  });
   it("uses same-origin cookies and CSRF, without starting a training run", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(json(authSession)).mockResolvedValueOnce(json(draft));
     const client = new SettingsClient(fetcher);

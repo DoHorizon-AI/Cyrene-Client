@@ -5,6 +5,7 @@ import { catalogCommands } from "../../../../packages/node-registry/commands";
 import { controlCommand } from "../services/commands";
 import { useTeamIdentity } from "../team/TeamGate";
 import { useI18n } from "../i18n";
+import { isTerminalBuild, mergeBuildObservation } from "./observations";
 
 type Preview = z.infer<typeof buildCommands["builds.preview"]["output"]>;
 type Catalog = z.infer<typeof catalogCommands["catalog.list_packages"]["output"]>;
@@ -21,6 +22,11 @@ export function useBuildControl(onNotice: (message: string) => void) {
   const [logs, setLogs] = useState<{ sequence: number; message: string }[]>([]), [busy, setBusy] = useState(false);
   const live = useRef({ workspaceId, actorId, profileId, sourceRef, buildId: build?.id }); live.current = { workspaceId, actorId, profileId, sourceRef, buildId: build?.id };
   const alive = useRef(false), pending = useRef(false), keys = useRef(new Map<string, string>());
+  const currentBuild = useRef(build); currentBuild.current = build;
+  const observe = (next: Build) => {
+    const merged = mergeBuildObservation(currentBuild.current, next);
+    currentBuild.current = merged; setBuild(merged);
+  };
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { setProfiles([]); setProfile(""); setSource(""); setBuild(null); setItems([]); setPreview(null); setActivation(null); setPackages(null); keys.current.clear(); }, [workspaceId, actorId]);
   const keyFor = (name: string, input: unknown) => { const value = JSON.stringify([workspaceId, actorId, name, input]); if (!keys.current.has(value)) keys.current.set(value, crypto.randomUUID()); return keys.current.get(value)!; };
@@ -33,17 +39,24 @@ export function useBuildControl(onNotice: (message: string) => void) {
   }
   useEffect(() => {
     if (!build) return;
-    let active = true, polling = false, cursor = 0; setLogs([]);
+    let active = true, polling = false, cursor = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined; setLogs([]);
     async function poll() {
       if (polling) return; polling = true;
       try {
         const [next, events] = await Promise.all([call("builds.get", { workspaceId, buildId: build!.id }), call("builds.read_events", { workspaceId, buildId: build!.id, after: cursor })]);
-        if (active) { setBuild(next); cursor = events.cursor; setLogs(rows => [...rows, ...events.items].slice(-200)); }
+        if (active && live.current.buildId === build!.id && currentBuild.current?.id === build!.id) {
+          observe(next); cursor = Math.max(cursor, events.cursor);
+          setLogs(rows => [...new Map([...rows, ...events.items].map(row => [row.sequence, row])).values()].slice(-200));
+        }
       } catch { /* Last observation remains visible; a disconnect does not cancel. */ }
-      finally { polling = false; }
+      finally {
+        polling = false;
+        if (active && currentBuild.current && !isTerminalBuild(currentBuild.current)) timer = setTimeout(() => void poll(), 3000);
+      }
     }
-    void poll(); const timer = setInterval(() => void poll(), 3000);
-    return () => { active = false; clearInterval(timer); };
+    void poll();
+    return () => { active = false; clearTimeout(timer); };
   }, [build?.id, workspaceId, actorId]);
   const refresh = <button disabled={busy || !scopes.includes("builds.read")} onClick={() => void perform(async current => {
     const [available, builds] = await Promise.all([call("builds.list_profiles", { workspaceId }), call("builds.list", { workspaceId })]);
@@ -53,10 +66,10 @@ export function useBuildControl(onNotice: (message: string) => void) {
   const start = <button disabled={busy || !preview || !scopes.includes("builds.write")} onClick={() => void perform(async current => {
     if (!preview) return; const input = { workspaceId, profileId, sourceRef, expectedFingerprint: preview.fingerprint };
     const result = await call("builds.start", input, keyFor("start", input));
-    if (current()) { setBuild(result); setItems(rows => [...rows.filter(r => r.id !== result.id), result]); setPreview(null); setActivation(null); onNotice("构建请求已保存。关闭面板不会取消构建。"); }
+    if (current()) { observe(result); setItems(rows => [...rows.filter(r => r.id !== result.id), result]); setPreview(null); setActivation(null); onNotice("构建请求已保存。关闭面板不会取消构建。"); }
   })}>提交节点镜像构建</button>;
   const cancel = <button disabled={busy || !build || ["succeeded", "failed", "cancelled", "cancelling"].includes(build.state) || !scopes.includes("builds.write")} onClick={() => void perform(async current => {
-    if (!build) return; const input = { workspaceId, buildId: build.id, expectedRevision: build.revision }; const result = await call("builds.cancel", input, keyFor("cancel", input)); if (current()) setBuild(result);
+    if (!build) return; const input = { workspaceId, buildId: build.id, expectedRevision: build.revision }; const result = await call("builds.cancel", input, keyFor("cancel", input)); if (current()) observe(result);
   })}>取消选中构建</button>;
   const reconcile = <button disabled={busy || !build || !["unknown", "dispatching", "cancelling"].includes(build.state) || !scopes.includes("builds.write")} onClick={() => void perform(async current => {
     if (!build) return;
@@ -64,7 +77,7 @@ export function useBuildControl(onNotice: (message: string) => void) {
     if (!workflowRunId) return;
     const input = { workspaceId, buildId: build.id, expectedRevision: build.revision, workflowRunId };
     const result = await call("builds.reconcile", input, keyFor("reconcile", input));
-    if (current()) setBuild(result);
+    if (current()) observe(result);
   })}>{tx("核对 GitHub 任务", "Reconcile GitHub run")}</button>;
   const listPackages = <button disabled={busy || !scopes.includes("pipelines.read")} onClick={() => void perform(async current => { const result = await catalog("catalog.list_packages", { workspaceId }); if (current()) setPackages(result); })}>读取节点包版本</button>;
   const previewActivation = <button disabled={busy || build?.state !== "succeeded" || !scopes.includes("catalog.write")} onClick={() => void perform(async current => {

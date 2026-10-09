@@ -1,8 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 import { examplePipeline } from "../../packages/pipeline-model";
 import type { NavigatorTaskRecord } from "../../apps/web/services/navigator/src/api";
+import { menuAction } from "./ide-helpers";
 
-async function fixture(page: Page, hostDefault = false, restoreOldSession = false) {
+async function fixture(page: Page, hostDefault = false, restoreOldSession = false, expiresAt: string | null = null, probe: "ready" | "slow" | "failed" = "ready") {
   const tasks: NavigatorTaskRecord[] = [], submissions: Record<string, unknown>[] = [], decisions: Record<string, unknown>[] = [], eventCursors: number[] = [];
   const approvals: Record<string, unknown>[] = [];
   if (restoreOldSession) {
@@ -11,14 +12,21 @@ async function fixture(page: Page, hostDefault = false, restoreOldSession = fals
   }
   const provider = { id: "test-api", name: "Test API", baseUrl: "https://api.example.invalid/v1", configured: true, models: [{ id: "api-model", name: "API model", efforts: ["low", "high"] }] };
   let failFirstSubmission = false;
-  const session = { state: "AUTHENTICATED", authenticated: true, sessionId: "paired-session", expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "paired-csrf", refreshed: false };
+  let refreshes = 0;
+  let failStatus = probe === "failed", releaseStatus: (() => void) | undefined;
+  const session = { state: "AUTHENTICATED", authenticated: true, sessionId: "paired-session", expiresAt, refreshExpiresAt: null, refreshable: true, csrfToken: "paired-csrf", refreshed: false };
   await page.route("**/studio-team/v1/session", route => route.fulfill({ json: { mode: "local", authenticated: true, token: "studio-csrf", actor: { id: "test-user", workspaceIds: ["local"], scopes: ["pipelines.read", "pipelines.write", "servers.read", "servers.write", "runs.read", "products.read", "products.operate", "products.admin"] } } }));
   await page.route("**/api/v1/**", async route => {
     const req = route.request(), url = new URL(req.url()), path = url.pathname, method = req.method();
     const reply = (json: unknown, status = 200) => route.fulfill({ json, status });
-    if (path === "/api/v1/auth/session" || path === "/api/v1/auth/session/refresh") return reply(session);
-    if (path === "/api/v1/system/status") return reply({ service: "Navigator", status: "OK", version: "test", workspaceId: "local", authenticated: true, proxyPrefixes: [], credentials: { active: 0, revoked: 0 }, observedAt: new Date().toISOString() });
-    if (path === "/api/v1/navigator/assistant/capabilities") return reply({ defaultRuntime: "harness", providers: hostDefault ? [] : [provider], runtimes: [
+    if (path === "/api/v1/auth/session/refresh") { refreshes++; session.csrfToken = "rotated-csrf"; session.expiresAt = null; return reply(session); }
+    if (path === "/api/v1/auth/session") return reply(session);
+    if (path === "/api/v1/system/status") {
+      if (probe === "slow") await new Promise<void>(resolve => { releaseStatus = resolve; });
+      if (failStatus) return reply({ code: "HOST_UNAVAILABLE", detail: "Host status unavailable" }, 503);
+      return reply({ service: "Navigator", status: "OK", version: "test", workspaceId: "local", authenticated: true, proxyPrefixes: [], credentials: { active: 0, revoked: 0 }, observedAt: new Date().toISOString() });
+    }
+    if (path === "/api/v1/navigator/assistant/capabilities") return reply({ defaultRuntime: "harness", workspaceId: "local", providers: hostDefault ? [] : [provider], runtimes: [
       { id: "harness", name: "Harness", available: true, models: hostDefault ? [{ id: "exchange-model", name: "Host Exchange model", efforts: [] }] : [], permissions: ["ask", "full-access"], approvalScopes: ["once", "task"], resume: true },
       { id: "codex", name: "Codex", available: true, models: [{ id: "codex-model", name: "Codex model", efforts: ["low", "high"] }], permissions: ["read-only", "ask", "full-access"], resume: true },
       { id: "workbuddy", name: "WorkBuddy", available: false, reason: "Not installed", models: [], permissions: [], resume: false },
@@ -56,7 +64,8 @@ async function fixture(page: Page, hostDefault = false, restoreOldSession = fals
   await page.goto("/");
   await page.getByRole("button", { name: "AI Assistant", exact: true }).click();
   await expect(page.getByLabel("智能体", { exact: true })).toBeVisible();
-  return { tasks, submissions, decisions, approvals, eventCursors, loseFirstResponse: () => { failFirstSubmission = true; } };
+  return { tasks, submissions, decisions, approvals, eventCursors, refreshes: () => refreshes,
+    resumeStatus: () => { failStatus = false; releaseStatus?.(); }, loseFirstResponse: () => { failFirstSubmission = true; } };
 }
 
 test("one Navigator session survives docking, cancellation, continuation and browser reload", async ({ page }) => {
@@ -148,11 +157,12 @@ test("task approval scope is sent to Navigator and a new chat resets permission 
   await expect.poll(() => state.tasks.length).toBe(1);
   const task = state.tasks[0]; task.status = "waiting_approval";
   state.approvals.push({ id: "approval-turn", taskId: task.id, kind: "cyrene_mcp_write", summary: "pipelines.patch", details: {}, status: "pending" });
-  await page.getByRole("button", { name: "允许本轮全部", exact: true }).click();
+  await page.getByRole("button", { name: "本任务内同类操作全部允许", exact: true }).click();
   await expect.poll(() => state.decisions.length).toBe(1);
   expect(state.decisions[0]).toMatchObject({ id: "approval-turn", decision: "approved", scope: "task" });
   task.status = "completed";
   await expect(page.getByLabel("权限模式", { exact: true })).toBeEnabled();
+  page.once("dialog", dialog => dialog.accept());
   await page.getByLabel("权限模式", { exact: true }).selectOption("full-access");
   await page.getByRole("button", { name: "新建聊天", exact: true }).click();
   await expect(page.getByLabel("权限模式", { exact: true })).toHaveValue("ask");
@@ -186,4 +196,53 @@ test("restoring an older selected session loads earlier tasks before enabling co
   await expect(page.getByLabel("智能体", { exact: true })).toHaveValue("codex");
   await expect(page.getByLabel("思考深度", { exact: true })).toHaveValue("high");
   expect(state.submissions).toEqual([]);
+});
+
+test("chat and Product share a single rotation, updated CSRF and logout state", async ({ page }) => {
+  const state = await fixture(page, false, false, new Date(Date.now() + 33_000).toISOString());
+  await menuAction(page, "工具", "服务状态");
+  await expect(page.locator(".product-session-bar")).toContainText("Product 服务已连接");
+  await expect.poll(state.refreshes, { timeout: 6000 }).toBe(1);
+  await page.getByLabel("消息", { exact: true }).fill("Shared session after rotation");
+  const sent = page.waitForRequest(request => new URL(request.url()).pathname === "/api/v1/navigator/tasks" && request.method() === "POST");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  expect((await sent).headers()["x-csrf-token"]).toBe("rotated-csrf");
+  await page.route("**/api/v1/auth/session", route => route.request().method() === "DELETE" ? route.fulfill({ status: 204 }) : route.fallback());
+  await page.getByRole("button", { name: "断开 Product 会话", exact: true }).click();
+  await expect(page.locator(".assistant-aux")).toContainText("一次性配对码");
+  await expect(page.locator(".product-connection")).toBeVisible();
+  expect(state.refreshes()).toBe(1);
+});
+
+test("permission escalation requires confirmation and a legacy task without permission restores Ask", async ({ page }) => {
+  const state = await fixture(page);
+  await page.getByLabel("智能体", { exact: true }).selectOption("codex");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.getByLabel("权限模式", { exact: true }).selectOption("full-access");
+  await expect(page.getByLabel("权限模式", { exact: true })).toHaveValue("ask");
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByLabel("权限模式", { exact: true }).selectOption("full-access");
+  await page.getByLabel("消息", { exact: true }).fill("First task");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect.poll(() => state.tasks.length).toBe(1);
+  state.tasks[0].status = "completed";
+  (state.tasks[0].metadata.navigator as any).execution.permission = undefined;
+  await page.reload();
+  await expect(page.getByLabel("权限模式", { exact: true })).toHaveValue("ask");
+});
+
+for (const probe of ["slow", "failed"] as const) test(`workspace identity ${probe} keeps operations disabled until the host is verified`, async ({ page }) => {
+  const state = await fixture(page, false, false, null, probe);
+  await expect(page.getByLabel("消息", { exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "附加文件", exact: true })).toBeDisabled();
+  expect(state.submissions).toEqual([]);
+  state.resumeStatus();
+  if (probe === "failed") {
+    await expect(page.getByText("Host status unavailable", { exact: false })).toBeVisible();
+    await page.getByRole("button", { name: "重试工作空间连接", exact: true }).click();
+  }
+  await expect(page.getByLabel("消息", { exact: true })).toBeEnabled();
+  await page.getByLabel("消息", { exact: true }).fill("Verified workspace task");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect.poll(() => state.submissions.length).toBe(1);
 });

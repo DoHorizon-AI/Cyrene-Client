@@ -229,8 +229,7 @@ export class WorkspaceBffClient {
    */
   async discoverWorkspaces(signal?: AbortSignal): Promise<readonly WorkspaceSummary[]> {
     this.requireEnabled();
-    this.clearSessionState();
-    const generation = this.generation;
+    const generation = ++this.generation;
     try {
       const session = await this.readSession(signal);
       const discoveryResult = workspaceListSchema.safeParse(await this.getJson(WORKSPACES_PATH, signal));
@@ -244,6 +243,7 @@ export class WorkspaceBffClient {
       if (uniqueIds.size !== discovery.workspaces.length) {
         throw new WorkspaceBffError("workspace_discovery_invalid", "Workspace 发现结果包含重复标识。", 502);
       }
+      this.discoveredWorkspaceIds.clear();
       for (const workspace of discovery.workspaces) this.discoveredWorkspaceIds.add(workspace.workspaceId);
       this.sessionScope = {
         issuer: session.issuer,
@@ -254,7 +254,7 @@ export class WorkspaceBffClient {
       this.session = session;
       return discovery.workspaces;
     } catch (error) {
-      if (generation === this.generation) this.clearSessionState();
+      if (generation === this.generation && error instanceof WorkspaceBffError && error.status === 401) this.clearSessionState();
       throw error;
     }
   }
@@ -395,12 +395,13 @@ export class WorkspaceBffClient {
       if (session.issuer !== discoveredScope.issuer
         || session.subject !== discoveredScope.subject
         || session.organizationId !== discoveredScope.organizationId) {
+        this.clearSessionState();
         throw new WorkspaceBffError("session_changed", "登录身份或组织范围已变化；请重新发现并选择 Workspace。", 0);
       }
       this.csrfToken = session.csrfToken;
       this.session = session;
     } catch (error) {
-      if (generation === this.generation) this.clearSessionState();
+      if (generation === this.generation && error instanceof WorkspaceBffError && error.status === 401) this.clearSessionState();
       throw error;
     }
   }

@@ -41,6 +41,7 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const [attachments, setAttachments] = useState<WorkAttachment[]>([]), [attachmentBusy, setAttachmentBusy] = useState(false), [attachmentError, setAttachmentError] = useState("");
   const taskDetailRef = useRef<NavigatorTaskRecord | null>(null);
   const taskStreamControllerRef = useRef<AbortController | null>(null);
+  const streamCursors = useRef(new Map<string, number>());
   const inputMessageIdsRef = useRef(new Map<string, { answer: string; messageId: string }>());
   useEffect(() => { taskDetailRef.current = taskDetail; }, [taskDetail]);
   const effectiveWorkspaceId = hostWorkspaceId || workspaceId;
@@ -77,6 +78,7 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   useEffect(() => {
     if (!selectedTaskId) { setTaskDetail(null); return; }
     const controller = new AbortController();
+    setTaskDetail(current => current?.id === selectedTaskId ? current : null);
     setDetailError(""); setTaskEvents([]); setStreamError("");
     void api.getAssistantTask(selectedTaskId, controller.signal).then(value => {
       if (!controller.signal.aborted) setTaskDetail(value);
@@ -85,41 +87,60 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   }, [api, selectedTaskId]);
 
   useEffect(() => {
-    if (!selectedTaskId || TERMINAL_TASK_STATES.has(taskDetail?.status ?? "")) return;
+    if (!selectedTaskId || (taskDetail?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetail.status))) return;
     const controller = new AbortController();
     taskStreamControllerRef.current = controller;
-    let cursor = 0;
+    let cursor = streamCursors.current.get(selectedTaskId) ?? 0;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    let refreshing = false, refreshAgain = false;
+    const refresh = async () => {
+      if (controller.signal.aborted) return;
+      if (refreshing) { refreshAgain = true; return; }
+      refreshing = true;
+      try {
+        const value = await api.getAssistantTask(selectedTaskId, controller.signal);
+        if (!controller.signal.aborted) {
+          setTaskDetail(current => current?.id === value.id && current.sequence > value.sequence ? current : value);
+          setTasks(current => current.map(task => task.id === value.id && task.sequence <= value.sequence ? value : task));
+          const [nextApprovals, nextInputs] = await Promise.all([api.getWorkApprovals(effectiveWorkspaceId), api.getWorkInputs(effectiveWorkspaceId)]);
+          if (!controller.signal.aborted) { setApprovals(nextApprovals); setPendingInputs(nextInputs); }
+        }
+      } catch (error) { if (!controller.signal.aborted) setDetailError(errorText(error)); }
+      finally { refreshing = false; if (refreshAgain && !controller.signal.aborted) { refreshAgain = false; scheduleRefresh(); } }
+    };
+    const scheduleRefresh = () => {
+      if (refreshTimer || controller.signal.aborted) return;
+      refreshTimer = setTimeout(() => { refreshTimer = undefined; void refresh(); }, 500);
+    };
     const connect = async () => {
       while (!controller.signal.aborted) {
         try {
           const response = await api.openAssistantTaskEvents(selectedTaskId, cursor, controller.signal);
           cursor = await readAssistantTaskEvents(response, cursor, controller.signal, event => {
+            if (controller.signal.aborted) return;
+            streamCursors.current.set(selectedTaskId, event.sequence);
             setTaskEvents(previous => previous.some(item => item.sequence === event.sequence) ? previous : [...previous.slice(-99), event]);
-            void api.getAssistantTask(selectedTaskId, controller.signal).then(value => {
-              if (!controller.signal.aborted) {
-                setTaskDetail(value);
-                if (TERMINAL_TASK_STATES.has(value.status)) controller.abort();
-              }
-            }, error => { if (!controller.signal.aborted) setDetailError(errorText(error)); });
+            scheduleRefresh();
           });
         } catch (error) {
           if (controller.signal.aborted) return;
           setStreamError(errorText(error));
           if (error instanceof NavigatorHttpError && error.status < 500 && error.status !== 408 && error.status !== 429) return;
         }
-        if (controller.signal.aborted || TERMINAL_TASK_STATES.has(taskDetailRef.current?.status ?? "")) return;
+        if (controller.signal.aborted || (taskDetailRef.current?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetailRef.current.status))) return;
         await pause(1200, controller.signal);
       }
     };
     void connect();
     return () => {
       controller.abort();
+      clearTimeout(refreshTimer);
       if (taskStreamControllerRef.current === controller) taskStreamControllerRef.current = null;
     };
-  }, [api, selectedTaskId]);
+  }, [api, selectedTaskId, effectiveWorkspaceId, taskDetail?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetail.status)]);
 
   useEffect(() => {
-    if (TERMINAL_TASK_STATES.has(taskDetail?.status ?? "")) taskStreamControllerRef.current?.abort();
+    if (taskDetail?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetail.status)) taskStreamControllerRef.current?.abort();
   }, [taskDetail?.status]);
 
   useEffect(() => {

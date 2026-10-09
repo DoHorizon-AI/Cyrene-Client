@@ -15,6 +15,96 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("NavigatorApi", () => {
+  it("serializes refresh, pair, and logout including the rotating CSRF token", async () => {
+    const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "old-csrf", refreshed: false };
+    const calls: { path: string; csrf: string | null }[] = [];
+    let release!: (value: Response) => void;
+    const api = new NavigatorApi(async (input, init) => {
+      const path = String(input);
+      calls.push({ path, csrf: new Headers(init?.headers).get("X-CSRF-Token") });
+      if (path.endsWith("/refresh")) return new Promise(resolve => { release = resolve; });
+      if (path.endsWith("/pair")) return response({ ...session, csrfToken: "paired-csrf" });
+      if (init?.method === "DELETE") return response(undefined, 204);
+      return response(session);
+    });
+    await api.getSession();
+    const refreshing = api.refreshSession();
+    await Promise.resolve();
+    const pairing = api.pair("one-time-code");
+    const logout = api.logout();
+    await Promise.resolve();
+    expect(calls.map(call => call.path)).toEqual(["/api/v1/auth/session", "/api/v1/auth/session/refresh"]);
+    release(response({ ...session, csrfToken: "rotated-csrf", refreshed: true }));
+    await Promise.all([refreshing, pairing, logout]);
+    expect(calls.slice(2)).toEqual([
+      { path: "/api/v1/auth/pair", csrf: "rotated-csrf" },
+      { path: "/api/v1/auth/session", csrf: "paired-csrf" },
+    ]);
+    expect(api.sessionCsrfToken).toBeNull();
+  });
+
+  for (const method of ["GET", "POST"] as const) it(`does not expire a newly paired session on a late Product ${method} denial`, async () => {
+    const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "new-session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "new-csrf", refreshed: false };
+    let release!: (value: Response) => void;
+    let productReads = 0, refreshes = 0, expirations = 0;
+    const api = new NavigatorApi(async (input) => {
+      const path = String(input);
+      if (path.endsWith("/pair")) return response(session);
+      if (path.endsWith("/refresh")) { refreshes++; return response({}, 401); }
+      if (productReads++ === 0) return new Promise(resolve => { release = resolve; });
+      return response([]);
+    });
+    api.setSessionExpiredHandler(() => { expirations++; });
+    const pending = api.requestProductResponse("/api/v1/echo/status", { method });
+    await api.pair("one-time-code");
+    release(response({ detail: "old session denied" }, 401));
+    expect((await pending).status).toBe(method === "GET" ? 200 : 401);
+    expect(api.sessionCsrfToken).toBe("new-csrf");
+    expect(refreshes).toBe(0);
+    expect(expirations).toBe(0);
+  });
+
+  it("coalesces simultaneous Product denials into one refresh", async () => {
+    let refreshes = 0, reads = 0;
+    let release!: (value: Response) => void;
+    const api = new NavigatorApi(async input => {
+      if (String(input).endsWith("/refresh")) {
+        refreshes++;
+        return new Promise(resolve => { release = resolve; });
+      }
+      return reads++ < 2 ? response({ detail: "expired" }, 401) : response([]);
+    });
+    const first = api.getModelImports(), second = api.getModelImports();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(refreshes).toBe(1);
+    release(response({ authenticated: true, state: "AUTHENTICATED", sessionId: "session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "rotated-csrf", refreshed: true }));
+    expect(await Promise.all([first, second])).toEqual([[], []]);
+    expect(refreshes).toBe(1);
+    expect(api.sessionCsrfToken).toBe("rotated-csrf");
+  });
+
+  for (const command of ["refresh", "logout"] as const) it(`ignores an old session GET after ${command}`, async () => {
+    const old = { authenticated: true, state: "AUTHENTICATED", sessionId: "old-session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "old-csrf", refreshed: false };
+    let release!: (response: Response) => void;
+    const states: boolean[] = [];
+    const api = new NavigatorApi(async (input, init) => {
+      if (String(input).endsWith("/refresh")) return response({ ...old, csrfToken: "rotated-csrf", refreshed: true });
+      if (init?.method === "DELETE") return response(undefined, 204);
+      return new Promise(resolve => { release = resolve; });
+    });
+    api.subscribeSession(session => states.push(session.authenticated));
+    const pending = api.getSession();
+    if (command === "refresh") await api.refreshSession(); else await api.logout();
+    release(response(old));
+    const restored = await pending;
+    expect(restored.authenticated).toBe(command === "refresh");
+    expect(api.sessionCsrfToken).toBe(command === "refresh" ? "rotated-csrf" : null);
+    expect(states).toEqual([command === "refresh"]);
+  });
   it("reads the Work API bare approval array while retaining legacy envelope compatibility", async () => {
     const approval = { id: "approval-1", taskId: "task-1", kind: "cyrene_mcp_write", summary: "pipelines.patch", details: { pipelineId: "flow-1" }, status: "pending" };
     let body: unknown = [approval];
@@ -39,7 +129,7 @@ describe("NavigatorApi", () => {
   });
 
   it("rejects unsupported capability permission values and omits provider credentials from parsed capabilities", async () => {
-    const body = { defaultRuntime: "harness", providers: [{ id: "provider", name: "Provider", baseUrl: "https://example.invalid/v1", models: [], configured: true, apiKey: "secret" }],
+    const body = { defaultRuntime: "harness", workspaceId: "local", providers: [{ id: "provider", name: "Provider", baseUrl: "https://example.invalid/v1", models: [], configured: true, apiKey: "secret" }],
       runtimes: [{ id: "harness", name: "Harness", available: true, models: [], permissions: ["ask"], resume: true }] };
     const api = new NavigatorApi(async () => response(body));
     const caps = await api.getAssistantCapabilities();

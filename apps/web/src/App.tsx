@@ -2,7 +2,7 @@ import { lazy, Suspense, useRef, Component, type ErrorInfo, type ReactNode, useE
 import { catalog, definitions, getDefinition } from "../../../packages/pipeline-model/catalog";
 import { examplePipeline, inspect, type PipelineNode } from "../../../packages/pipeline-model";
 import { GraphCanvas } from "./graph/GraphCanvas";
-import { SettingsClient } from "./services/client";
+import { NavigatorSessionProvider, useNavigatorSession } from "./services/NavigatorSessionProvider";
 import { ConnectionPanel } from "./services/ConnectionPanel";
 import { NodeServiceSettings } from "./services/NodeServiceSettings";
 import type { HostStatus } from "../../../packages/service-settings/contracts";
@@ -144,7 +144,7 @@ function AppView() {
   useEffect(() => { const navigate = () => { setProductVisited(true); setProductRoute(routeForPath(location.pathname)); setEditorTab("product"); }; window.addEventListener("popstate", navigate); return () => window.removeEventListener("popstate", navigate); }, []);
   const [filePreview, setFilePreview] = useState<{ name: string; text: string } | null>(null);
   const [events, setEvents] = useState<{ time: string; message: string }[]>([]);
-  const [settingsClient] = useState(() => new SettingsClient());
+  const { settings: settingsClient } = useNavigatorSession();
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
   const [localUpdatesAvailable, setLocalUpdatesAvailable] = useState(false);
   const [updateReminderCount, setUpdateReminderCount] = useState(0);
@@ -155,8 +155,9 @@ function AppView() {
   const [plan, setPlan] = useState<string[]>([]);
   const [cursor, setCursor] = useState(0);
   const [running, setRunning] = useState(false);
+  const [canvasInteracting, setCanvasInteracting] = useState(false);
   const { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, redoCount, redoLocal, changed, recordChange, applyDocument, loadServerDocument, openServerPipeline, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor, recoveries, recoveryStatus, recover, serverBase, updateServerBase } = usePipelineDocument({
-    disabled: running,
+    disabled: running || canvasInteracting,
     selectedId, onSelect: setSelectedId, onNotice: setNotice,
     onResetPreview: () => { setRunning(false); setPlan([]); setCursor(0); },
     onShowGraph: () => setEditorTab("graph"),
@@ -184,7 +185,7 @@ function AppView() {
         else if (e.key.toLowerCase() === "y") { e.preventDefault(); redoLocal(); }
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); if (!running) save(); }
-      if (e.altKey && ["1", "2", "3", "0", "9"].includes(e.key)) {
+      if (e.altKey && !editingText && ["1", "2", "3", "0", "9"].includes(e.key)) {
         e.preventDefault();
         if (e.key === "1") left("files"); if (e.key === "2") left("nodes"); if (e.key === "3") left("servers"); if (e.key === "0") right("info");
         if (e.key === "9") setLayout(s => ({ ...s, bottom: !s.bottom }));
@@ -257,7 +258,7 @@ function AppView() {
   const rightTitle = layout.right === "monitor" ? "Navigator" : layout.right === "assistant" ? "AI Assistant" : t(layout.right === "plugins" ? "页面插件" : "节点信息");
   const css = { "--left-width": `${layout.leftWidth}px`, "--right-width": `${layout.rightWidth}px`, "--bottom-height": `${layout.bottomHeight}px` } as CSSProperties;
   return <div className={`studio ide-studio ${layout.left ? "has-left" : ""} ${layout.right ? "has-right" : ""}`} style={css}>
-    <PipelineControls serverBase={serverBase} onServerBase={updateServerBase} document={pipeline} selectedId={selectedId} disabled={running} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} canRedo={redoCount > 0} onRedo={redoLocal} render={controls => <>
+    <PipelineControls onOpenServerPipeline={openServerPipeline} serverBase={serverBase} onServerBase={updateServerBase} document={pipeline} selectedId={selectedId} disabled={running || canvasInteracting} onApply={applyDocument} onLoad={loadServerDocument} onNotice={setNotice} canUndo={undoCount > 0} onUndo={undoLocal} canRedo={redoCount > 0} onRedo={redoLocal} render={controls => <>
       <header className="ide-titlebar">
         <div className="ide-brand" aria-label="Cyrene Client">C<span>↗</span></div>
         <nav className="ide-menubar" aria-label={locale === "zh-CN" ? "主菜单" : "Main menu"}>
@@ -309,7 +310,7 @@ function AppView() {
           { id: "graph", label: <><Icon name="nodes" />{pipeline.id}.pipeline <span>{dirty ? "●" : ""}</span></>, content: visible => <>
             <div className="canvas-toolbar"><span>{t("工作空间")} <span className="ide-breadcrumb-sep">›</span> {t("流水线")} <small>{locale === "zh-CN" ? `${pipeline.nodes.length} 节点 · ${pipeline.edges.length} 连接` : `${pipeline.nodes.length} nodes · ${pipeline.edges.length} connections`}</small></span><button onClick={() => withEditor(handle => handle.fit())}>{t("适应画布")}</button></div>
             <div className={`canvas-area ${running ? "locked" : ""}`}>
-              <GraphCanvas ref={editor} initial={initial} interactive={visible && !running} onChange={changed} onSelect={focusNode} />
+              <GraphCanvas ref={editor} initial={initial} interactive={visible && !running} onChange={changed} onSelect={focusNode} onInteractionChange={setCanvasInteracting} />
               {running && <div className="canvas-lock">{t("正在预演")} · {t("画布暂时锁定")}</div>}
             </div>
           </> },
@@ -373,7 +374,7 @@ export function App() {
     <ErrorBoundary>
       {isDeviceApprovalRoute
         ? <DeviceApprovalRoute />
-        : <AppView />}
+        : <NavigatorSessionProvider><AppView /></NavigatorSessionProvider>}
     </ErrorBoundary>
   );
 }

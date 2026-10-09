@@ -140,7 +140,7 @@ export interface AssistantRuntime {
   approvalScopes?: ("once" | "task")[];
 }
 export interface AssistantCapabilities {
-  runtimes: AssistantRuntime[]; providers: AssistantProvider[]; defaultRuntime: string;
+  runtimes: AssistantRuntime[]; providers: AssistantProvider[]; defaultRuntime: string; workspaceId: string;
 }
 export interface AssistantExecution {
   runtime: string; providerId?: string; model?: string; effort?: string; permission: AssistantPermission;
@@ -428,8 +428,21 @@ export class NavigatorApi {
   private csrfToken: string | null = null;
   private refreshInFlight: Promise<SessionPayload> | null = null;
   private sessionExpiredHandler: (() => void) | null = null;
+  private session: SessionPayload | null = null;
+  private readonly sessionListeners = new Set<(session: SessionPayload) => void>();
+  private restoreInFlight: Promise<SessionPayload> | null = null;
+  private sessionGeneration = 0;
+  private authMutationTail: Promise<void> = Promise.resolve();
+  private pendingAuthMutations = 0;
 
   constructor(private readonly fetcher: Fetcher = globalThis.fetch.bind(globalThis)) {}
+
+  get sessionCsrfToken(): string | null { return this.csrfToken; }
+  subscribeSession(listener: (session: SessionPayload) => void): () => void {
+    this.sessionListeners.add(listener);
+    if (this.session) listener(this.session);
+    return () => { this.sessionListeners.delete(listener); };
+  }
 
   /**
    * Register the App-level response for an exhausted Web Host session.
@@ -444,6 +457,12 @@ export class NavigatorApi {
    * 中文：读取当前会话状态；如果只剩刷新凭据，则轮换会话。
    */
   async restoreSession(): Promise<SessionPayload> {
+    if (this.restoreInFlight) return this.restoreInFlight;
+    this.restoreInFlight = this.restoreCurrentSession();
+    try { return await this.restoreInFlight; }
+    finally { this.restoreInFlight = null; }
+  }
+  private async restoreCurrentSession(): Promise<SessionPayload> {
     const session = await this.getSession();
     if (!session.authenticated && session.refreshable) {
       try {
@@ -467,12 +486,11 @@ export class NavigatorApi {
     if (!value) {
       throw new NavigatorContractError("Enter the one-time Navigator pairing code.");
     }
-    return this.requestJson(
-      AUTH_PAIR_PATH,
-      jsonRequest("POST", { pairingCode: value }),
-      parseSession,
-      false,
-    );
+    return this.mutateSession(async () => {
+      const session = await this.requestJson(AUTH_PAIR_PATH, jsonRequest("POST", { pairingCode: value }), parseSession, false, false);
+      this.acceptSession(session);
+      return session;
+    });
   }
 
   /**
@@ -480,7 +498,14 @@ export class NavigatorApi {
    * 中文：读取会话状态，不会将匿名访问转换为错误。
    */
   async getSession(): Promise<SessionPayload> {
-    return this.requestJson(AUTH_SESSION_PATH, { method: "GET" }, parseSession, false);
+    await this.waitForSessionMutations();
+    const generation = this.sessionGeneration;
+    const result = await this.requestJson(AUTH_SESSION_PATH, { method: "GET" }, parseSession, false);
+    if (generation !== this.sessionGeneration || this.pendingAuthMutations) {
+      await this.waitForSessionMutations();
+      return this.session ?? result;
+    }
+    return result;
   }
 
   /**
@@ -492,12 +517,18 @@ export class NavigatorApi {
       return this.refreshInFlight;
     }
 
-    this.refreshInFlight = this.requestJson(
-      AUTH_REFRESH_PATH,
-      { method: "POST" },
-      parseSession,
-      false,
-    );
+    this.refreshInFlight = this.mutateSession(async () => {
+      try {
+        const session = await this.requestJson(AUTH_REFRESH_PATH, { method: "POST" }, parseSession, false, false);
+        this.acceptSession(session);
+        return session;
+      } catch (reason) {
+        if (reason instanceof NavigatorHttpError && reason.status === 401) {
+          this.sessionExpiredHandler?.(); this.expireSession();
+        }
+        throw reason;
+      }
+    });
     try {
       return await this.refreshInFlight;
     } finally {
@@ -510,13 +541,26 @@ export class NavigatorApi {
    * 中文：撤销浏览器会话并清除内存中的 CSRF token。
    */
   async logout(): Promise<void> {
-    await this.requestJson<void>(
-      AUTH_LOGOUT_PATH,
-      { method: "DELETE" },
-      () => undefined,
-      false,
-    );
-    this.csrfToken = null;
+    return this.mutateSession(async () => {
+      await this.requestJson<void>(AUTH_LOGOUT_PATH, { method: "DELETE" }, () => undefined, false);
+      this.expireSession();
+    });
+  }
+
+  /** Cookie-changing requests must complete in intent order, including Set-Cookie. */
+  private mutateSession<T>(operation: () => Promise<T>): Promise<T> {
+    this.sessionGeneration++;
+    this.pendingAuthMutations++;
+    const result = this.authMutationTail.then(() => {
+      this.sessionGeneration++;
+      return operation();
+    }).finally(() => { this.pendingAuthMutations--; });
+    this.authMutationTail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private async waitForSessionMutations(): Promise<void> {
+    while (this.pendingAuthMutations) await this.authMutationTail;
   }
 
   /**
@@ -1248,20 +1292,40 @@ export class NavigatorApi {
     init: RequestInit,
     parser: ResponseParser<T>,
     retryAuth = true,
+    acceptSessionResponse = true,
   ): Promise<T> {
+    const generation = this.sessionGeneration;
     const response = await this.requestResponse(path, init, retryAuth);
-    return readResponse(response, path, parser, this.acceptSession.bind(this));
+    return readResponse(response, path, parser, payload => { if (acceptSessionResponse && generation === this.sessionGeneration) this.acceptSession(payload); });
   }
 
   private async requestResponse(path: string, init: RequestInit, retryAuth = true): Promise<Response> {
     init.signal?.throwIfAborted();
+    let generation = this.sessionGeneration;
     const response = await this.send(path, init);
-    if (response.status === 401 && retryAuth && !path.startsWith("/api/v1/auth/")) {
+    if (response.status !== 401 || path.startsWith("/api/v1/auth/")) return response;
+    const mayRetryRead = /^(GET|HEAD)$/.test((init.method ?? "GET").toUpperCase());
+    if (generation !== this.sessionGeneration || this.pendingAuthMutations) {
+      await this.waitForSessionMutations();
+      init.signal?.throwIfAborted();
+      if (retryAuth && mayRetryRead && this.session?.authenticated) {
+        await response.body?.cancel();
+        return this.requestResponse(path, init, false);
+      }
+      // An old denial cannot refresh or expire a newer browser session.
+      return response;
+    }
+    let sessionExhausted = true;
+    if (retryAuth) {
       let authenticated = false;
       try {
         const refreshed = await this.refreshSession();
-        authenticated = refreshed.authenticated;
-      } catch {
+        await this.waitForSessionMutations();
+        const sameSession = this.session === refreshed;
+        authenticated = this.session?.authenticated === true && (sameSession || mayRetryRead);
+        if (sameSession) generation = this.sessionGeneration;
+      } catch (reason) {
+        sessionExhausted = reason instanceof NavigatorHttpError && reason.status === 401;
         // The original response contains the useful Product/Web Host problem.
                 // 中文：原始响应包含有用的 Product/Web Host 错误信息。
       }
@@ -1271,9 +1335,10 @@ export class NavigatorApi {
         return this.requestResponse(path, init, false);
       }
     }
-    if (response.status === 401 && !path.startsWith("/api/v1/auth/")) {
+    if (sessionExhausted && generation === this.sessionGeneration && !this.pendingAuthMutations) {
       this.sessionExpiredHandler?.();
       this.csrfToken = null;
+      this.expireSession();
     }
     return response;
   }
@@ -1299,13 +1364,18 @@ export class NavigatorApi {
   private acceptSession(payload: SessionPayload): void {
     if (payload.csrfToken) {
       this.csrfToken = payload.csrfToken;
-      return;
-    }
-    if (!payload.refreshable) {
+    } else if (!payload.refreshable) {
       this.csrfToken = null;
     } else if (!this.csrfToken) {
       this.csrfToken = readCookie("cyrene_csrf");
     }
+    this.session = payload;
+    for (const listener of this.sessionListeners) listener(payload);
+  }
+  private expireSession(): void {
+    this.sessionGeneration++;
+    this.acceptSession({ sessionId: null, expiresAt: null, refreshExpiresAt: null, refreshed: false,
+      ...this.session, authenticated: false, state: "ANONYMOUS", csrfToken: null, refreshable: false });
   }
 }
 
@@ -1611,7 +1681,7 @@ function parseAssistantModel(value: unknown): AssistantModel {
 function parseAssistantCapabilities(value: unknown): AssistantCapabilities {
   const record = requireRecord(value, "assistant capabilities");
   const permissions = new Set(["read-only", "ask", "auto", "full-access"]);
-  return { defaultRuntime: requireString(record, "defaultRuntime", "assistant capabilities"),
+  return { defaultRuntime: requireString(record, "defaultRuntime", "assistant capabilities"), workspaceId: requireString(record, "workspaceId", "assistant capabilities"),
     providers: requireArray(record.providers, "assistant providers").map(parseAssistantProvider),
     runtimes: requireArray(record.runtimes, "assistant runtimes").map(value => {
       const runtime = requireRecord(value, "assistant runtime");

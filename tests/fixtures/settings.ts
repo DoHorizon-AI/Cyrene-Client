@@ -13,7 +13,7 @@ export const hostStatus = {
   proxyPrefixes: ["catalyst", "reactor", "yield", "echo", "navigator"].map((s) => `/api/v1/${s}`),
   observedAt: "2026-09-21T00:00:00Z", gpu: { available: true, gpus: [{ name: "Fixture GPU", totalMib: 24576, usedMib: 0, utilizationPct: 0 }] },
 };
-export const authSession = { authenticated: true, refreshable: true, csrfToken: "fixture-csrf" };
+export const authSession = { authenticated: true, state: "AUTHENTICATED", sessionId: "settings-session", expiresAt: null, refreshExpiresAt: null, refreshed: false, refreshable: true, csrfToken: "fixture-csrf" };
 export const draft = {
   id: ids.draft, name: "Fixture LoRA draft", state: "PREPARED", trainingRun: null,
   datasetVersion: { id: ids.version, uri: `cyrene://catalyst/dataset-versions/${ids.version}`, resourceVersion: 1, artifact: { ...artifact, kind: "dataset" } },

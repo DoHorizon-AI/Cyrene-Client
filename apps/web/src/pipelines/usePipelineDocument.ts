@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { rebaseHistory } from "./history";
 import { examplePipeline, parsePipeline, type Pipeline } from "../../../../packages/pipeline-model";
 import type { GraphHandle } from "../graph/GraphCanvas";
-import { listRecoveries, saveRecovery, recoveryDocumentSchema, type Recovery } from "./recovery";
+import { listRecoveries, saveRecovery, retainRecoveries, recoveryDocumentSchema, type Recovery } from "./recovery";
 import { useTeamIdentity } from "../team/TeamGate";
 import type { PipelineRecord } from "../../../../packages/pipeline-control/contracts";
 import { logError } from "../logger";
@@ -81,7 +81,7 @@ export function usePipelineDocument(options: Options) {
     setRecoveryStatus("正在保存恢复记录");
     const write = recoveryQueue.current.catch(() => {}).then(() => saveRecovery(record));
     recoveryQueue.current = write.then(() => {
-      if (mounted.current) setRecoveries(rows => [record, ...rows.filter(row => row.id !== record.id)]);
+      if (mounted.current) setRecoveries(rows => retainRecoveries([record, ...rows.filter(row => row.id !== record.id)]));
       if (mounted.current && sequence === recoverySequence.current) setRecoveryStatus("编辑可恢复");
     }).catch(() => { if (mounted.current) setRecoveryStatus("恢复保存失败，请导出备份"); });
     return write;
@@ -115,7 +115,8 @@ export function usePipelineDocument(options: Options) {
   function loadCanvas(p: Pipeline, fit = true) {
     const handle = requireEditor(), selected = live.current.selectedId;
     handle.load(p, { silent: true, fit });
-    if (selected && p.nodes.some(n => n.id === selected)) handle.select(selected);
+    if (selected && p.nodes.some(n => n.id === selected)) handle.select(selected, { center: fit });
+    else live.current.onSelect(null);
   }
   function applyDocument(p: Pipeline) { loadCanvas(p); recordChange(p); }
   function loadServerDocument(p: Pipeline, options?: { reveal?: boolean }) {
@@ -126,8 +127,7 @@ export function usePipelineDocument(options: Options) {
       void persistRecovery(true).catch(error);
       live.current.onNotice("服务端修改与部分撤销记录冲突；正在另存恢复备份，其余独立修改仍可撤销。");
     }
-    const previousIds = new Set(current.current.nodes.map(node => node.id));
-    const fit = !!options?.reveal || current.current.id !== p.id || p.nodes.some(node => !previousIds.has(node.id));
+    const fit = !!options?.reveal || current.current.id !== p.id;
     loadCanvas(p, fit); if (fit) editor.current?.fit(); publish(p, false);
     history.current = rebasedHistory; future.current = rebasedFuture; setUndoCount(history.current.length); setRedoCount(future.current.length);
     if (options?.reveal) {
@@ -140,7 +140,7 @@ export function usePipelineDocument(options: Options) {
     const sent = current.current;
     const record = await pipelineClient.execute('pipelines.get', { workspaceId: identity.workspaceId, pipelineId });
     if (!mounted.current) return;
-    if (current.current !== sent || live.current.disabled) throw new Error('读取期间画布已修改或切换，未替换当前内容，请重试。');
+    if (current.current !== sent || live.current.disabled) throw new Error('读取期间画布已修改或切换，旧结果未应用，请重试。');
     const localChanges = !baseRef.current || JSON.stringify(sent) !== JSON.stringify(baseRef.current.document);
     if (localChanges && JSON.stringify(sent) !== JSON.stringify(record.document)) {
       if (!window.confirm('在画布中查看此流程会替换当前本地内容。继续前会保存一份恢复记录，是否继续？')) return;
