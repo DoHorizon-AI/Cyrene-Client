@@ -130,6 +130,22 @@ export interface NavigatorTaskPage {
   nextCursor: string | null;
 }
 
+export type AssistantPermission = "read-only" | "ask" | "auto" | "full-access";
+export interface AssistantModel { id: string; name: string; efforts: string[]; images?: boolean }
+export type AssistantProtocol = "openai-completions" | "openai-responses" | "anthropic-messages";
+export interface AssistantProvider { id: string; name: string; protocol: AssistantProtocol; baseUrl: string; models: AssistantModel[]; configured: boolean }
+export interface AssistantRuntime {
+  id: string; name: string; available: boolean; reason?: string; models: AssistantModel[];
+  permissions: AssistantPermission[]; resume: boolean;
+  approvalScopes?: ("once" | "task")[];
+}
+export interface AssistantCapabilities {
+  runtimes: AssistantRuntime[]; providers: AssistantProvider[]; defaultRuntime: string;
+}
+export interface AssistantExecution {
+  runtime: string; providerId?: string; model?: string; effort?: string; permission: AssistantPermission;
+}
+
 export interface WorkApproval extends JsonRecord {
   id: string;
   taskId: string;
@@ -1056,12 +1072,26 @@ export class NavigatorApi {
     title?: string;
     description?: string;
     metadata?: JsonRecord;
-  }): Promise<NavigatorTaskRecord> {
+    execution?: AssistantExecution;
+  }, requestId?: string): Promise<NavigatorTaskRecord> {
     return this.requestJson(
       "/api/v1/navigator/tasks",
-      jsonRequest("POST", input, true),
+      jsonRequest("POST", input, requestId ?? true),
       parseTaskRecord,
     );
+  }
+
+  /** Read the installed execution backends, rather than guessing browser capabilities. */
+  async getAssistantCapabilities(): Promise<AssistantCapabilities> {
+    return this.requestJson("/api/v1/navigator/assistant/capabilities", { method: "GET" }, parseAssistantCapabilities);
+  }
+
+  async saveAssistantProvider(id: string, input: { name: string; protocol?: AssistantProtocol; baseUrl: string; apiKey?: string; models: { id: string; name?: string; efforts?: string[]; images?: boolean }[] }): Promise<AssistantProvider> {
+    return this.requestJson(`/api/v1/navigator/assistant/providers/${workId(id)}`, jsonRequest("PUT", input, true), parseAssistantProvider);
+  }
+
+  async deleteAssistantProvider(id: string): Promise<void> {
+    await this.requestJson(`/api/v1/navigator/assistant/providers/${workId(id)}`, jsonRequest("DELETE", undefined, true), () => undefined);
   }
 
   /** Read the latest server-owned projection for one task. 中文：读取单项任务的最新服务端投影。 */
@@ -1115,10 +1145,10 @@ export class NavigatorApi {
   }
 
   /** Resolve an approval exactly once through its owning work service. 中文：通过所属工作服务一次性完成审批。 */
-  async resolveWorkApproval(workspaceId: string, approvalId: string, decision: "approved" | "rejected"): Promise<JsonRecord> {
+  async resolveWorkApproval(workspaceId: string, approvalId: string, decision: "approved" | "rejected", scope: "once" | "task" = "once"): Promise<JsonRecord> {
     return this.requestJson(
       workPath(workspaceId, `approvals/${workId(approvalId)}/resolve`),
-      jsonRequest("POST", { decision, messageId: makeIdempotencyKey() }, true),
+      jsonRequest("POST", { decision, messageId: makeIdempotencyKey(), ...(scope === "task" ? { scope } : {}) }, true),
       parseResource,
     );
   }
@@ -1560,6 +1590,42 @@ function parseResource(value: unknown): JsonRecord {
   return requireRecord(value, "Product resource");
 }
 
+function parseAssistantProvider(value: unknown): AssistantProvider {
+  const record = requireRecord(value, "assistant provider");
+  const protocol = record.protocol ?? "openai-completions";
+  if (!["openai-completions", "openai-responses", "anthropic-messages"].includes(String(protocol))) throw new NavigatorContractError("Unknown API protocol.");
+  return { id: requireString(record, "id", "assistant provider"), name: requireString(record, "name", "assistant provider"),
+    protocol: protocol as AssistantProtocol,
+    baseUrl: requireString(record, "baseUrl", "assistant provider"), configured: requireBoolean(record, "configured", "assistant provider"),
+    models: requireArray(record.models, "assistant models").map(parseAssistantModel) };
+}
+
+function parseAssistantModel(value: unknown): AssistantModel {
+  const record = requireRecord(value, "assistant model");
+  const efforts = requireArray(record.efforts, "model efforts");
+  if (!efforts.every(value => typeof value === "string")) throw new NavigatorContractError("Invalid model efforts.");
+  return { id: requireString(record, "id", "assistant model"), name: requireString(record, "name", "assistant model"),
+    efforts: efforts as string[], ...(typeof record.images === "boolean" ? { images: record.images } : {}) };
+}
+
+function parseAssistantCapabilities(value: unknown): AssistantCapabilities {
+  const record = requireRecord(value, "assistant capabilities");
+  const permissions = new Set(["read-only", "ask", "auto", "full-access"]);
+  return { defaultRuntime: requireString(record, "defaultRuntime", "assistant capabilities"),
+    providers: requireArray(record.providers, "assistant providers").map(parseAssistantProvider),
+    runtimes: requireArray(record.runtimes, "assistant runtimes").map(value => {
+      const runtime = requireRecord(value, "assistant runtime");
+      const supported = requireArray(runtime.permissions, "runtime permissions");
+      if (!supported.every(value => typeof value === "string" && permissions.has(value))) throw new NavigatorContractError("Unknown runtime permission.");
+      return { id: requireString(runtime, "id", "assistant runtime"), name: requireString(runtime, "name", "assistant runtime"),
+        available: requireBoolean(runtime, "available", "assistant runtime"), resume: requireBoolean(runtime, "resume", "assistant runtime"),
+        ...(typeof runtime.reason === "string" ? { reason: runtime.reason } : {}),
+        permissions: supported as AssistantPermission[], models: requireArray(runtime.models, "runtime models").map(parseAssistantModel),
+        approvalScopes: Array.isArray(runtime.approvalScopes)
+          ? runtime.approvalScopes.filter((scope): scope is "once" | "task" => scope === "once" || scope === "task") : ["once"] };
+    }) };
+}
+
 function parseTaskRecord(value: unknown): NavigatorTaskRecord {
   const record = requireRecord(value, "assistant task");
   const metadata = requireRecord(record.metadata, "assistant task metadata");
@@ -1606,6 +1672,9 @@ function parseTaskCancellation(value: unknown): { taskId: string; cancelled: boo
 }
 
 function parseApprovalList(value: unknown): WorkApproval[] {
+  // The Work API publishes list[ApprovalRecord]. Accept the old fixture
+  // envelope as well while existing clients move to the real wire format.
+  if (Array.isArray(value)) return value.map(parseApproval);
   const record = requireRecord(value, "approval list");
   return requireArray(record.items, "approvals").map(parseApproval);
 }

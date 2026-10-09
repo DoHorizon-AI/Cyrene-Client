@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import { rebaseHistory } from "./history";
 import { examplePipeline, parsePipeline, type Pipeline } from "../../../../packages/pipeline-model";
 import type { GraphHandle } from "../graph/GraphCanvas";
 import { listRecoveries, saveRecovery, recoveryDocumentSchema, type Recovery } from "./recovery";
 import { useTeamIdentity } from "../team/TeamGate";
 import type { PipelineRecord } from "../../../../packages/pipeline-control/contracts";
 import { logError } from "../logger";
+import { pipelineClient } from './client';
 
 const STORAGE_KEY = "cyrene.studio.prototype.v1.draft";
 interface Options {
+  disabled: boolean;
   selectedId: string | null;
   onSelect(id: string | null): void;
   onNotice(message: string): void;
@@ -72,13 +75,16 @@ export function usePipelineDocument(options: Options) {
     live.current.onResetPreview();
     if (unsaved) persistRecovery();
   }
-  function persistRecovery() {
+  function persistRecovery(preserve = false) {
     const sequence = ++recoverySequence.current;
-    const record: Recovery = { id: `${identity.actorId}:${identity.workspaceId}:${tabId}:${current.current.id}`, ...identity, tabId, sequence, savedAt: new Date().toISOString(), document: structuredClone(current.current), history: structuredClone(history.current), future: structuredClone(future.current), selectedId: live.current.selectedId, view: editor.current?.getView?.(), ...(baseRef.current ? { serverBase: structuredClone(baseRef.current) } : {}) };
+    const record: Recovery = { id: `${identity.actorId}:${identity.workspaceId}:${tabId}:${current.current.id}${preserve ? `:before-load-${crypto.randomUUID()}` : ''}`, ...identity, tabId, sequence, savedAt: new Date().toISOString(), document: structuredClone(current.current), history: structuredClone(history.current), future: structuredClone(future.current), selectedId: live.current.selectedId, view: editor.current?.getView?.(), ...(baseRef.current ? { serverBase: structuredClone(baseRef.current) } : {}) };
     setRecoveryStatus("正在保存恢复记录");
-    recoveryQueue.current = recoveryQueue.current.catch(() => {}).then(() => saveRecovery(record)).then(() => {
+    const write = recoveryQueue.current.catch(() => {}).then(() => saveRecovery(record));
+    recoveryQueue.current = write.then(() => {
+      if (mounted.current) setRecoveries(rows => [record, ...rows.filter(row => row.id !== record.id)]);
       if (mounted.current && sequence === recoverySequence.current) setRecoveryStatus("编辑可恢复");
     }).catch(() => { if (mounted.current) setRecoveryStatus("恢复保存失败，请导出备份"); });
+    return write;
   }
   function updateServerBase(record: PipelineRecord | null) {
     if (record && (record.workspaceId !== identity.workspaceId || record.document.id !== current.current.id)) return;
@@ -112,9 +118,39 @@ export function usePipelineDocument(options: Options) {
     if (selected && p.nodes.some(n => n.id === selected)) handle.select(selected);
   }
   function applyDocument(p: Pipeline) { loadCanvas(p); recordChange(p); }
-  function loadServerDocument(p: Pipeline) {
-    loadCanvas(p, false); publish(p, false);
-    history.current = []; future.current = []; setUndoCount(0); setRedoCount(0);
+  function loadServerDocument(p: Pipeline, options?: { reveal?: boolean }) {
+    const sameDocument = current.current.id === p.id;
+    const rebasedHistory = rebaseHistory(history.current, current.current, p);
+    const rebasedFuture = rebaseHistory(future.current, current.current, p);
+    if (sameDocument && (rebasedHistory.length < history.current.length || rebasedFuture.length < future.current.length)) {
+      void persistRecovery(true).catch(error);
+      live.current.onNotice("服务端修改与部分撤销记录冲突；正在另存恢复备份，其余独立修改仍可撤销。");
+    }
+    const previousIds = new Set(current.current.nodes.map(node => node.id));
+    const fit = !!options?.reveal || current.current.id !== p.id || p.nodes.some(node => !previousIds.has(node.id));
+    loadCanvas(p, fit); if (fit) editor.current?.fit(); publish(p, false);
+    history.current = rebasedHistory; future.current = rebasedFuture; setUndoCount(history.current.length); setRedoCount(future.current.length);
+    if (options?.reveal) {
+      live.current.onShowGraph();
+      requestAnimationFrame(() => { if (mounted.current && current.current === p) editor.current?.fit(); });
+    }
+  }
+  async function openServerPipeline(pipelineId: string) {
+    if (live.current.disabled) throw new Error('请先停止本地预演，再载入流程。');
+    const sent = current.current;
+    const record = await pipelineClient.execute('pipelines.get', { workspaceId: identity.workspaceId, pipelineId });
+    if (!mounted.current) return;
+    if (current.current !== sent || live.current.disabled) throw new Error('读取期间画布已修改或切换，未替换当前内容，请重试。');
+    const localChanges = !baseRef.current || JSON.stringify(sent) !== JSON.stringify(baseRef.current.document);
+    if (localChanges && JSON.stringify(sent) !== JSON.stringify(record.document)) {
+      if (!window.confirm('在画布中查看此流程会替换当前本地内容。继续前会保存一份恢复记录，是否继续？')) return;
+      await persistRecovery(true);
+      if (!mounted.current) return;
+      if (current.current !== sent || live.current.disabled) throw new Error('备份期间画布已修改或切换，未替换当前内容，请重试。');
+    }
+    loadServerDocument(record.document, { reveal: true });
+    updateServerBase(record);
+    live.current.onNotice(`已打开 ${record.document.name}：流程 v${record.graphRevision} / 布局 v${record.layoutRevision}`);
   }
   function undoLocal() {
     try {
@@ -178,5 +214,5 @@ export function usePipelineDocument(options: Options) {
   }
 
   return { initial, pipeline, editor, fileInput, dirty, savedDraft, undoCount, redoCount, redoLocal, changed, recordChange,
-    applyDocument, loadServerDocument, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor, recoveries, recoveryStatus, recover, serverBase, updateServerBase };
+    applyDocument, loadServerDocument, openServerPipeline, undoLocal, snapshot, replace, save, restore, exportJson, importJson, withEditor, recoveries, recoveryStatus, recover, serverBase, updateServerBase };
 }

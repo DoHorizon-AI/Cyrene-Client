@@ -9,6 +9,7 @@
   "scripts": {
     "mcp": "tsx apps/mcp/main.ts",
     "dev": "node scripts/dev.mjs",
+    "assistant": "node scripts/assistant.mjs",
     "dev:services": "node scripts/dev.mjs",
     "control": "node --env-file-if-exists=.env.local --import tsx apps/control/main.ts",
     "team:bootstrap": "node --env-file-if-exists=.env.local --import tsx apps/control/main.ts --bootstrap-admin",
@@ -29,7 +30,7 @@
     "dev:legacy": "vite --host 127.0.0.1"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "elkjs": "0.12.0",
     "fflate": "0.8.3",
     "litegraph.js": "0.7.14",

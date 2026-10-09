@@ -15,6 +15,38 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("NavigatorApi", () => {
+  it("reads the Work API bare approval array while retaining legacy envelope compatibility", async () => {
+    const approval = { id: "approval-1", taskId: "task-1", kind: "cyrene_mcp_write", summary: "pipelines.patch", details: { pipelineId: "flow-1" }, status: "pending" };
+    let body: unknown = [approval];
+    const api = new NavigatorApi(async () => response(body));
+    expect(await api.getWorkApprovals("local")).toEqual([approval]);
+    body = { items: [approval] };
+    expect(await api.getWorkApprovals("local")).toEqual([approval]);
+    body = [{ ...approval, status: "guessed" }];
+    await expect(api.getWorkApprovals("local")).rejects.toMatchObject({ name: "NavigatorContractError" });
+  });
+  it("uses the same task request identity for retries and forwards the chosen execution backend", async () => {
+    const calls: { key: string | null; body: unknown }[] = [];
+    const task = { id: "request-1", sessionId: "session-1", workspaceId: "local", prompt: "Hello", status: "queued", createdAt: 1,
+      startedAt: null, endedAt: null, output: "", reasoning: "", error: null, durationMs: 0, sequence: 1, metadata: {} };
+    const api = new NavigatorApi(async (_input, init) => {
+      calls.push({ key: new Headers(init?.headers).get("Idempotency-Key"), body: JSON.parse(String(init?.body)) });
+      return response(task);
+    });
+    const input = { prompt: "Hello", execution: { runtime: "codex", model: "model-1", effort: "high", permission: "ask" as const } };
+    await api.createAssistantTask(input, "request-1"); await api.createAssistantTask(input, "request-1");
+    expect(calls).toEqual([{ key: "request-1", body: input }, { key: "request-1", body: input }]);
+  });
+
+  it("rejects unsupported capability permission values and omits provider credentials from parsed capabilities", async () => {
+    const body = { defaultRuntime: "harness", providers: [{ id: "provider", name: "Provider", baseUrl: "https://example.invalid/v1", models: [], configured: true, apiKey: "secret" }],
+      runtimes: [{ id: "harness", name: "Harness", available: true, models: [], permissions: ["ask"], resume: true }] };
+    const api = new NavigatorApi(async () => response(body));
+    const caps = await api.getAssistantCapabilities();
+    expect(JSON.stringify(caps)).not.toContain("secret");
+    body.runtimes[0].permissions = ["unrestricted-magic"];
+    await expect(api.getAssistantCapabilities()).rejects.toMatchObject({ name: "NavigatorContractError" });
+  });
   it("refreshes an event stream once and preserves the cursor, Accept header and cancellation", async () => {
     const calls: Array<{ path: string; init: RequestInit }> = [];
     let opened = 0;

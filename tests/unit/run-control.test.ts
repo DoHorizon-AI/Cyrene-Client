@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { ControlError } from "../../packages/server-control/contracts";
 import { MemoryStateStore } from "../../packages/control-storage";
 import { PipelineControl, emptyPipelineDatabase } from "../../packages/pipeline-control/service";
 import { examplePipeline } from "../../packages/pipeline-model";
@@ -54,6 +55,75 @@ async function fixture() {
   return { control, store, adapters, pipelines, training, evaluation, call, get, run, resolver, input, advanceTime: (milliseconds: number) => { now += milliseconds; } };
 }
 describe("durable workflow coordination", () => {
+  it("replays a start with reordered placement keys without creating a second run", async () => {
+    const f = await fixture();
+    const reordered = { ...f.input, placements: { evaluation: f.input.placements.evaluation, training: f.input.placements.training } };
+    const preview = await f.call("runs.preflight", reordered);
+    expect((await f.call("runs.start", { ...reordered, expectedFingerprint: preview.fingerprint }, "start")).id).toBe(f.run.id);
+    expect((await f.store.read()).runs).toHaveLength(1);
+    expect(f.training.starts).toHaveLength(0);
+  });
+  it.each(["prefix-sha256:", "https://example.invalid/?sha256:"])("rejects a digest embedded inside %s during preflight", async prefix => {
+    const f = await fixture();
+    const patched: any = await f.pipelines.execute({ name: "pipelines.patch", input: {
+      workspaceId: "local", pipelineId: f.run.pipelineId, expectedGraphRevision: f.run.graphRevision, expectedLayoutRevision: 1,
+      edits: [{ op: "update_node", nodeId: "dataset", settingsBinding: null, config: { datasetRef: `${prefix}${"d".repeat(64)}` } }],
+    }, requestId: "artifact", idempotencyKey: "artifact" }, actor);
+    const preview = await f.call("runs.preflight", { ...f.input, expectedGraphRevision: patched.record.graphRevision });
+    expect(preview.issues).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: "dataset", code: "ARTIFACT_REFERENCE" })]));
+  });
+  it("rejects a bound artifact whose kind differs from the reference output", async () => {
+    const f = await fixture();
+    const dataset = f.run.document.nodes.find(node => node.id === "dataset")!;
+    const patched: any = await f.pipelines.execute({ name: "pipelines.patch", input: {
+      workspaceId: "local", pipelineId: f.run.pipelineId, expectedGraphRevision: f.run.graphRevision, expectedLayoutRevision: 1,
+      edits: [{ op: "update_node", nodeId: "dataset", settingsBinding: { ...dataset.settingsBinding!, artifact: { ...dataset.settingsBinding!.artifact!, kind: "model" } } }],
+    }, requestId: "artifact", idempotencyKey: "artifact" }, actor);
+    const preview = await f.call("runs.preflight", { ...f.input, expectedGraphRevision: patched.record.graphRevision });
+    expect(preview.issues).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: "dataset", code: "ARTIFACT_REFERENCE" })]));
+  });
+  it("finishes a rejected submission and stops its dependent without retrying", async () => {
+    const f = await fixture();
+    const start = vi.spyOn(f.training, "start").mockRejectedValue(new ControlError("INVALID_CONFIG", "rejected", 422));
+    for (let i = 0; i < 5; i++) { await f.control.tick(); f.advanceTime(60_000); }
+    expect(start).toHaveBeenCalledTimes(1);
+    expect((await f.get()).state).toBe("failed");
+    expect(f.evaluation.starts).toHaveLength(0);
+  });
+  it("backs off ambiguous submissions and never invents a terminal outcome", async () => {
+    const f = await fixture();
+    const start = vi.spyOn(f.training, "start").mockRejectedValue(new ControlError("CONFLICT", "uncertain", 409));
+    await f.control.tick(); const revision = (await f.get()).revision;
+    for (let i = 0; i < 4; i++) { f.advanceTime(1000); await f.control.tick(); }
+    expect(start).toHaveBeenCalledTimes(1); expect((await f.get()).revision).toBe(revision);
+    f.advanceTime(1000); await f.control.tick(); expect(start).toHaveBeenCalledTimes(2);
+    expect((await f.get()).steps.find(s => s.nodeId === "training")!.state).toBe("dispatching");
+  });
+  it("does not churn revisions on repeated absence and allows an immediate stop", async () => {
+    const f = await fixture(); await f.control.tick();
+    vi.spyOn(f.training, "lookup").mockResolvedValue({ state: "absent", authoritative: true });
+    vi.spyOn(f.training, "stop").mockResolvedValue({ state: "absent", authoritative: true });
+    await f.control.tick(); const run = await f.get();
+    for (let i = 0; i < 4; i++) { f.advanceTime(300_000); await f.control.tick(); }
+    expect((await f.get()).revision).toBe(run.revision);
+    await f.call("runs.stop", { workspaceId: "local", runId: run.id, expectedRevision: run.revision });
+    await f.control.tick(); expect((await f.get()).state).toBe("stopped");
+  });
+  it("observes completion even when an online change keeps failing", async () => {
+    const f = await fixture(); await f.control.tick(); const run = await f.get();
+    const input = { workspaceId: "local", runId: run.id, expectedRevision: run.revision, nodeId: "training", config: { ...run.steps.find(s => s.nodeId === "training")!.config, learningRate: 0.001 } };
+    const preview = await f.call("runs.preview_change", input);
+    await f.call("runs.apply_change", { ...input, expectedFingerprint: preview.fingerprint });
+    const change = vi.spyOn(f.training, "change").mockRejectedValue(new ControlError("CONFLICT", "ended", 409));
+    await f.control.tick(); await f.control.tick(); expect(change).toHaveBeenCalledTimes(1);
+    f.training.finish(f.training.starts[0].attemptId, "succeeded"); await f.control.tick();
+    expect((await f.get()).steps.find(s => s.nodeId === "training")).toMatchObject({ state: "succeeded" });
+    expect(f.evaluation.starts).toHaveLength(1);
+  });
+  it("requires pipeline read permission for preflight", async () => {
+    const f = await fixture();
+    await expect(f.control.execute({ name: "runs.preflight", input: f.input, requestId: "scope-test" }, { ...actor, scopes: ["runs.read", "runs.write"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
   it("requires fresh preflight for resource-reference changes instead of reusing old placement", async () => {
     const f = await fixture();
     const node = f.run.document.nodes.find(n => n.type === "compute")!;
@@ -139,13 +209,14 @@ describe("durable workflow coordination", () => {
   it("recovers a lost start response without launching a duplicate attempt", async () => {
     const f = await fixture(); f.training.timeoutAfterStart = true;
     await f.control.tick(); expect(f.training.starts).toHaveLength(1); expect(f.evaluation.starts).toHaveLength(0);
-    const restarted = new RunControl(f.store, f.pipelines, f.adapters, undefined, f.resolver); await restarted.tick();
+    const due = (await f.get()).steps.find(s => s.nodeId === "training")!.nextPollAt!;
+    const restarted = new RunControl(f.store, f.pipelines, f.adapters, () => due, f.resolver); await restarted.tick();
     expect(f.training.starts).toHaveLength(1); expect((await f.get()).steps.find(s => s.nodeId === "training")?.state).toBe("running");
   });
   it("starts downstream work only after authoritative completion and transfers immutable references", async () => {
     const f = await fixture(); await f.control.tick(); const id = f.training.starts[0].attemptId;
     f.training.finish(id, "succeeded", false); await f.control.tick(); expect(f.evaluation.starts).toHaveLength(0);
-    f.training.finish(id, "succeeded"); await f.control.tick(); await f.control.tick();
+    f.training.finish(id, "succeeded"); f.advanceTime(5000); await f.control.tick(); await f.control.tick();
     expect(f.evaluation.starts).toHaveLength(1); expect(f.evaluation.starts[0].placement.serverId).toBe("server-b");
     expect(f.evaluation.starts[0].inputs.model.digest).toBe(`sha256:${"b".repeat(64)}`);
     expect(f.evaluation.starts[0].inputs.model).toMatchObject({ sizeBytes: 42, manifestDigest: `sha256:${"b".repeat(64)}` });
@@ -154,7 +225,7 @@ describe("durable workflow coordination", () => {
   it("requires fenced terminal failure before retry and retains the checkpoint", async () => {
     const f = await fixture(); await f.control.tick(); const id = f.training.starts[0].attemptId;
     f.training.finish(id, "failed", false); await f.control.tick(); await f.control.tick(); expect(f.training.starts).toHaveLength(1);
-    f.training.finish(id, "failed"); await f.control.tick(); await f.control.tick();
+    f.training.finish(id, "failed"); f.advanceTime(5000); await f.control.tick(); await f.control.tick();
     expect(f.training.starts).toHaveLength(1);
     f.advanceTime(10_000); await f.control.tick();
     expect(f.training.starts).toHaveLength(2); expect(f.training.starts[1].generation).toBe(2); expect(f.training.starts[1].checkpoint?.digest).toBe(`sha256:${"c".repeat(64)}`);

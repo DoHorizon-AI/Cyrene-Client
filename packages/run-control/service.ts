@@ -1,5 +1,7 @@
+import { canonicalJson } from "../control-storage/canonical";
 import { createHash } from "node:crypto";
 import type { StateStore } from "../control-storage";
+import { submissionRejected, retryDelay } from "../control-storage/reconciliation";
 import { inspect, type PipelineNode } from "../pipeline-model";
 import { getDefinition } from "../pipeline-model/catalog";
 import { ControlError, type Actor } from "../server-control/contracts";
@@ -11,7 +13,7 @@ import { capabilitiesSchema, observationSchema, placementSchema, runCommands, ty
 import type { Assignment, ExecutionAdapter } from "./adapter";
 import type { PlacementResolver } from "./placement";
 
-const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const hash = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 const reference = (node: PipelineNode) => ["dataset", "model", "compute"].includes(node.type) || getDefinition(node.type, node.typeVersion)?.execution?.kind === "reference";
 const adapterName = (node: PipelineNode) => getDefinition(node.type, node.typeVersion)?.execution?.adapter ?? ({ training: "yield", evaluation: "echo", deployment: "reactor", agent: "navigator" }[node.type] ?? node.type);
 const terminal = (step: Step) => ["succeeded", "failed", "stopped"].includes(step.state);
@@ -25,11 +27,12 @@ export class RunControl {
     if (!Object.hasOwn(runCommands, request.name)) throw new ControlError("UNKNOWN_COMMAND", "未知运行操作。");
     const name = request.name as keyof typeof runCommands, command = runCommands[name], input = command.input.parse(request.input);
     if (!actor.workspaceIds.includes(input.workspaceId) || !actor.scopes.includes(command.readOnly ? "runs.read" : "runs.write")) throw new ControlError("FORBIDDEN", "没有运行操作权限。", 403);
+    if (["runs.preflight", "runs.start"].includes(name) && !actor.scopes.includes("pipelines.read")) throw new ControlError("FORBIDDEN", "启动或预检运行还需要 pipelines.read 权限。", 403);
     const fingerprint = hash([name, input]), key = JSON.stringify([actor.id, input.workspaceId, request.idempotencyKey]);
     if (!command.readOnly && !request.idempotencyKey) throw new ControlError("IDEMPOTENCY_REQUIRED", "运行写操作需要幂等键。");
     const replay = (db: RunDatabase) => {
       const receipt = db.receipts.find(r => r.key === key);
-      if (receipt && receipt.fingerprint !== fingerprint) throw new ControlError("IDEMPOTENCY_CONFLICT", "幂等键已用于其他操作。", 409);
+      if (receipt && receipt.fingerprint !== fingerprint && receipt.fingerprint !== createHash("sha256").update(JSON.stringify([name, input])).digest("hex")) throw new ControlError("IDEMPOTENCY_CONFLICT", "幂等键已用于其他操作。", 409);
       return receipt && structuredClone(this.find(db, input.workspaceId, receipt.runId));
     };
     const state = await this.store.read();
@@ -37,7 +40,7 @@ export class RunControl {
     if (name === "runs.list") return { items: state.runs.filter(run => run.workspaceId === input.workspaceId).map(({ document: _, steps: __, ...run }) => run) };
     if (name === "runs.preflight" || name === "runs.start") {
       const args = runCommands["runs.preflight"].input.parse({ workspaceId: input.workspaceId, pipelineId: "pipelineId" in input ? input.pipelineId : undefined, expectedGraphRevision: "expectedGraphRevision" in input ? input.expectedGraphRevision : undefined, placements: "placements" in input ? input.placements : {} });
-      const record = await this.pipelines.execute({ name: "pipelines.get", input: { workspaceId: args.workspaceId, pipelineId: args.pipelineId }, requestId: request.requestId }, { ...actor, scopes: [...actor.scopes, "pipelines.read"] }) as PipelineRecord;
+      const record = await this.pipelines.execute({ name: "pipelines.get", input: { workspaceId: args.workspaceId, pipelineId: args.pipelineId }, requestId: request.requestId }, actor) as PipelineRecord;
       if (record.graphRevision !== args.expectedGraphRevision) throw new ControlError("REVISION_CONFLICT", "流程版本已变化，请重新预检。", 409);
       const placements = this.resolvePlacements(record, args.placements);
       const preflight = await this.preflight(record, placements);
@@ -81,12 +84,12 @@ export class RunControl {
       if (name === "runs.stop") {
         const stop = runCommands[name].input.parse(input); this.revision(current, stop.expectedRevision);
         if (["succeeded", "failed", "stopped"].includes(current.state)) throw new ControlError("TERMINAL_RUN", "运行已经结束。", 409);
-        current.state = "stopping"; current.revision++; this.event(db, current, actor.id, "run.stop_requested", "已记录停止意图，等待执行端确认。");
+        current.state = "stopping"; for (const step of current.steps) { delete step.nextPollAt; delete step.pollFailures; } current.revision++; this.event(db, current, actor.id, "run.stop_requested", "已记录停止意图，等待执行端确认。");
       } else if (name === "runs.resume") {
         const resume = runCommands[name].input.parse(input); this.revision(current, resume.expectedRevision);
         if (!current.steps.every(terminal) || !current.steps.some(s => ["stopped", "failed"].includes(s.state))) throw new ControlError("RESUME_NOT_ALLOWED", "必须先确认所有旧执行已经终止。", 409);
         for (const step of current.steps.filter(s => s.state !== "succeeded")) {
-          step.state = "pending"; step.retries = 0; step.eventCursor = 0; delete step.attemptId; delete step.taskId; delete step.change; delete step.nextAttemptAt;
+          step.state = "pending"; step.retries = 0; step.eventCursor = 0; delete step.attemptId; delete step.taskId; delete step.change; delete step.nextAttemptAt; delete step.nextPollAt; delete step.pollFailures;
           if (!step.capabilities?.checkpoint) delete step.checkpoint;
         }
         current.state = "queued"; current.revision++; this.event(db, current, actor.id, "run.resume_requested", "已确认旧执行终止，等待恢复执行。");
@@ -181,7 +184,7 @@ export class RunControl {
       const uri = node.config[`${port.name}Ref`];
       const snapshot = node.settingsBinding?.artifact;
       if (snapshot) {
-        if (uri !== snapshot.uri) throw new ControlError("ARTIFACT_REFERENCE", `${node.label} 的本地引用与已绑定制品身份不一致。`);
+        if (uri !== snapshot.uri || snapshot.uri !== `artifact://sha256/${snapshot.digest.slice(7)}` || snapshot.kind !== port.kind) throw new ControlError("ARTIFACT_REFERENCE", `${node.label} 的本地引用与已绑定制品身份不一致。`);
         result[port.name] = {
           uri: snapshot.uri, digest: snapshot.digest, kind: snapshot.kind,
           sizeBytes: snapshot.size_bytes,
@@ -189,7 +192,8 @@ export class RunControl {
         };
         continue;
       }
-      const digest = typeof uri === "string" && uri.match(/sha256:[a-f0-9]{64}/)?.[0];
+      const matched = typeof uri === "string" && uri.match(/^(?:artifact:\/\/sha256\/|sha256:)([a-f0-9]{64})$/);
+      const digest = matched && `sha256:${matched[1]}`;
       if (!digest) throw new ControlError("ARTIFACT_REFERENCE", `${node.label} 需要带 SHA-256 摘要的不可变制品引用。`);
       result[port.name] = { uri: uri as string, digest, kind: port.kind };
     }
@@ -249,6 +253,7 @@ export class RunControl {
     const prepared = await this.store.transact(db => {
       const run = db.runs.find(r => r.id === runId)!, step = run.steps.find(s => s.nodeId === nodeId)!;
       if (terminal(step)) return null;
+      if (step.nextPollAt && step.nextPollAt > this.now()) return null;
       if (run.state === "stopping" && !step.attemptId) { step.state = "stopped"; this.aggregate(run); run.revision++; return null; }
       if (step.state === "pending") {
         if (step.nextAttemptAt && step.nextAttemptAt > this.now()) return null;
@@ -269,11 +274,16 @@ export class RunControl {
     if (!prepared?.step.attemptId) return;
     const { run, step } = prepared;
     let observation: Observation;
+    let submitting = false, changeFailed = false;
     try {
       if (run.state === "stopping") observation = await adapter.stop(step.attemptId!, run.workspaceId, `stop-${step.attemptId}`);
-      else if (step.change) observation = await adapter.change(step.attemptId!, run.workspaceId, step.change.config, step.change.id);
       else {
         observation = observationSchema.parse(await adapter.lookup(step.attemptId!, run.workspaceId));
+        if (observation.state !== "absent" && (observation.attemptId !== step.attemptId || observation.generation !== step.generation)) throw new ControlError("ATTEMPT_MISMATCH", "执行观测与当前代次不一致。", 409);
+        if (step.change && observation.state === "running" && (step.change.nextAttemptAt ?? 0) <= this.now() && !equal(observation.appliedConfig, step.change.config)) {
+          try { observation = observationSchema.parse(await adapter.change(step.attemptId!, run.workspaceId, step.change.config, step.change.id)); }
+          catch { changeFailed = true; /* Still persist the lookup and observe terminal state on the next tick. */ }
+        }
         if (observation.state === "absent" && step.state === "dispatching") {
           // A stop may have arrived while lookup was in flight. Do not create
           // fresh work after that stop has already been committed.
@@ -293,6 +303,7 @@ export class RunControl {
             await this.rejectUnstarted(run.id, nodeId, step.attemptId!, "step.stopped", "派发前已收到停止请求，此步骤未启动。");
             return;
           }
+          submitting = true;
           observation = await adapter.start(assignment);
         }
       }
@@ -301,10 +312,16 @@ export class RunControl {
         const node = run.document.nodes.find(n => n.id === nodeId)!;
         getDefinition(node.type, node.typeVersion)!.configSchema.parse(observation.appliedConfig);
       }
-    } catch {
+    } catch (error) {
+      if (submitting && submissionRejected(error)) {
+        await this.rejectUnstarted(runId, nodeId, step.attemptId!, "step.dispatch_rejected", "执行端明确拒绝启动，请修正配置后恢复运行。");
+        return;
+      }
       await this.store.transact(db => {
         const latest = db.runs.find(r => r.id === runId)!, current = latest.steps.find(s => s.nodeId === nodeId)!;
         if (current.attemptId !== step.attemptId || terminal(current)) return;
+        current.pollFailures = (current.pollFailures ?? 0) + 1;
+        current.nextPollAt = this.now() + retryDelay(current.pollFailures);
         // Preserve dispatching: an authoritative absence can safely redispatch
         // the SAME attempt id. Other unknown outcomes are only observed.
         if (current.state !== "dispatching") current.state = "unknown";
@@ -317,6 +334,7 @@ export class RunControl {
       const latest = db.runs.find(r => r.id === runId)!, current = latest.steps.find(s => s.nodeId === nodeId)!;
       if (current.attemptId !== step.attemptId || current.generation !== step.generation || terminal(current)) return;
       if (observation.state === "absent") {
+        const previous = [current.state, current.message, latest.state];
         // stop(absent) is a provider promise that no accepted task exists. The
         // stop intent already prevents further start calls for this attempt.
         if (latest.state === "stopping") {
@@ -324,12 +342,23 @@ export class RunControl {
           this.event(db, latest, "studio-coordinator", "step.stopped", current.message, nodeId);
           this.aggregate(latest);
         } else { current.state = "unknown"; current.message = "执行记录缺失，不能确认原实例是否停止。"; latest.state = "attention"; }
-        latest.revision++; return;
+        current.pollFailures = (current.pollFailures ?? 0) + 1;
+        current.nextPollAt = this.now() + retryDelay(current.pollFailures);
+        if (!equal(previous, [current.state, current.message, latest.state])) latest.revision++;
+        return;
       }
       if (observation.attemptId !== current.attemptId || observation.generation !== current.generation) return;
       const attempt = db.attempts.find(a => a.attemptId === current.attemptId);
       if (attempt) attempt.observation = structuredClone(observation);
-      const previous = JSON.stringify(current);
+      // Scheduling is internal bookkeeping and must not invalidate a user's
+      // expectedRevision on otherwise unchanged observations.
+      const previousVisible = JSON.stringify({ ...current, nextPollAt: undefined, pollFailures: undefined, change: current.change && { ...current.change, nextAttemptAt: undefined, failures: undefined } });
+      delete current.nextPollAt; delete current.pollFailures;
+      if (changeFailed && current.change?.id === step.change?.id) {
+        current.change!.state = "unknown";
+        current.change!.failures = (current.change!.failures ?? 0) + 1;
+        current.change!.nextAttemptAt = this.now() + retryDelay(current.change!.failures);
+      }
       if (["succeeded", "failed", "stopped"].includes(observation.state) && !observation.terminalAuthority) { current.state = "unknown"; current.message = "等待执行权威确认终态。"; }
       else {
         current.state = observation.state; current.taskId = observation.taskId; current.serverId = observation.serverId; current.message = observation.message;
@@ -352,7 +381,9 @@ export class RunControl {
       }
       for (const event of [...observation.events].sort((a, b) => a.sequence - b.sequence)) if (event.sequence > current.eventCursor) { this.event(db, latest, "product", "step.log", event.message, nodeId); current.eventCursor = event.sequence; }
       if (current.state === "pending") current.eventCursor = 0;
-      if (previous !== JSON.stringify(current)) { latest.revision++; this.event(db, latest, "studio-coordinator", "step.observed", current.message ?? current.state, nodeId); }
+      if (terminal(current)) delete current.change;
+      if (current.state === "unknown") { current.pollFailures = (step.pollFailures ?? 0) + 1; current.nextPollAt = this.now() + retryDelay(current.pollFailures); }
+      if (previousVisible !== JSON.stringify({ ...current, nextPollAt: undefined, pollFailures: undefined, change: current.change && { ...current.change, nextAttemptAt: undefined, failures: undefined } })) { latest.revision++; this.event(db, latest, "studio-coordinator", "step.observed", current.message ?? current.state, nodeId); }
       this.aggregate(latest);
     });
   }

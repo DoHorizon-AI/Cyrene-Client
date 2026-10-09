@@ -72,6 +72,10 @@ function navigatorUpstreamPath(requestUrl: string, workspaceId: string): string 
   if (pathname === tasksPrefix || pathname.startsWith(`${tasksPrefix}/`)) {
     return `/api/v1/tasks${pathname.slice(tasksPrefix.length)}${query}`;
   }
+  const assistantPrefix = "/api/v1/navigator/assistant";
+  if (pathname.startsWith(`${assistantPrefix}/`)) {
+    return `/api/v1/assistant${pathname.slice(assistantPrefix.length)}${query}`;
+  }
   const approvalsPrefix = "/api/v1/navigator/approvals";
   if (pathname === approvalsPrefix || pathname.startsWith(`${approvalsPrefix}/`)) {
     return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/work/approvals${pathname.slice(approvalsPrefix.length)}${query}`;
@@ -86,7 +90,7 @@ export function createControlApplication(options: ControlOptions) {
   const workspaceId = options.workspaceId ?? "local";
   const localToken = randomBytes(32).toString("hex");
   const pipelineStore = options.stores.state("pipelines", pipelineDatabase, emptyPipelineDatabase);
-  const pipelines = new PipelineControl(pipelineStore, { maxReceipts: Infinity });
+  const pipelines = new PipelineControl(pipelineStore, { maxReceipts: 10_000, maxBytes: 64 * 1024 * 1024 });
   const servers = new ServerControl(options.stores.state("servers", databaseSchema, emptyDatabase), options.serverObservers);
   const team = new TeamControl(options.stores.state("team", teamDatabase, emptyTeamDatabase));
   const builds = new BuildControl(options.stores.state("builds", buildDatabase, emptyBuildDatabase), options.buildProfiles ?? [], options.buildAdapter);
@@ -101,6 +105,15 @@ export function createControlApplication(options: ControlOptions) {
   const updates = options.mode === "local" ? createUpdateControl(options.updateHelper ?? createUpdateHelper()) : undefined;
   const failures = new Map<string, { count: number; until: number }>();
   const activeAssistantTurns = new Set<string>();
+  let snapshotUntil = 0;
+  let sharedSnapshot: Promise<{ workspaceId: string; pipelineId: string; graphRevision: number; layoutRevision: number; updatedBy: string }[]> | undefined;
+  function pipelineSnapshot() {
+    if (!sharedSnapshot || Date.now() >= snapshotUntil) {
+      snapshotUntil = Infinity;
+      sharedSnapshot = pipelineStore.read().then(db => db.records.map(record => ({ workspaceId: record.workspaceId, pipelineId: record.document.id, graphRevision: record.graphRevision, layoutRevision: record.layoutRevision, updatedBy: record.updatedBy }))).finally(() => { snapshotUntil = Date.now() + 1500; });
+    }
+    return sharedSnapshot;
+  }
   function originBoundary(req: IncomingMessage) {
     // Do not trust Forwarded/X-Forwarded-* supplied by clients. The gateway
     // preserves Host and Origin, and only explicitly configured origins pass.
@@ -113,14 +126,14 @@ export function createControlApplication(options: ControlOptions) {
       const token = authorization.slice(7);
       if (options.mode === "local") {
         if (!options.localApiToken || !secretEqual(token, options.localApiToken)) throw new ControlError("UNAUTHENTICATED", "无效的本地 API 凭据。", 401);
-        return { actor: { id: "local-mcp", workspaceIds: [workspaceId], scopes: localScopes }, csrf: "", username: "local-mcp" };
+        return { actor: { id: "local-mcp", workspaceIds: [workspaceId], scopes: localScopes }, kind: "api" as const, csrf: "", username: "local-mcp" };
       }
       return team.authenticate(token, "api");
     }
     originBoundary(req);
     if (options.mode === "local") {
       if (mutation && (typeof req.headers["x-studio-control-token"] !== "string" || !secretEqual(req.headers["x-studio-control-token"], localToken))) throw new ControlError("FORBIDDEN", "控制会话已失效，请重新连接。", 403);
-      return { actor: { id: "local-user", workspaceIds: [workspaceId], scopes: localScopes }, csrf: localToken, username: "local-user" };
+      return { actor: { id: "local-user", workspaceIds: [workspaceId], scopes: localScopes }, kind: "browser" as const, csrf: localToken, username: "local-user" };
     }
     const context = await team.authenticate(cookie(req), "browser");
     if (mutation && (typeof req.headers["x-studio-control-token"] !== "string" || !secretEqual(req.headers["x-studio-control-token"], context.csrf))) throw new ControlError("FORBIDDEN", "缺少有效的会话 CSRF 凭据。", 403);
@@ -135,7 +148,7 @@ export function createControlApplication(options: ControlOptions) {
     ["/studio-catalog", { commands: catalogCommands, execute: (raw, actor) => registry.execute(raw, actor) }],
   ]);
   if (updates) groups.set("/studio-updates", { commands: updates.commands, execute: (raw, actor) => updates.execute(raw, actor) });
-  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([name, command]) => (name !== "monitoring.snapshot" || actor.scopes.includes("pipelines.read")) && actor.scopes.includes(command.scope ?? `${prefix === "/studio-runs" ? "runs" : "pipelines"}.${command.readOnly ? "read" : "write"}`)).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
+  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([name, command]) => (!["monitoring.snapshot", "runs.preflight", "runs.start"].includes(name) || actor.scopes.includes("pipelines.read")) && actor.scopes.includes(command.scope ?? `${prefix === "/studio-runs" ? "runs" : "pipelines"}.${command.readOnly ? "read" : "write"}`)).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const path = (req.url ?? "").split("?")[0];
@@ -186,9 +199,9 @@ export function createControlApplication(options: ControlOptions) {
         const push = async () => {
           if (pending || closed) return; pending = true;
           try {
-            const { actor } = await authorize(req, false), db = await pipelineStore.read();
+            const { actor } = await authorize(req, false), snapshot = await pipelineSnapshot();
             if (!actor.scopes.includes("pipelines.read")) throw new ControlError("FORBIDDEN", "订阅权限已失效。", 403);
-            const records = db.records.filter(record => actor.workspaceIds.includes(record.workspaceId)).map(record => ({ workspaceId: record.workspaceId, pipelineId: record.document.id, graphRevision: record.graphRevision, layoutRevision: record.layoutRevision, updatedBy: record.updatedBy }));
+            const records = snapshot.filter(record => actor.workspaceIds.includes(record.workspaceId));
             const data = JSON.stringify(records), next = createHash("sha256").update(data).digest("hex");
             if (!closed && next !== cursor) { cursor = next; res.write(`id: ${next}\nevent: snapshot\ndata: ${data}\n\n`); }
             else if (!closed) res.write(": heartbeat\n\n");
@@ -205,29 +218,29 @@ export function createControlApplication(options: ControlOptions) {
           catch (error) { if (error instanceof ControlError && error.status === 401) return send(res, 200, { mode: options.mode, authenticated: false }); throw error; }
         }
         if (path === "/studio-team/v1/login" && req.method === "POST" && options.mode === "team") {
-          const key = req.socket.remoteAddress ?? "unknown", now = Date.now();
+          const input = z.object({ username: z.string().max(100), password: z.string().max(256) }).strict().parse(await readJson(req, 4096));
+          const key = input.username, now = Date.now();
           for (const [id, failure] of failures) if (failure.until <= now) failures.delete(id);
           if ((failures.get(key)?.count ?? 0) >= 10 || failures.size >= 10000) throw new ControlError("RATE_LIMITED", "登录尝试过多，请稍后重试。", 429);
           failures.set(key, { count: (failures.get(key)?.count ?? 0) + 1, until: now + 60_000 });
-          const input = z.object({ username: z.string(), password: z.string() }).strict().parse(await readJson(req, 4096));
           const issued = await team.login(input.username, input.password);
           failures.delete(key);
-          const secure = origins.every(origin => origin.startsWith("https:"));
+          const secure = origins.some(origin => new URL(origin).host === req.headers.host && origin.startsWith("https:"));
           res.setHeader("set-cookie", `${cookieName}=${issued.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure ? "; Secure" : ""}`);
           return send(res, 200, { token: issued.csrf, expiresAt: issued.expiresAt });
         }
-        const { actor } = await authorize(req, req.method !== "GET");
+        const context = await authorize(req, req.method !== "GET"), { actor } = context;
         if (path === "/studio-team/v1/logout" && req.method === "POST") { await team.logout(cookie(req)); res.setHeader("set-cookie", `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`); return send(res, 200, { ok: true }); }
         if (path === "/studio-team/v1/members" && req.method === "GET") return send(res, 200, { items: await team.list(actor) });
         if (path === "/studio-team/v1/members" && req.method === "POST") return send(res, 201, await team.createMember(await readJson(req, 16384), actor));
         if (path === "/studio-team/v1/tokens" && req.method === "POST") {
           const input = z.object({ scopes: z.array(z.string()).max(20) }).strict().parse(await readJson(req, 4096));
-          return send(res, 201, await team.issueApiToken(actor, input.scopes));
+          return send(res, 201, await team.issueApiToken(context, input.scopes));
         }
-        if (path === "/studio-team/v1/tokens" && req.method === "GET") return send(res, 200, { items: await team.listApiTokens(actor) });
+        if (path === "/studio-team/v1/tokens" && req.method === "GET") return send(res, 200, { items: await team.listApiTokens(context) });
         if (path === "/studio-team/v1/tokens/revoke" && req.method === "POST") {
           const { id } = z.object({ id: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(await readJson(req, 4096));
-          return send(res, 200, await team.revokeApiToken(id, actor));
+          return send(res, 200, await team.revokeApiToken(id, context));
         }
       }
       for (const [prefix, group] of groups) {
@@ -257,8 +270,13 @@ export function createControlApplication(options: ControlOptions) {
         const workWorkspace = path.match(/^\/api\/v1\/workspaces\/([^/]+)\/work\//)?.[1];
         if (workWorkspace && !actor.workspaceIds.includes(workWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
         if (path === "/api/v1/navigator/approvals" || path.startsWith("/api/v1/navigator/approvals/")
+          || path.startsWith("/api/v1/navigator/assistant/")
           || path === "/api/v1/navigator/tasks" || path.startsWith("/api/v1/navigator/tasks/")) {
           if (!actor.workspaceIds.includes(workspaceId)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
+        }
+        if (/^\/api\/v1\/navigator\/assistant\/providers/.test(path) && req.method !== "GET") {
+          const context = await authorize(req, true);
+          if (context.kind !== "browser") throw new ControlError("FORBIDDEN", "模型凭据配置需要浏览器会话。", 403);
         }
         if (!options.navigatorUrl) throw new ControlError("STUDIO_HOST_NOT_CONFIGURED", "尚未配置 Navigator。", 503);
         const headers = new Headers();
@@ -279,6 +297,18 @@ export function createControlApplication(options: ControlOptions) {
           let bytes = 0; const chunks: Buffer[] = [];
           for await (const chunk of req) { const part = Buffer.from(chunk); bytes += part.length; if (bytes > limit) throw new ControlError("TOO_LARGE", "请求超过大小限制。", 413); chunks.push(part); }
           if (chunks.length) body = Buffer.concat(chunks);
+        }
+        const taskSubmission = path === "/api/v1/navigator/tasks" && req.method === "POST";
+        const taskPatch = /^\/api\/v1\/workspaces\/[^/]+\/work\/tasks\/[^/]+$/.test(path) && req.method === "PATCH";
+        if ((taskSubmission || taskPatch) && body) {
+          let input: unknown;
+          try { input = JSON.parse(body.toString("utf8")); } catch { throw new ControlError("INVALID_JSON", "请求不是有效 JSON。"); }
+          if (input && typeof input === "object" && "metadata" in input && input.metadata && typeof input.metadata === "object" && "navigator" in input.metadata) {
+            throw new ControlError("RESERVED_EXECUTION_METADATA", "Navigator 执行配置由宿主管理，不能通过任务 metadata 修改。", 403);
+          }
+          if (options.mode === "team" && input && typeof input === "object" && ("execution" in input || "runtime" in input)) {
+            throw new ControlError("PERSONAL_RUNTIME_LOCAL_ONLY", "个人智能体执行需要 local 模式；团队任务使用已配置的 Navigator 执行器。", 403);
+          }
         }
         const abort = new AbortController();
         const closed = () => abort.abort(); res.once("close", closed);

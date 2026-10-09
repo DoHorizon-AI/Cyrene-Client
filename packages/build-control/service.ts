@@ -1,16 +1,18 @@
+import { canonicalJson } from "../control-storage/canonical";
 import { createHash } from "node:crypto";
 import type { StateStore } from "../control-storage";
+import { submissionRejected, retryDelay } from "../control-storage/reconciliation";
 import { ControlError, type Actor } from "../server-control/contracts";
 import { pipelineRequest } from "../pipeline-control/contracts";
 import { compileContribution } from "../node-registry/contracts";
 import { buildCommands, buildResult, sourceSha, type Build, type BuildDatabase, type BuildProfile, type BuildResult } from "./contracts";
 import type { BuildAdapter } from "./adapter";
 
-const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const hash = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 const terminal = (build: Build) => ["succeeded", "failed", "cancelled"].includes(build.state);
 export class BuildControl {
   private ticking = false;
-  constructor(private store: StateStore<BuildDatabase>, private profiles: BuildProfile[], private adapter?: BuildAdapter) {
+  constructor(private store: StateStore<BuildDatabase>, private profiles: BuildProfile[], private adapter?: BuildAdapter, private now = () => Date.now()) {
     if (new Set(profiles.map(p => p.id)).size !== profiles.length) throw new Error("Duplicate build profile id");
   }
   async execute(raw: unknown, actor: Actor): Promise<unknown> {
@@ -22,7 +24,7 @@ export class BuildControl {
     const key = JSON.stringify([actor.id, input.workspaceId, request.idempotencyKey]), fingerprint = hash([name, input]);
     const replay = (db: BuildDatabase) => {
       const receipt = db.receipts.find(r => r.key === key);
-      if (receipt && receipt.fingerprint !== fingerprint) throw new ControlError("IDEMPOTENCY_CONFLICT", "幂等键已用于其他构建操作。", 409);
+      if (receipt && receipt.fingerprint !== fingerprint && receipt.fingerprint !== createHash("sha256").update(JSON.stringify([name, input])).digest("hex")) throw new ControlError("IDEMPOTENCY_CONFLICT", "幂等键已用于其他构建操作。", 409);
       return receipt && structuredClone(this.find(db, input.workspaceId, receipt.buildId));
     };
     const state = await this.store.read();
@@ -48,6 +50,24 @@ export class BuildControl {
     const args = buildCommands["builds.get"].input.parse({ workspaceId: input.workspaceId, buildId: "buildId" in input ? input.buildId : undefined });
     const build = this.find(state, args.workspaceId, args.buildId);
     if (name === "builds.get") return build;
+    if (name === "builds.reconcile") {
+      const reconcile = buildCommands[name].input.parse(input);
+      if (build.revision !== reconcile.expectedRevision) throw new ControlError("REVISION_CONFLICT", "构建状态已变化。", 409);
+      if (!this.adapter || !["unknown", "dispatching", "cancelling"].includes(build.state)) throw new ControlError("RECONCILE_NOT_ALLOWED", "仅可核对结果未知或取消中的构建。", 409);
+      if (build.workflowRunId && build.workflowRunId !== reconcile.workflowRunId) throw new ControlError("BUILD_IDENTITY_CONFLICT", "不能替换已经确认的 GitHub 任务身份。", 409);
+      const observed = await this.adapter.observe({ ...build, workflowRunId: reconcile.workflowRunId });
+      if (!observed || observed.runId !== reconcile.workflowRunId) throw new ControlError("BUILD_UNCONFIRMED", "未能验证 GitHub 任务身份。", 409);
+      if (observed.state === "succeeded") this.validateResult(build, observed.runId, observed.result);
+      return this.store.transact(db => {
+        const previous = replay(db); if (previous) return previous;
+        const current = this.find(db, args.workspaceId, args.buildId);
+        if (current.revision !== reconcile.expectedRevision) throw new ControlError("REVISION_CONFLICT", "构建状态已变化。", 409);
+        current.workflowRunId = observed.runId; current.workflowUrl = observed.url;
+        delete current.nextPollAt; delete current.pollFailures;
+        current.revision++; this.event(db, current, "已验证原 GitHub 任务身份，恢复状态核对。");
+        db.receipts.push({ key, fingerprint, buildId: current.id }); return structuredClone(current);
+      });
+    }
     if (name === "builds.read_events") {
       const after = buildCommands[name].input.parse(input).after;
       const items = state.events.filter(e => e.workspaceId === args.workspaceId && e.buildId === args.buildId && e.sequence > after).slice(0, 200);
@@ -57,7 +77,7 @@ export class BuildControl {
       const previous = replay(db); if (previous) return previous;
       const current = this.find(db, args.workspaceId, args.buildId);
       if (current.revision !== buildCommands["builds.cancel"].input.parse(input).expectedRevision) throw new ControlError("REVISION_CONFLICT", "构建状态已变化。", 409);
-      if (!terminal(current)) { current.state = current.state === "queued" ? "cancelled" : "cancelling"; current.revision++; this.event(db, current, "已记录取消构建请求。"); }
+      if (!terminal(current)) { current.state = current.state === "queued" ? "cancelled" : "cancelling"; delete current.nextPollAt; current.revision++; this.event(db, current, "已记录取消构建请求。"); }
       db.receipts.push({ key, fingerprint, buildId: current.id }); return structuredClone(current);
     });
   }
@@ -71,7 +91,7 @@ export class BuildControl {
     this.ticking = true;
     try {
       const errors: unknown[] = [];
-      for (const build of (await this.store.read()).builds.filter(b => !terminal(b))) {
+      for (const build of (await this.store.read()).builds.filter(b => !terminal(b) && (b.nextPollAt ?? 0) <= this.now())) {
         try { await this.advance(build); } catch (error) { errors.push(error); }
       }
       if (errors.length) throw new AggregateError(errors, "Build reconciliation persistence unavailable");
@@ -81,6 +101,7 @@ export class BuildControl {
   private async advance(snapshot: Build) {
     const prepared = await this.store.transact(db => {
       const build = this.find(db, snapshot.workspaceId, snapshot.id); if (terminal(build)) return null;
+      if ((build.nextPollAt ?? 0) > this.now()) return null;
       const dispatch = build.state === "queued";
       if (dispatch) { build.state = "dispatching"; build.revision++; this.event(db, build, "正在提交 GitHub Actions。"); }
       return { build: structuredClone(build), dispatch };
@@ -90,7 +111,7 @@ export class BuildControl {
     try {
       if (dispatch) {
         const receipt = await this.adapter!.dispatch(build);
-        await this.store.transact(db => { const current = this.find(db, build.workspaceId, build.id); current.workflowRunId = receipt.runId; current.workflowUrl = receipt.url; if (current.state !== "cancelling") current.state = "running"; current.revision++; this.event(db, current, "GitHub 已接收构建。"); });
+        await this.store.transact(db => { const current = this.find(db, build.workspaceId, build.id); current.workflowRunId = receipt.runId; current.workflowUrl = receipt.url; if (current.state !== "cancelling") current.state = "running"; current.nextPollAt = this.now() + 15_000; delete current.pollFailures; current.revision++; this.event(db, current, "GitHub 已接收构建。"); });
         return;
       }
       const observation = await this.adapter!.observe(build);
@@ -100,6 +121,7 @@ export class BuildControl {
       if (observation.state === "succeeded") result = this.validateResult(build, observation.runId, observation.result);
       await this.store.transact(db => {
         const current = this.find(db, build.workspaceId, build.id); if (terminal(current)) return;
+        current.nextPollAt = this.now() + 15_000; delete current.pollFailures;
         const next = observation.state === "running" && current.state === "cancelling" ? "cancelling" : observation.state;
         if (current.state === next && current.message === observation.message && current.workflowRunId === observation.runId) return;
         current.state = next; current.message = observation.message; current.workflowRunId = observation.runId; current.workflowUrl = observation.url;
@@ -109,8 +131,11 @@ export class BuildControl {
     } catch (error) {
       await this.store.transact(db => {
         const current = this.find(db, build.workspaceId, build.id); if (terminal(current)) return;
-        const invalid = error instanceof ControlError && error.code === "BUILD_RESULT_INVALID";
-        const message = invalid ? "构建结果与来源或节点契约不一致，拒绝启用。" : "构建结果尚未确认，正在核对原 GitHub 任务；不会重复派发。";
+        const rejected = dispatch && submissionRejected(error);
+        const invalid = rejected || error instanceof ControlError && error.code === "BUILD_RESULT_INVALID";
+        current.pollFailures = (current.pollFailures ?? 0) + 1;
+        current.nextPollAt = this.now() + retryDelay(current.pollFailures, 30_000);
+        const message = rejected ? "GitHub 明确拒绝构建请求，请修正构建来源或凭据后重新提交。" : invalid ? "构建结果与来源或节点契约不一致，拒绝启用。" : "构建结果尚未确认，正在退避核对原 GitHub 任务；不会重复派发。";
         if (current.message === message) return;
         current.state = invalid ? "failed" : current.state === "cancelling" ? "cancelling" : "unknown";
         current.message = message; current.revision++; this.event(db, current, message);

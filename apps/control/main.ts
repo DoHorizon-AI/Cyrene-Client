@@ -11,8 +11,9 @@ import { buildProfile } from "../../packages/build-control/contracts";
 import { GitHubBuildAdapter } from "../../packages/build-control/github";
 import { readConfiguredSecret } from "./secrets";
 import { validateProvider } from "./assistant";
+import { controlListener } from "./listener";
 
-const mode = process.env.STUDIO_MODE === "team" ? "team" : "local";
+const { mode, host } = controlListener(process.env);
 if (mode === "team" && !process.env.STUDIO_DATABASE_URL) throw new Error("Team mode requires STUDIO_DATABASE_URL (PostgreSQL)");
 const stores = process.env.STUDIO_DATABASE_URL ? new PostgresStoreFactory(process.env.STUDIO_DATABASE_URL) : new SqliteStoreFactory(resolve(process.env.STUDIO_CONTROL_DATA_DIR ?? ".studio", "control.sqlite"));
 
@@ -38,7 +39,7 @@ if (process.argv.includes("--bootstrap-admin")) {
   await stores.close();
 } else {
   const port = Number(process.env.STUDIO_CONTROL_PORT ?? 5182);
-  application.server.listen(port, process.env.STUDIO_CONTROL_HOST ?? "127.0.0.1", () => process.stdout.write(`Studio control listening on port ${port} (${mode})\n`));
+  application.server.listen(port, host, () => process.stdout.write(`Studio control listening on port ${port} (${mode})\n`));
   let reconciliation: Promise<void> | undefined;
   const worker = setInterval(() => {
     if (reconciliation) return;

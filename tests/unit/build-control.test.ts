@@ -28,13 +28,61 @@ function fixture() {
   const store = new MemoryStateStore(emptyBuildDatabase());
   let observed: BuildObservation | null = null;
   const adapter: BuildAdapter = { resolve: vi.fn(async () => sha), dispatch: vi.fn(async () => ({ runId: "123", url: "https://github.com/example/nodes/actions/runs/123" })), observe: vi.fn(async () => observed), cancel: vi.fn(async () => {}) };
-  const control = new BuildControl(store, [profile], adapter);
+  let now = Date.now();
+  const control = new BuildControl(store, [profile], adapter, () => now);
   const call = (name: string, data: unknown, key: string = crypto.randomUUID(), identity = actor) => control.execute({ name, input: data, requestId: crypto.randomUUID(), idempotencyKey: key }, identity) as Promise<any>;
   const start = async () => { const preview = await call("builds.preview", input); return await call("builds.start", { ...input, expectedFingerprint: preview.fingerprint }, "start") as Build; };
-  const finish = async (build: Build, payload = result(build)) => { observed = { runId: "123", url: "https://github.com/example/nodes/actions/runs/123", state: "succeeded", result: payload, message: "Verified" }; await control.tick(); };
-  return { store, control, adapter, call, start, finish };
+  const finish = async (build: Build, payload = result(build)) => { observed = { runId: "123", url: "https://github.com/example/nodes/actions/runs/123", state: "succeeded", result: payload, message: "Verified" }; now += 300_000; await control.tick(); };
+  return { store, control, adapter, call, start, finish, advance: (ms: number) => { now += ms; } };
 }
 describe("durable build intent", () => {
+  it("reconciles an unknown build through MCP without dispatching it again", async () => {
+    const f = fixture(), build = await f.start();
+    vi.mocked(f.adapter.dispatch).mockRejectedValueOnce(new Error("lost response")); await f.control.tick();
+    vi.mocked(f.adapter.observe).mockResolvedValue({ runId: "123", url: "https://github.com/example/nodes/actions/runs/123", state: "running", message: "verified" });
+    const server = createMcpServer({ execute: async () => ({}) }, actor, undefined, { builds: f.control });
+    const client = new Client({ name: "reconcile-test", version: "1" }), [a,b] = InMemoryTransport.createLinkedPair();
+    await server.connect(a); await client.connect(b);
+    try {
+      expect((await client.listTools()).tools.some(t => t.name === "builds.reconcile")).toBe(true);
+      const args = { workspaceId: "local", buildId: build.id, workflowRunId: "123", expectedRevision: (await f.store.read()).builds[0].revision, idempotencyKey: "reconcile" };
+      expect((await client.callTool({ name: "builds.reconcile", arguments: { ...args, workspaceId: "other" } })).isError).toBe(true);
+      const result = await client.callTool({ name: "builds.reconcile", arguments: args }); expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ workflowRunId: "123" });
+      expect((await client.callTool({ name: "builds.reconcile", arguments: args })).structuredContent).toEqual(result.structuredContent);
+      expect((await client.callTool({ name: "builds.reconcile", arguments: { ...args, idempotencyKey: "stale" } })).isError).toBe(true);
+      await f.control.tick(); expect((await f.store.read()).builds[0].state).toBe("running");
+      expect(f.adapter.dispatch).toHaveBeenCalledTimes(1);
+    } finally { await client.close(); await server.close(); }
+  });
+  it("finishes an HTTP 422 dispatch without searching GitHub on every tick", async () => {
+    const f = fixture(), build = await f.start();
+    const transport = vi.fn(async () => new Response(null, { status: 422 }));
+    const control = new BuildControl(f.store, [profile], new GitHubBuildAdapter(() => "test", transport));
+    for (let i = 0; i < 5; i++) await control.tick();
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect((await f.store.read()).builds[0]).toMatchObject({ id: build.id, state: "failed" });
+  });
+  it("persists backoff for unresolved dispatch without repeating external requests", async () => {
+    const f = fixture(); await f.start();
+    vi.mocked(f.adapter.dispatch).mockRejectedValue(new Error("lost response"));
+    await f.control.tick();
+    for (let i = 0; i < 29; i++) { f.advance(1000); await f.control.tick(); }
+    expect(f.adapter.observe).not.toHaveBeenCalled();
+    f.advance(1000); await f.control.tick(); expect(f.adapter.observe).toHaveBeenCalledTimes(1);
+    const revision = (await f.store.read()).builds[0].revision;
+    f.advance(60_000); await f.control.tick(); expect(f.adapter.observe).toHaveBeenCalledTimes(2);
+    expect((await f.store.read()).builds[0].revision).toBe(revision);
+    expect(f.adapter.dispatch).toHaveBeenCalledTimes(1);
+  });
+  it("honors a shared GitHub rate-limit window across builds", async () => {
+    const f = fixture(), build = await f.start();
+    const transport = vi.fn(async () => new Response(null, { status: 403, headers: { "retry-after": "120" } }));
+    const adapter = new GitHubBuildAdapter(() => "test", transport);
+    await expect(adapter.dispatch(build)).rejects.toMatchObject({ code: "GITHUB_RATE_LIMITED", status: 503 });
+    await expect(adapter.observe({ ...build, id: "another-build" })).rejects.toMatchObject({ code: "GITHUB_RATE_LIMITED" });
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
   it("retains unknown dispatch and idempotency receipts after closing and reopening SQLite", async () => {
     const root = await mkdtemp(join(tmpdir(), "studio-build-restart-"));
     let factory = new SqliteStoreFactory(join(root, "control.sqlite"));

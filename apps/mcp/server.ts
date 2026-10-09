@@ -65,6 +65,7 @@ export function createMcpServer(control: CommandExecutor, actor: Actor, runs?: C
   for (const [executor, definitions, domain] of groups) {
   if (!executor) continue;
   for (const [name, command] of Object.entries(definitions)) {
+    if (["runs.start", "runs.preflight"].includes(name) && !actor.scopes.includes("pipelines.read")) continue;
     if ((name === "monitoring.snapshot" && !actor.scopes.includes("pipelines.read")) || (extra.readOnly && !command.readOnly) || !actor.scopes.includes(command.scope ?? `${domain}.${command.readOnly ? "read" : "write"}`)) continue;
     server.registerTool(name, {
       description: command.description,

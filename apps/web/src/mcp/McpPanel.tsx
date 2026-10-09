@@ -15,7 +15,7 @@ export default function McpPanel({ document, selectedId, onNotice, onMonitor }: 
   const tx = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
   const client = useRef<Client | null>(null), mounted = useRef(true), sequence = useRef(0), working = useRef(false);
   const [tools, setTools] = useState<Tool[]>([]), [info, setInfo] = useState<{ diagnostics: boolean; readOnly: boolean; protocolVersion: string; assistant: { configured: boolean; model?: string } } | null>(null);
-  const [tab, setTab] = useState("chat"), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const [tab, setTab] = useState("tools"), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [name, setName] = useState("monitoring.snapshot"), [args, setArgs] = useState("{}"), [entries, setEntries] = useState<Entry[]>([]), [query, setQuery] = useState("");
   const [prompt, setPrompt] = useState(""), [messages, setMessages] = useState<Message[]>([]), [calls, setCalls] = useState<Call[]>([]);
   const [testRun, setTestRun] = useState(""), testContext = useRef<{ id: string; document?: unknown; input?: Record<string, unknown>; fingerprint?: string; runKey: string } | null>(null);
@@ -92,7 +92,7 @@ export default function McpPanel({ document, selectedId, onNotice, onMonitor }: 
     <div className="mcp-heading"><strong>{tx("平台 MCP", "Platform MCP")}</strong><button disabled={busy} onClick={() => void perform(connect)}>{info ? tx("重新连接", "Reconnect") : tx("连接 MCP", "Connect MCP")}</button></div>
     <p className="mcp-muted">{workspaceId} / {document.id}{selectedId ? ` / ${selectedId}` : ""}</p>
     {info && <p className="mcp-muted">Streamable HTTP · {info.protocolVersion} · {tools.length} {tx("项工具", "tools")} {info.readOnly ? "· Read only" : ""}</p>}
-    <nav className="mcp-tabs" aria-label={tx("MCP 功能", "MCP features")}>{[["chat", "对话", "Chat"], ["tools", "工具调试", "Tools"], ["connect", "接入与测试", "Connection & tests"]].map(([id, zh, en]) => <button aria-pressed={tab === id} key={id} onClick={() => setTab(id)}>{tx(zh, en)}</button>)}</nav>
+    <nav className="mcp-tabs" aria-label={tx("MCP 功能", "MCP features")}>{[["tools", "工具调试", "Tools"], ["chat", "模型提议调试", "Model proposal debugging"], ["connect", "接入与测试", "Connection & tests"]].map(([id, zh, en]) => <button aria-pressed={tab === id} key={id} onClick={() => setTab(id)}>{tx(zh, en)}</button>)}</nav>
     {error && <p role="alert" className="ide-error">{error}</p>}
     {tab === "tools" && <>
       <input aria-label={tx("筛选 MCP 工具", "Filter MCP tools")} placeholder={tx("搜索工具名称", "Search tools")} value={query} onChange={e => setQuery(e.target.value)} />
@@ -104,12 +104,13 @@ export default function McpPanel({ document, selectedId, onNotice, onMonitor }: 
       <button disabled={busy || !tool} onClick={() => void perform(async () => { const input: unknown = JSON.parse(args); if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Arguments must be an object"); await invoke(name, input as Record<string, unknown>); })}>{tool?.annotations?.readOnlyHint ? tx("调用工具", "Call tool") : tx("确认执行写操作", "Confirm write operation")}</button>
     </>}
     {tab === "chat" && <>
+      <p className="mcp-muted">{tx("此处用于当前页面的兼容模型提议调试。主对话请使用 AI Assistant 的 Navigator 聊天入口。", "This page provides compatibility debugging for model proposals. Use the Navigator chat in AI Assistant for your main conversation.")}</p>
       <p className="mcp-muted">{info?.assistant.configured ? `${info.assistant.model} · ${tx("调用前可检查参数；写操作需确认", "Review arguments before execution; confirm writes")}` : tx("模型尚未配置。可先使用工具调试，或在接入页查看模型配置方法。", "No model configured. Use Tools or see provider setup under Connection.")}</p>
       <div className="mcp-conversation">{messages.filter(m => m.role !== "tool" && m.content).map((m, i) => <div key={i}><strong>{m.role === "user" ? tx("你", "You") : "AI"}</strong><p>{m.content}</p></div>)}</div>
       {calls.map((call, index) => <details key={call.id} open={call.result === undefined}><summary>{call.name} · {call.result === undefined ? tx("待执行", "Pending") : tx("已处理", "Handled")}</summary><pre>{JSON.stringify(call.arguments, null, 2)}</pre>{call.result === undefined ? <div className="mcp-actions"><button disabled={busy || calls.slice(0, index).some(c => c.result === undefined)} onClick={() => void perform(() => resolveCall(call))}>{call.readOnly ? tx("执行读取", "Read") : tx("确认写操作", "Confirm write")}</button><button disabled={busy || calls.slice(0, index).some(c => c.result === undefined)} onClick={() => void perform(() => resolveCall(call, true))}>{tx("拒绝", "Decline")}</button></div> : <pre>{JSON.stringify(call.result, null, 2)}</pre>}</details>)}
       {!!calls.length && !pending && <button disabled={busy} onClick={() => void perform(() => turn(messages))}>{tx("让 AI 根据结果继续", "Continue with tool results")}</button>}
       <textarea rows={4} aria-label={tx("助手任务", "Assistant task")} placeholder={tx("例如：创建一条本地诊断流程，运行后查看失败原因", "Create a local diagnostic workflow, run it and inspect failures")} value={prompt} maxLength={4000} onChange={e => setPrompt(e.target.value)} />
-      <div className="mcp-actions"><button disabled={busy || pending || !prompt.trim() || !info?.assistant.configured} onClick={() => void perform(async () => { await turn([...messages, { role: "user", content: prompt }]); setPrompt(""); })}>{tx("发送", "Send")}</button><button disabled={busy} onClick={() => { setMessages([]); setCalls([]); }}>{tx("新对话", "New conversation")}</button></div>
+      <div className="mcp-actions"><button disabled={busy || pending || !prompt.trim() || !info?.assistant.configured} onClick={() => void perform(async () => { await turn([...messages, { role: "user", content: prompt }]); setPrompt(""); })}>{tx("发送", "Send")}</button><button disabled={busy} onClick={() => { setMessages([]); setCalls([]); }}>{tx("清空调试记录", "Clear debug transcript")}</button></div>
       <button disabled={!prompt.trim()} onClick={() => void perform(async () => { await navigator.clipboard.writeText(`Workspace: ${workspaceId}; pipeline: ${document.id}; node: ${selectedId ?? "none"}. Read current server revisions before editing.\n${prompt}`); onNotice(tx("任务与流程上下文已复制。", "Task and workflow context copied.")); })}>{tx("复制任务与上下文", "Copy task and context")}</button>
       <small>{tx("发送会将对话、流程引用和工具结果交给配置的模型服务。会话只保留在当前页面。", "Sending shares conversation, pipeline references and tool results with the configured model. Conversation stays in this page only.")}</small>
     </>}

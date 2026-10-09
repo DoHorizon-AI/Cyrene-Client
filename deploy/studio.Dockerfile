@@ -6,7 +6,7 @@ COPY . .
 RUN npm run build
 
 FROM build AS control
-ENV NODE_ENV=production STUDIO_CONTROL_HOST=0.0.0.0
+ENV NODE_ENV=production STUDIO_MODE=team STUDIO_CONTROL_HOST=0.0.0.0
 USER node
 EXPOSE 5182
 CMD ["node", "--import", "tsx", "apps/control/main.ts"]
