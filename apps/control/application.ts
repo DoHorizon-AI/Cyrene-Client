@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { pipeline as pipe } from "node:stream/promises";
-import { productPermission } from "../../tooling/product-proxy";
+import { navigatorPolicyWorkspace, navigatorProxyPolicy, navigatorProxyUpstreamPath, productBodyLimit, productPermission } from "../../tooling/product-proxy";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { StoreFactory } from "../../packages/control-storage";
@@ -60,25 +60,6 @@ export async function readJson(req: IncomingMessage, limit = 1_048_576) {
   let bytes = 0; const chunks: Buffer[] = [];
   for await (const data of req) { const chunk = Buffer.from(data); bytes += chunk.length; if (bytes > limit) throw new ControlError("TOO_LARGE", "请求超过大小限制。", 413); chunks.push(chunk); }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; } catch { throw new ControlError("INVALID_JSON", "请求不是有效 JSON。"); }
-}
-
-function navigatorUpstreamPath(requestUrl: string, workspaceId: string): string {
-  const queryIndex = requestUrl.indexOf("?");
-  const pathname = queryIndex < 0 ? requestUrl : requestUrl.slice(0, queryIndex);
-  const query = queryIndex < 0 ? "" : requestUrl.slice(queryIndex);
-  const tasksPrefix = "/api/v1/navigator/tasks";
-  if (pathname === tasksPrefix || pathname.startsWith(`${tasksPrefix}/`)) {
-    return `/api/v1/tasks${pathname.slice(tasksPrefix.length)}${query}`;
-  }
-  const assistantPrefix = "/api/v1/navigator/assistant";
-  if (pathname.startsWith(`${assistantPrefix}/`)) {
-    return `/api/v1/assistant${pathname.slice(assistantPrefix.length)}${query}`;
-  }
-  const approvalsPrefix = "/api/v1/navigator/approvals";
-  if (pathname === approvalsPrefix || pathname.startsWith(`${approvalsPrefix}/`)) {
-    return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/work/approvals${pathname.slice(approvalsPrefix.length)}${query}`;
-  }
-  return requestUrl;
 }
 
 export function createControlApplication(options: ControlOptions) {
@@ -243,6 +224,7 @@ export function createControlApplication(options: ControlOptions) {
         await authorize(req, false); return send(res, 200, { configured: !!options.navigatorUrl, target: options.navigatorUrl ?? null });
       }
       if (path.startsWith("/api")) {
+        const navigatorPolicy = navigatorProxyPolicy(req.method ?? "GET", path);
         const permission = productPermission(req.method ?? "GET", path);
         const legacy = allowedSettingsRequest(req.method ?? "GET", path);
         if (!permission && !legacy) throw new ControlError("STUDIO_SETTINGS_ONLY", "此代理只允许节点设置接口。", 403);
@@ -251,16 +233,9 @@ export function createControlApplication(options: ControlOptions) {
         // Product settings already use Navigator's CSRF protocol. Team writes
         // additionally require Studio editor permission; browser Origin is checked.
         if (!permission && !path.startsWith("/api/v1/auth/") && req.method !== "GET" && !actor.scopes.includes("pipelines.write")) throw new ControlError("FORBIDDEN", "没有设置编辑权限。", 403);
-        const productWorkspace = path.match(/^\/api\/v1\/navigator\/harness\/workspaces\/([^/]+)\/sessions$/)?.[1];
-        if (productWorkspace && !actor.workspaceIds.includes(productWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
-        const workWorkspace = path.match(/^\/api\/v1\/workspaces\/([^/]+)\/work\//)?.[1];
-        if (workWorkspace && !actor.workspaceIds.includes(workWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
-        if (path === "/api/v1/navigator/approvals" || path.startsWith("/api/v1/navigator/approvals/")
-          || path.startsWith("/api/v1/navigator/assistant/")
-          || path === "/api/v1/navigator/tasks" || path.startsWith("/api/v1/navigator/tasks/")) {
-          if (!actor.workspaceIds.includes(workspaceId)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
-        }
-        if (/^\/api\/v1\/navigator\/assistant\/providers/.test(path) && req.method !== "GET") {
+        const targetWorkspace = navigatorPolicy && navigatorPolicyWorkspace(navigatorPolicy, path, workspaceId);
+        if (targetWorkspace && !actor.workspaceIds.includes(targetWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
+        if (navigatorPolicy?.browserOnly) {
           const context = await authorize(req, true);
           if (context.kind !== "browser") throw new ControlError("FORBIDDEN", "模型凭据配置需要浏览器会话。", 403);
         }
@@ -274,35 +249,22 @@ export function createControlApplication(options: ControlOptions) {
         if (path === "/api/proxy/exchange-gateway/v1/chat/completions" && typeof req.headers["x-product-authorization"] === "string") headers.set("authorization", req.headers["x-product-authorization"]);
         let body: Buffer | undefined;
         if (req.method !== "GET" && req.method !== "HEAD") {
-          const limit = /^\/api\/v1\/catalyst\/datasets\/[^/]+\/preparations$/.test(path)
-            || /^\/api\/v1\/catalyst\/api\/v1\/datasets\/[^/]+\/sources$/.test(path) ? 32 * 1024 * 1024
-            : /^\/api\/v1\/catalyst\/api\/v1\/datasets\/[^/]+\/sources\/batch$/.test(path) ? 129 * 1024 * 1024
-            : path === "/api/v1/echo/api/v1/session-artifacts" ? 16 * 1024 * 1024
-            : /^\/api\/v1\/workspaces\/[^/]+\/work\/attachments$/.test(path) ? 16 * 1024 * 1024
-              : 1_048_576;
+          const limit = productBodyLimit(path, navigatorPolicy);
           let bytes = 0; const chunks: Buffer[] = [];
           for await (const chunk of req) { const part = Buffer.from(chunk); bytes += part.length; if (bytes > limit) throw new ControlError("TOO_LARGE", "请求超过大小限制。", 413); chunks.push(part); }
           if (chunks.length) body = Buffer.concat(chunks);
         }
-        const taskSubmission = path === "/api/v1/navigator/tasks" && req.method === "POST";
-        if (taskSubmission && body) {
+        if (navigatorPolicy?.validateBody && body) {
           let input: unknown;
           try { input = JSON.parse(body.toString("utf8")); } catch { throw new ControlError("INVALID_JSON", "请求不是有效 JSON。"); }
-          if (input && typeof input === "object" && ["cwd", "agentPreset", "timeoutMs"].some(field => Object.hasOwn(input, field))) {
-            throw new ControlError("RESERVED_EXECUTION_FIELD", "执行目录、预设和超时由宿主管理，不能通过浏览器任务指定。", 403);
-          }
-          if (input && typeof input === "object" && "metadata" in input && input.metadata && typeof input.metadata === "object" && "navigator" in input.metadata) {
-            throw new ControlError("RESERVED_EXECUTION_METADATA", "Navigator 执行配置由宿主管理，不能通过任务 metadata 修改。", 403);
-          }
-          if (options.mode === "team" && input && typeof input === "object" && ("execution" in input || "runtime" in input)) {
-            throw new ControlError("PERSONAL_RUNTIME_LOCAL_ONLY", "个人智能体执行需要 local 模式；团队任务使用已配置的 Navigator 执行器。", 403);
-          }
+          const violation = navigatorPolicy.validateBody(input, options.mode);
+          if (violation) throw new ControlError(violation.code, violation.message, violation.status);
         }
         const abort = new AbortController();
         const closed = () => abort.abort(); res.once("close", closed);
         const deadline = setTimeout(() => abort.abort(), 10000);
         let upstream: Response;
-        try { upstream = await fetch(`${options.navigatorUrl}${navigatorUpstreamPath(req.url ?? path, workspaceId)}`, { method: req.method, headers, body: body ? new Uint8Array(body) : undefined, redirect: "manual", signal: abort.signal }); }
+        try { upstream = await fetch(`${options.navigatorUrl}${navigatorProxyUpstreamPath(req.url ?? path, workspaceId, navigatorPolicy)}`, { method: req.method, headers, body: body ? new Uint8Array(body) : undefined, redirect: "manual", signal: abort.signal }); }
         catch (error) { res.off("close", closed); throw error; }
         finally { clearTimeout(deadline); }
         res.statusCode = upstream.status;

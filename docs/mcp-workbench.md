@@ -21,6 +21,8 @@ AI 读取已保存的服务端流水线。画布有未保存编辑时，远端�
 
 画布被动同步不会居中或打开节点面板，拖拽结束后才替换图。载入冲突的新版本前会保存恢复备份，每个身份每条流水线保留最近 20 份。助手和产品页共享 Navigator 会话，发送与审批须先确认宿主工作空间；同类操作的任务授权不能跨工具复用。第三期 33 个浏览器场景与定向 68 个单元通过。
 
+浏览器到 Navigator/Work 的代理策略集中在 `tooling/product-proxy.ts`，由同一条规则指定权限、工作空间、请求体检查和大小上限。它与 MCP 命令权限分别检查，不能借其他代理接口修改执行器 metadata 或追加执行事件。
+
 所有域通过同一个 `registerCommand` 注册：pipeline、runs、monitoring、builds、catalog、servers。共享定义声明 `requiredScopes`、`effects`（read/additive/update/destructive）及 `external`。HTTP permittedCommands 与 MCP tools/list 使用同一权限定义；执行服务重新检查 actor/workspace/scopes。
 
 工具名称符合 `^[a-z0-9_]{1,64}$`，启动时拒绝重名。只读、破坏性、幂等和外部访问 annotations 从定义生成；这些提示方便客户端判断，不替代服务端授权。save、patch、undo、redo、stop、archive 等可能删除或替换已有状态，标记 destructive；内部状态查询 openWorldHint=false，联系 Product/Platform/GitHub 的操作为 true。
