@@ -26,7 +26,7 @@ export class RunControl {
     const request = pipelineRequest.parse(raw);
     if (!Object.hasOwn(runCommands, request.name)) throw new ControlError("UNKNOWN_COMMAND", "未知运行操作。");
     const name = request.name as keyof typeof runCommands, command = runCommands[name], input = command.input.parse(request.input);
-    if (!actor.workspaceIds.includes(input.workspaceId) || !actor.scopes.includes(command.readOnly ? "runs.read" : "runs.write")) throw new ControlError("FORBIDDEN", "没有运行操作权限。", 403);
+    if (!actor.workspaceIds.includes(input.workspaceId) || !command.requiredScopes.every(scope => actor.scopes.includes(scope))) throw new ControlError("FORBIDDEN", "没有运行操作权限。", 403);
     if (["runs.preflight", "runs.start"].includes(name) && !actor.scopes.includes("pipelines.read")) throw new ControlError("FORBIDDEN", "启动或预检运行还需要 pipelines.read 权限。", 403);
     const fingerprint = hash([name, input]), key = JSON.stringify([actor.id, input.workspaceId, request.idempotencyKey]);
     if (!command.readOnly && !request.idempotencyKey) throw new ControlError("IDEMPOTENCY_REQUIRED", "运行写操作需要幂等键。");
@@ -52,7 +52,14 @@ export class RunControl {
       // draft edits are intentionally independent of this accepted run.
       return this.store.transact(db => {
         const previous = replay(db); if (previous) return previous;
+        const duplicate = db.runs.find(run => run.workspaceId === input.workspaceId && run.createdBy === actor.id
+          && run.pipelineId === start.pipelineId && run.graphRevision === start.expectedGraphRevision
+          && !["succeeded", "failed", "stopped"].includes(run.state)
+          && (run.preflightFingerprint ?? hash([graphOf(run.document), run.graphRevision, run.placements,
+            Object.fromEntries(run.steps.filter(step => step.capabilities).map(step => [step.nodeId, step.capabilities])), run.targets])) === preflight.fingerprint);
+        if (duplicate) throw new ControlError("DUPLICATE_ACTIVE_RUN", "同一操作者已提交此版本和预检计划的运行，请观察已有运行。", 409, { existingRunId: duplicate.id });
         const run = this.newRun(record, actor.id, placements, preflight.capabilities, preflight.targets);
+        run.preflightFingerprint = preflight.fingerprint;
         db.runs.push(run); db.receipts.push({ key, fingerprint, runId: run.id }); this.event(db, run, actor.id, "run.accepted", "运行快照已保存，等待执行资源。");
         return structuredClone(run);
       });

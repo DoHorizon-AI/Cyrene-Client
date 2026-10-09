@@ -6,7 +6,15 @@
 
 现有整合已分别保存为本地检查点 Client `3f25743`、Navigator `aaa64f0`，没有推送。Client 不再代理任务 PATCH 和执行器事件 POST；任务提交携带 `cwd`、`agentPreset` 或 `timeoutMs` 时返回 `403 RESERVED_EXECUTION_FIELD`，即使值为 null 或零也拒绝。正常任务提交与读取保留。相关 Client HTTP 与代理回归 8 项通过。
 
-执行目录、预设和超时由 Navigator 宿主配置。取消继续使用现有 Work 状态 `aborted`。后续权限矩阵、Web principal、MCP 契约和前端会话修复分期提交，实际验证记录随各期补充。
+Navigator 将工作目录 realpath 后限制在宿主根目录列表中；外部任务不能指定内部原生预设，超时上限默认 6 小时。Web Host 使用独立 `CYRENE_WEB_SESSION_TOKEN` 和 `can_write_harness: false`，仅能改标题、描述和取消（现有 Work 状态 `aborted`），不能认领任务或伪造执行事件。`executorOwned` 标记不可变，缺少签名不能退回旧任务路径。Python 102 项通过，CI 范围 Ruff、格式和 Linux mypy 通过；旧记录迁移保留审批和任务数据。
+
+权限矩阵：read-only 拒绝写入、shell、外部操作；ask 均询问；auto 仅自动允许目录内结构化写入，shell/网络/MCP 写仍询问（Codex 的系统沙箱例外）；full-access 自动放行但保留 MCP 身份权限检查。Harness 只公布实际实现的 read-only/ask。任务授权按操作种类隔离，MCP 按工具名隔离，复用时追加 `approval.auto_granted` 审计。API 地址或协议改变时必须重新填写密钥。
+
+## 2026-10-09 审查修复：第二期
+
+MCP wire 名称改为 `pipelines_get`、`runs_start` 等下划线形式，HTTP 命令和工具标题保持点号形式。工具权限与注解来自共享契约 `requiredScopes`、`effects`、`external`。新资源 `cyrene://guide` 说明版本、幂等与错误恢复；每个意图一个 key，同一请求重试沿用原 key 和参数。
+
+错误区分 `outcome: rejected` 与 `unknown`，带 `requestId` 和恢复提示。执行开始后的未知异常或不符合输出 schema 的结果不能宣称未写入。同一进行中计划不能用换 key 再派发：`DUPLICATE_ACTIVE_RUN`/`DUPLICATE_ACTIVE_BUILD` 返回已有 ID。已删除 `/studio-assistant/v1/turn`、旧模型配置与面板对话；MCP 面板只做手工调试，聊天统一走 Navigator。实际 HTTP 发现 44 项工具；定向 91 项和 MCP 控制浏览器 2 项通过，未连接真实外部模型或 GitHub 运行。
 
 ## 源码与接口
 

@@ -19,7 +19,7 @@ export class BuildControl {
     const request = pipelineRequest.parse(raw);
     if (!Object.hasOwn(buildCommands, request.name)) throw new ControlError("UNKNOWN_COMMAND", "未知构建操作。");
     const name = request.name as keyof typeof buildCommands, command = buildCommands[name], input = command.input.parse(request.input);
-    if (!actor.workspaceIds.includes(input.workspaceId) || !actor.scopes.includes(command.scope)) throw new ControlError("FORBIDDEN", "没有此工作空间的构建权限。", 403);
+    if (!actor.workspaceIds.includes(input.workspaceId) || !command.requiredScopes.every(scope => actor.scopes.includes(scope))) throw new ControlError("FORBIDDEN", "没有此工作空间的构建权限。", 403);
     if (!command.readOnly && !request.idempotencyKey) throw new ControlError("IDEMPOTENCY_REQUIRED", "构建写操作需要幂等键。");
     const key = JSON.stringify([actor.id, input.workspaceId, request.idempotencyKey]), fingerprint = hash([name, input]);
     const replay = (db: BuildDatabase) => {
@@ -43,6 +43,8 @@ export class BuildControl {
       if (buildCommands["builds.start"].input.parse(input).expectedFingerprint !== preview.fingerprint) throw new ControlError("BUILD_PREVIEW_STALE", "源码或构建配置已变化，请重新预览。", 409);
       return this.store.transact(db => {
         const previous = replay(db); if (previous) return previous;
+        const duplicate = db.builds.find(build => build.workspaceId === input.workspaceId && build.profile.id === profile.id && build.sourceSha === sha && !terminal(build));
+        if (duplicate) throw new ControlError("DUPLICATE_ACTIVE_BUILD", "此构建配置和源码 SHA 已有进行中的构建，请观察已有构建。", 409, { existingBuildId: duplicate.id });
         const build: Build = { id: crypto.randomUUID(), workspaceId: input.workspaceId, createdBy: actor.id, createdAt: new Date().toISOString(), revision: 1, profile: structuredClone(profile), sourceRef: args.sourceRef, sourceSha: sha, workflowSha, state: "queued" };
         db.builds.push(build); db.receipts.push({ key, fingerprint, buildId: build.id }); this.event(db, build, "已保存构建请求，尚未启用节点版本。"); return structuredClone(build);
       });

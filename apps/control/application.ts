@@ -25,7 +25,6 @@ import { monitoringCommands } from "../../packages/monitoring/contracts";
 import { streamRun } from "./run-stream";
 import { createMcpServer } from "../mcp/server";
 import { serveMcp } from "../mcp/http";
-import { assistantTurn, type AssistantProvider } from "./assistant";
 import { LocalDiagnosticAdapter, diagnosticDatabase, emptyDiagnosticDatabase } from "../../packages/local-diagnostics/adapter";
 import { createUpdateControl } from "./update-control";
 import { createUpdateHelper } from "./update-helper";
@@ -46,7 +45,6 @@ export interface ControlOptions {
   buildAdapter?: BuildAdapter;
   localDiagnostics?: boolean;
   mcpReadOnly?: boolean;
-  assistantProvider?: AssistantProvider;
   updateHelper?: (request: UpdateHelperRequest) => Promise<UpdateHelperResult>;
 }
 const localScopes = ["products.read", "products.write", "products.operate", "products.admin", "pipelines.read", "pipelines.write", "servers.read", "servers.write", "runs.read", "runs.write", "builds.read", "builds.write", "catalog.write", "updates.read", "updates.apply"];
@@ -104,7 +102,6 @@ export function createControlApplication(options: ControlOptions) {
   const mcp = (actor: Actor) => createMcpServer(pipelines, actor, runs, { monitoring, builds, catalog: registry, servers, readOnly: options.mcpReadOnly });
   const updates = options.mode === "local" ? createUpdateControl(options.updateHelper ?? createUpdateHelper()) : undefined;
   const failures = new Map<string, { count: number; until: number }>();
-  const activeAssistantTurns = new Set<string>();
   let snapshotUntil = 0;
   let sharedSnapshot: Promise<{ workspaceId: string; pipelineId: string; graphRevision: number; layoutRevision: number; updatedBy: string }[]> | undefined;
   function pipelineSnapshot() {
@@ -139,7 +136,7 @@ export function createControlApplication(options: ControlOptions) {
     if (mutation && (typeof req.headers["x-studio-control-token"] !== "string" || !secretEqual(req.headers["x-studio-control-token"], context.csrf))) throw new ControlError("FORBIDDEN", "缺少有效的会话 CSRF 凭据。", 403);
     return context;
   }
-  const groups = new Map<string, { commands: Record<string, { readOnly: boolean; scope?: string; description?: string }>; execute(raw: unknown, actor: Actor): Promise<unknown> }>([
+  const groups = new Map<string, { commands: Record<string, { readOnly: boolean; scope?: string; requiredScopes?: readonly string[]; description?: string }>; execute(raw: unknown, actor: Actor): Promise<unknown> }>([
     ["/studio-pipelines", { commands: pipelineCommands, execute: (raw, actor) => pipelines.execute(raw, actor) }],
     ["/studio-control", { commands, execute: (raw, actor) => servers.execute(raw, actor) }],
     ["/studio-monitoring", { commands: monitoringCommands, execute: (raw, actor) => monitoring.execute(raw, actor) }],
@@ -148,7 +145,7 @@ export function createControlApplication(options: ControlOptions) {
     ["/studio-catalog", { commands: catalogCommands, execute: (raw, actor) => registry.execute(raw, actor) }],
   ]);
   if (updates) groups.set("/studio-updates", { commands: updates.commands, execute: (raw, actor) => updates.execute(raw, actor) });
-  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([name, command]) => (!["monitoring.snapshot", "runs.preflight", "runs.start"].includes(name) || actor.scopes.includes("pipelines.read")) && actor.scopes.includes(command.scope ?? `${prefix === "/studio-runs" ? "runs" : "pipelines"}.${command.readOnly ? "read" : "write"}`)).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
+  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; requiredScopes?: readonly string[]; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([, command]) => (command.requiredScopes ?? [command.scope!]).every(scope => actor.scopes.includes(scope))).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const path = (req.url ?? "").split("?")[0];
@@ -156,18 +153,7 @@ export function createControlApplication(options: ControlOptions) {
       await ready;
       if (path === "/studio-mcp/v1/info" && req.method === "GET") {
         const { actor } = await authorize(req, false);
-        return send(res, 200, { endpoint: "/studio-mcp", protocolVersion: "2025-11-25", transport: "streamable-http", readOnly: !!options.mcpReadOnly, diagnostics: !!options.localDiagnostics, assistant: { configured: !!options.assistantProvider, model: options.assistantProvider?.model }, actor });
-      }
-      if (path === "/studio-assistant/v1/turn" && req.method === "POST") {
-        const { actor } = await authorize(req, true);
-        if (activeAssistantTurns.has(actor.id) || activeAssistantTurns.size >= 16) throw new ControlError("ASSISTANT_BUSY", "助手仍在处理请求，请稍后重试。", 429);
-        const input = await readJson(req, 262144);
-        if (activeAssistantTurns.has(actor.id) || activeAssistantTurns.size >= 16) throw new ControlError("ASSISTANT_BUSY", "助手仍在处理请求，请稍后重试。", 429);
-        activeAssistantTurns.add(actor.id);
-        const abort = new AbortController(), closed = () => abort.abort();
-        res.once("close", closed);
-        try { return send(res, 200, await assistantTurn(input, actor, options.assistantProvider, mcp(actor), AbortSignal.any([abort.signal, AbortSignal.timeout(25000)]))); }
-        finally { activeAssistantTurns.delete(actor.id); res.off("close", closed); }
+        return send(res, 200, { endpoint: "/studio-mcp", protocolVersion: "2025-11-25", transport: "streamable-http", readOnly: !!options.mcpReadOnly, diagnostics: !!options.localDiagnostics, actor });
       }
       if (path === "/studio-mcp") {
         // Validate Origin even with bearer credentials; browser POSTs need CSRF.
@@ -330,8 +316,8 @@ export function createControlApplication(options: ControlOptions) {
       }
       throw new ControlError("NOT_FOUND", "不存在此接口。", 404);
     } catch (error) {
-      const failure = error instanceof ControlError ? error : error instanceof z.ZodError ? new ControlError("INVALID_INPUT", "请求不符合接口契约。") : new ControlError("CONTROL_UNAVAILABLE", "控制操作未完成，请核对状态后重试。", 503);
-      if (!res.headersSent) send(res, failure.status, { error: { code: failure.code, message: failure.message } }); else res.end();
+      const failure = error instanceof ControlError ? error : error instanceof z.ZodError ? new ControlError("INVALID_INPUT", "请求不符合接口契约。") : new ControlError("CONTROL_UNAVAILABLE", "控制操作结果未知，请读取当前状态；重试时沿用同一个幂等键。", 503, undefined, "unknown");
+      if (!res.headersSent) send(res, failure.status, { error: { code: failure.code, message: failure.message, outcome: failure.outcome, ...(failure.details ? { details: failure.details } : {}) } }); else res.end();
     }
   };
   const server = createServer((req, res) => { void handler(req, res); });

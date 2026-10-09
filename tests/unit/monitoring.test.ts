@@ -28,12 +28,12 @@ describe("workspace monitoring", () => {
       await server.connect(a); await client.connect(b);
       try {
         const { tools } = await client.listTools();
-        expect(tools.some(tool => tool.name === "monitoring.snapshot")).toBe(scopes.includes("pipelines.read"));
+        expect(tools.some(tool => tool.name === "monitoring_snapshot")).toBe(scopes.includes("pipelines.read"));
         if (scopes.includes("pipelines.read")) {
-          const result = await client.callTool({ name: "monitoring.snapshot", arguments: { workspaceId: "local" } });
+          const result = await client.callTool({ name: "monitoring_snapshot", arguments: { workspaceId: "local" } });
           expect(result.isError).not.toBe(true);
           expect(result.structuredContent).toMatchObject({ workspaceId: "local" });
-          expect((await client.callTool({ name: "monitoring.snapshot", arguments: { workspaceId: "other" } })).isError).toBe(true);
+          expect((await client.callTool({ name: "monitoring_snapshot", arguments: { workspaceId: "other" } })).isError).toBe(true);
         }
       } finally { await client.close(); await server.close(); }
     }

@@ -20,7 +20,7 @@ export class MonitoringControl {
     const request = pipelineRequest.parse(raw);
     if (request.name !== "monitoring.snapshot") throw new ControlError("UNKNOWN_COMMAND", "Unknown monitoring command");
     const input = monitoringCommands[request.name].input.parse(request.input);
-    if (!actor.workspaceIds.includes(input.workspaceId) || !["pipelines.read", "runs.read"].every(scope => actor.scopes.includes(scope))) throw new ControlError("FORBIDDEN", "Monitoring access denied", 403);
+    if (!actor.workspaceIds.includes(input.workspaceId) || !monitoringCommands["monitoring.snapshot"].requiredScopes.every(scope => actor.scopes.includes(scope))) throw new ControlError("FORBIDDEN", "Monitoring access denied", 403);
     // These stores have independent revisions. Never imply a cross-store transaction.
     const [pipelines, runs] = await Promise.all([this.pipelines.read(), this.runs.read()]);
     const matches = (row: { workspaceId: string; pipelineId?: string }) => row.workspaceId === input.workspaceId && (!input.pipelineId || row.pipelineId === input.pipelineId);

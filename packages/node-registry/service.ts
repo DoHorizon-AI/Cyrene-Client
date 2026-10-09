@@ -21,7 +21,7 @@ export class NodeRegistry {
     const request = pipelineRequest.parse(raw);
     if (!Object.hasOwn(catalogCommands, request.name)) throw new ControlError("UNKNOWN_COMMAND", "未知目录操作。");
     const name = request.name as keyof typeof catalogCommands, command = catalogCommands[name], input = command.input.parse(request.input);
-    if (!actor.workspaceIds.includes(input.workspaceId) || !actor.scopes.includes(command.scope)) throw new ControlError("FORBIDDEN", "没有节点目录操作权限。", 403);
+    if (!actor.workspaceIds.includes(input.workspaceId) || !command.requiredScopes.every(scope => actor.scopes.includes(scope))) throw new ControlError("FORBIDDEN", "没有节点目录操作权限。", 403);
     if (name === "catalog.list_packages") return this.list();
     const args = catalogCommands["catalog.preview_activation"].input.parse({ workspaceId: input.workspaceId, buildId: "buildId" in input ? input.buildId : undefined, expectedRevision: "expectedRevision" in input ? input.expectedRevision : undefined });
     const key = JSON.stringify([actor.id, input.workspaceId, request.idempotencyKey]), fingerprint = createHash("sha256").update(JSON.stringify([name, input])).digest("hex");

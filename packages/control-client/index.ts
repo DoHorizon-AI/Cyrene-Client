@@ -20,7 +20,8 @@ export class RemoteControl implements CommandExecutor {
   async execute(raw: unknown, _actor: Actor) {
     const response = await fetch(`${this.origin}${this.prefix}/v1/commands`, { method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000), headers: { "content-type": "application/json", authorization: `Bearer ${this.token}`, ...(this.publicOrigin ? { origin: this.publicOrigin } : {}) }, body: JSON.stringify(raw) });
     const body = await response.json();
-    if (!response.ok) throw new ControlError(body.error?.code ?? "CONTROL_ERROR", body.error?.message ?? "控制服务不可用。", response.status);
+    if (!response.ok) throw new ControlError(body.error?.code ?? "CONTROL_ERROR", body.error?.message ?? "控制服务不可用。", response.status, body.error?.details,
+      body.error?.outcome === "unknown" ? "unknown" : body.error?.outcome === "rejected" || response.status < 500 ? "rejected" : "unknown");
     return body.result;
   }
 }

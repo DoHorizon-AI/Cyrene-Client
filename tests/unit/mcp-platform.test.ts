@@ -24,7 +24,7 @@ async function fixture(readOnly = false) {
   await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/studio-mcp`), { requestInit: { headers: { authorization: "Bearer test-api-token" } } }));
   cleanup.push(() => client.close());
   const call = async (name: string, args: Record<string, unknown>) => {
-    const result = await client.callTool({ name, arguments: args });
+    const result = await client.callTool({ name: name.replaceAll(".", "_"), arguments: args });
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true); return result.structuredContent as any;
   };
   return { app, stores, origin, client, call };
@@ -32,7 +32,7 @@ async function fixture(readOnly = false) {
 
 it("handshakes over HTTP, discovers context/prompts and runs a workflow through actual MCP commands", async () => {
   const f = await fixture();
-  expect((await f.client.listTools()).tools.map(t => t.name)).toEqual(expect.arrayContaining(["pipelines.create", "pipelines.layout", "runs.start", "monitoring.snapshot", "servers.list"]));
+  expect((await f.client.listTools()).tools.map(t => t.name)).toEqual(expect.arrayContaining(["pipelines_create", "pipelines_layout", "runs_start", "monitoring_snapshot", "servers_list"]));
   const context = await f.client.readResource({ uri: "cyrene://context" });
   expect(JSON.stringify(context)).toContain("local-mcp"); expect(JSON.stringify(context)).not.toContain("test-api-token");
   expect((await f.client.listPrompts()).prompts[0].name).toBe("workflow-assistant");
@@ -52,13 +52,13 @@ it("handshakes over HTTP, discovers context/prompts and runs a workflow through 
   await f.call("runs.stop", { workspaceId: "local", runId: run.id, expectedRevision: observed.run.revision, idempotencyKey: "stop-check" });
   await f.app.runs.tick();
   expect((await f.call("runs.get", { workspaceId: "local", runId: run.id })).state).toBe("stopped");
-  expect((await f.client.callTool({ name: "monitoring.snapshot", arguments: { workspaceId: "other" } })).isError).toBe(true);
+  expect((await f.client.callTool({ name: "monitoring_snapshot", arguments: { workspaceId: "other" } })).isError).toBe(true);
 });
 
 it("rejects missing credentials, cross-origin and CSRF before protocol calls, and filters writes in read-only mode", async () => {
   const f = await fixture(true);
   expect((await f.client.listTools()).tools.every(t => t.annotations?.readOnlyHint)).toBe(true);
-  const result = await f.client.callTool({ name: "pipelines.create", arguments: { workspaceId: "local", document: diagnosticPipeline("forbidden"), idempotencyKey: "forbidden" } });
+  const result = await f.client.callTool({ name: "pipelines_create", arguments: { workspaceId: "local", document: diagnosticPipeline("forbidden"), idempotencyKey: "forbidden" } });
   expect(result.isError).toBe(true);
   for (const headers of [{}, { authorization: "Bearer wrong" }, { authorization: "Bearer test-api-token", origin: "https://evil.invalid" }]) {
     const response = await fetch(`${f.origin}/studio-mcp`, { method: "POST", headers: { "content-type": "application/json", ...headers } as Record<string, string>, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
@@ -98,7 +98,7 @@ it("MCP adds the same catalog nodes as the visual editor and shares configuratio
     idempotencyKey: "shared-add", edits: nodes.map((node: any, index: number) => ({ op: "add_node", node, position: { x: index * 320, y: 80 } })) });
   const saved = await f.call("pipelines.get", { workspaceId: "local", pipelineId: document.id });
   expect(saved.document.nodes).toEqual(types.map((d: any) => createNode(d.type, `node-${d.type}`)));
-  const invalid = await f.client.callTool({ name: "pipelines.patch", arguments: { workspaceId: "local", pipelineId: document.id,
+  const invalid = await f.client.callTool({ name: "pipelines_patch", arguments: { workspaceId: "local", pipelineId: document.id,
     expectedGraphRevision: saved.graphRevision, expectedLayoutRevision: saved.layoutRevision, idempotencyKey: "shared-invalid",
     edits: [{ op: "update_node", nodeId: "node-compute", config: { count: 0 } }] } });
   expect(invalid.isError).toBe(true);

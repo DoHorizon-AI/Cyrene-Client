@@ -44,13 +44,13 @@ describe("durable build intent", () => {
     const client = new Client({ name: "reconcile-test", version: "1" }), [a,b] = InMemoryTransport.createLinkedPair();
     await server.connect(a); await client.connect(b);
     try {
-      expect((await client.listTools()).tools.some(t => t.name === "builds.reconcile")).toBe(true);
+      expect((await client.listTools()).tools.some(t => t.name === "builds_reconcile")).toBe(true);
       const args = { workspaceId: "local", buildId: build.id, workflowRunId: "123", expectedRevision: (await f.store.read()).builds[0].revision, idempotencyKey: "reconcile" };
-      expect((await client.callTool({ name: "builds.reconcile", arguments: { ...args, workspaceId: "other" } })).isError).toBe(true);
-      const result = await client.callTool({ name: "builds.reconcile", arguments: args }); expect(result.isError).not.toBe(true);
+      expect((await client.callTool({ name: "builds_reconcile", arguments: { ...args, workspaceId: "other" } })).isError).toBe(true);
+      const result = await client.callTool({ name: "builds_reconcile", arguments: args }); expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toMatchObject({ workflowRunId: "123" });
-      expect((await client.callTool({ name: "builds.reconcile", arguments: args })).structuredContent).toEqual(result.structuredContent);
-      expect((await client.callTool({ name: "builds.reconcile", arguments: { ...args, idempotencyKey: "stale" } })).isError).toBe(true);
+      expect((await client.callTool({ name: "builds_reconcile", arguments: args })).structuredContent).toEqual(result.structuredContent);
+      expect((await client.callTool({ name: "builds_reconcile", arguments: { ...args, idempotencyKey: "stale" } })).isError).toBe(true);
       await f.control.tick(); expect((await f.store.read()).builds[0].state).toBe("running");
       expect(f.adapter.dispatch).toHaveBeenCalledTimes(1);
     } finally { await client.close(); await server.close(); }
@@ -166,14 +166,14 @@ it("MCP calls share build identities and omit unauthorized writes", async () => 
   const server = createMcpServer(unused, actor, undefined, { builds: f.control }), client = new Client({ name: "build-test", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
   try {
-    const preview = await client.callTool({ name: "builds.preview", arguments: input });
-    const started = await client.callTool({ name: "builds.start", arguments: { ...input, expectedFingerprint: (preview.structuredContent as any).fingerprint, idempotencyKey: "mcp-start" } });
+    const preview = await client.callTool({ name: "builds_preview", arguments: input });
+    const started = await client.callTool({ name: "builds_start", arguments: { ...input, expectedFingerprint: (preview.structuredContent as any).fingerprint, idempotencyKey: "mcp-start" } });
     expect(started.isError).not.toBe(true);
     expect((await f.call("builds.list", { workspaceId: "local" })).items[0].id).toBe((started.structuredContent as any).id);
   } finally { await client.close(); await server.close(); }
   const reader = createMcpServer(unused, { ...actor, scopes: ["builds.read"] }, undefined, { builds: f.control });
   const client2 = new Client({ name: "reader", version: "1" }), [c, d] = InMemoryTransport.createLinkedPair(); await reader.connect(c); await client2.connect(d);
-  try { expect((await client2.listTools()).tools.map(t => t.name)).not.toContain("builds.start"); } finally { await client2.close(); await reader.close(); }
+  try { expect((await client2.listTools()).tools.map(t => t.name)).not.toContain("builds_start"); } finally { await client2.close(); await reader.close(); }
 });
 it("verifies GitHub workflow identity and ZIP digest without forwarding credentials to artifact storage", async () => {
   const f = fixture(), build = await f.start(); build.workflowRunId = "123";

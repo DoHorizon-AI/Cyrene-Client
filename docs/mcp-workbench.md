@@ -4,52 +4,60 @@
 
 浏览器任务不能指定执行目录、预设或超时；这些参数由执行宿主约束。Client 不开放 Work 任务 PATCH 或执行器事件 POST，防止浏览器改写执行结果。工具调用仍经过原有身份、workspace、scope、修订号和幂等检查。Client HTTP/代理边界回归 8 项通过，本期未推送或部署。
 
-Client 的 MCP 入口、工具调试和可配置模型助手共享现有控制服务。默认不启用本地诊断，也不连接任何模型供应商。此功能不代表真实 GPU 训练、云服务器接管或 Product 业务接口已全部接通。
+Client 的 MCP 工具和网页画布使用同一控制服务、节点目录、版本检查及幂等回执。默认不启用本地诊断。AI Assistant 的对话、模型供应商和执行循环由 Navigator 管理；旧的单轮模型提议入口和控制服务模型环境配置已经移除。
 
 ## 启动与界面
 
-Node 24+，`npm ci` 后执行 `npm run dev`。通过「工具 → MCP 助手与工具调试」或「运行 → MCP 调试与本地测试」打开右侧窗口。
+Node 24+，`npm ci` 后执行 `npm run dev`。通过「工具 → MCP 工具调试」或「运行 → MCP 调试与本地测试」打开面板。
 
-- **工具调试**：连接 MCP 后读取当前身份真实可用的 tools/list；查看输入/输出 JSON Schema，填写 JSON 并调用，保留最近 30 次调用及结果。写入由独立按钮确认。版本号必须读取现态；重试同一写请求保持原参数和幂等键。
-- **对话**：配置模型后发送任务。模型提出工具调用，界面展示名称和完整参数；按顺序执行或拒绝，再点击「让 AI 根据结果继续」。建议、确认、真实返回分开；模型提议本身不执行命令。对话和调试记录只在当前页面内存保留；换流程或身份重置上下文。外部 AI 客户端仍可使用复制任务功能。
-- **接入与测试**：显示 HTTP 地址、权限和本地诊断入口。当前浏览器使用自身会话和 CSRF；不导出浏览器 token。
+- **工具调试**：连接后读取当前身份可用的 tools/list。输入/输出 JSON Schema 与正式命令共用；填入参数并手动调用，写入需点击确认按钮。面板保存最近 30 次调用记录。
+- **接入与测试**：显示 MCP endpoint、身份权限及本地 CPU 诊断入口。模型与 Agent 的选择、审批在 AI Assistant 中进行。
 
-AI 读取的是已保存的服务端流程。当前画布存在未保存修改时，同步继续保留本地内容并提示冲突。确认发出的写操作不会因切换页面自动撤销。
+界面显示 dotted 标题（例如 `pipelines.patch`），实际 MCP tool name 使用 underscore（`pipelines_patch`）。HTTP command name 仍用 dotted 名称。此改动不保留 dotted MCP 别名，避免名称重复和客户端兼容性分歧。
+
+AI 读取已保存的服务端流水线。画布有未保存编辑时，远端同步保留本地内容并提示冲突；已发出的写操作不会因切换页面自动撤销。MCP 添加节点与用户拖拽使用同一类型、默认配置和校验，`nodes_list_types` 正式返回 type/version/active、ports、fields、defaults、configSchema 和 execution 信息。
+
+## 权限、效果与恢复
+
+所有域通过同一个 `registerCommand` 注册：pipeline、runs、monitoring、builds、catalog、servers。共享定义声明 `requiredScopes`、`effects`（read/additive/update/destructive）及 `external`。HTTP permittedCommands 与 MCP tools/list 使用同一权限定义；执行服务重新检查 actor/workspace/scopes。
+
+工具名称符合 `^[a-z0-9_]{1,64}$`，启动时拒绝重名。只读、破坏性、幂等和外部访问 annotations 从定义生成；这些提示方便客户端判断，不替代服务端授权。save、patch、undo、redo、stop、archive 等可能删除或替换已有状态，标记 destructive；内部状态查询 openWorldHint=false，联系 Product/Platform/GitHub 的操作为 true。
+
+在 `cyrene://guide` 读取操作规则；`cyrene://context` 返回无凭据的真实身份、workspace 和 scopes；`workflow-assistant` prompt 说明读取、编辑、预检及结果核对流程。
+
+写工具都要求 `idempotencyKey`：
+
+- 同 key、同参数重放原回执。
+- 同 key、不同参数返回 `IDEMPOTENCY_CONFLICT`。
+- 新意图使用新 key；对结果未知的同一意图重试，保留原 key 和全部参数。
+
+expectedGraphRevision/expectedLayoutRevision/expectedRevision 取自当前 get/list/preview；`REVISION_CONFLICT` 要求重读与协调编辑。`runs_preflight`、`builds_preview`、`catalog_preview_activation` 的 fingerprint 必须原样用于对应写操作。预检不会创建任务或预约算力。
+
+工具错误统一包含 `code/message/outcome/retryable/requestId/recovery`（`isError=true`、text JSON）：
+
+- `rejected`：参数或授权不符，或控制服务明确拒绝。修正前不要重复发送。
+- `unknown`：执行开始后发生意外错误，或已写入但输出未通过契约校验。先读取现态及事件，再按原 key 和参数重试；不要用新 key 消除不确定性。
+
+日志包含同一个 requestId。`retryable` 表示可按 recovery 指引重试，并非建议自动持续重发。确认字段和按钮无法约束模型，真正的权限及审批必须由服务端执行。
+
+相同 workspace/actor/pipelineId/graphRevision/预检 fingerprint 的 active run 返回 `DUPLICATE_ACTIVE_RUN`，`details.existingRunId` 指向已有运行。相同 workspace/profile/sourceSha 的 active build（包括同 workspace 的其他操作者）返回 `DUPLICATE_ACTIVE_BUILD` 和 `details.existingBuildId`。幂等回执优先重放；终态后新意图可用新 key 再启动。构建 unknown 通过 `builds_reconcile` 核对原 GitHub run，不能重新派发来猜结果。
 
 ## HTTP 与 stdio 接入
 
-HTTP 地址为公开工作台 origin 加 `/studio-mcp`，支持当前 SDK 的 Streamable HTTP。每次请求重新验证身份、工具权限及 workspace；不缓存跨用户 MCP session。提供 tools、`cyrene://context` 身份资源、`cyrene://templates/local-diagnostic` 模板，以及 `workflow-assistant` prompt。监控继续使用 `monitoring.snapshot`、`runs.observe`、`runs.events`，不声称提供 MCP resource 推送订阅。
+endpoint 为公开工作台 origin 加 `/studio-mcp`，Streamable HTTP 使用 SDK 1.32.1，最高协商协议 **2025-11-25**。原生 SDK 处理 initialize、tools/list、tools/call、resources/read 和 prompts/get；无协议 session 的 GET/DELETE 返回 405。尚未实现 OAuth discovery 或第三方 MCP 聚合。
 
-使用 `@modelcontextprotocol/sdk@1.30.0`，最高协商协议为 **2025-11-25**；未实现 2026-07-28 新协议、OAuth discovery/登录或第三方 MCP server 聚合。客户端需支持该协议和显式 Bearer token。原生 SDK 按该版本处理 initialize、tools/list、tools/call、resources/read、prompts/get；GET/DELETE 在无协议 session 模式下返回 405。
+- 团队模式：浏览器账号菜单创建有效期 24 小时的专用 API 凭据，默认只读。API token 不能签发、列出或吊销 token；凭据管理只允许浏览器会话。吊销后下次请求立即失效。
+- 本地模式：服务端配置 `STUDIO_LOCAL_API_TOKEN`，外部客户端发送 Bearer。该凭据用于本机开发，轮换并重启使旧值失效。
+- Host/Origin、CSRF、workspace 和 scopes 每次重新检查。凭据不进入 URL、图文档、localStorage 或模型上下文。
+- `STUDIO_MCP_READ_ONLY=1` 限制 MCP 工具；它不代替用户权限，也不禁用独立 REST 编辑。
 
-- 团队模式：账号菜单选择「只读」或「当前操作权限」，创建有效期 24 小时的专用 API 凭据。默认只读；不能赋予自身没有的权限。列表只显示指纹、期限和 scopes，可撤销自己的凭据，下一次 MCP 请求即失效。凭据管理属于身份管理，不交给模型工具。
-- 本地模式：服务端配置 `STUDIO_LOCAL_API_TOKEN`，外部客户端发送 `Authorization: Bearer <token>`。这是本机开发凭据；轮换配置并重启控制服务使旧值失效。
-- 浏览器请求校验 Host/Origin 和 POST CSRF；带 Bearer 的请求也校验已有 Origin。API token 不放 URL、图文档、浏览器 localStorage 或模型上下文。
-- `STUDIO_MCP_READ_ONLY=1` 限制 HTTP MCP 与内置模型工具目录；stdio 启动进程也应配置此变量。它不取代用户权限，也不禁用独立 REST 的正常编辑功能。
-
-stdio 客户端直接启动 Node，避免 npm 标题污染 stdout。例如配置进程参数：
+stdio 直接启动 Node，避免 npm 输出污染协议 stdout：
 
 ```text
 node C:/work/Cyrene-Client/node_modules/tsx/dist/cli.mjs C:/work/Cyrene-Client/apps/mcp/main.ts
 ```
 
-同时为该进程注入 `STUDIO_CONTROL_URL=http://127.0.0.1:5280`（指向实际控制服务）和 `STUDIO_API_TOKEN`。不设置 URL 时现在拒绝启动，防止误写第二套存储。历史 JSON 模式必须显式设置 `STUDIO_MCP_LEGACY_FILES=1`；仅供旧 `dev:legacy` 工作区，不与 SQLite/PostgreSQL 混用。
-
-## 模型配置与数据路径
-
-在服务端 `.env.local` 设置后重启控制服务：
-
-```dotenv
-STUDIO_ASSISTANT_URL=https://your-provider.example/v1/chat/completions
-STUDIO_ASSISTANT_MODEL=your-tool-capable-model
-STUDIO_ASSISTANT_API_KEY_FILE=/private/model-key
-```
-
-也可用 `STUDIO_ASSISTANT_API_KEY`，但不能与文件配置同时使用。URL 必须为 HTTPS 或本机回环 HTTP，禁止 URL 凭据、query/fragment 及重定向。不使用 `VITE_` 前缀。容器可用 `compose.assistant.yaml` 叠加层挂载密钥文件；模型 URL 需为容器可达的 HTTPS 地址。
-
-供应商需实现 Chat Completions 的 function tools、非流式 assistant/tool 消息。配置 URL 是完整 endpoint，不自动拼接。模型收到任务、工作空间/流程 ID、已允许工具的 schema，以及用户选择继续发送的工具结果；不自动发送全部工作空间或秘密。供应商差异须实际验证，不声称支持任意聊天 API。
-
-服务端 `/studio-assistant/v1/turn` 验证会话/CSRF、workspace 和 `pipelines.read`；只生成提议。实际调用仍经浏览器 MCP 和同一个控制服务。每人最多一个在途模型请求，全服务最多 16 个，25 秒超时；请求 256 KiB、响应 1 MiB、历史 60 条和每轮 4 个调用上限。上下文过长时新开对话，不静默丢掉审批/调用结果。
+为进程设置 `STUDIO_CONTROL_URL=http://127.0.0.1:5280` 和专用 `STUDIO_API_TOKEN`，指向同一控制服务。缺 URL 时拒绝启动；旧 JSON 模式需显式 `STUDIO_MCP_LEGACY_FILES=1`，不与 SQLite/PostgreSQL 混用。
 
 ## 可重复的本地运行测试
 
@@ -67,6 +75,8 @@ STUDIO_LOCAL_DIAGNOSTICS=1
 
 ## 开发与回归
 
-新增可操作功能先设计应用命令的输入/输出、作用域、版本、幂等与状态查询，再接 UI/MCP；不能只在组件中增加独占逻辑。只属于视图的折叠/颜色等行为无需工具化，但应明确区别于业务操作。新增工具须更新真实 tools/list 注册、菜单/面板入口、说明和回归测试。
+新增业务能力先定义共享命令、权限、版本、幂等与未知结果的恢复方式，再接 UI 和 MCP。Yield/Catalyst/Echo/Reactor 的直接业务工具仍属未来接入；现阶段可用的 Product 读取接口不代表训练、制品发布或部署写权限已开放。
 
-`tests/unit/mcp-platform.test.ts` 验证 HTTP 协议、资源、权限、创建/排版/预检/运行/停止及诊断持久化；`assistant.test.ts` 使用明确模型夹具，验证模型提议不会写入；`tests/control-e2e/mcp.spec.ts` 使用真实控制服务/MCP 和浏览器验证手工批准、调试调用和 Navigator 实时日志。模型夹具不代表外部模型联调；本地诊断不代表 Product/GPU 业务验收。
+更新能力不暴露为 MCP 工具。更新仅在 local 模式由用户确认，可能重启组件；不能让模型用参数中的确认字段绕过审批。
+
+`mcp-command-contracts.test.ts` 验证 tools/list 唯一名称、annotations、schema、共享权限，以及真实 tools/call 的输入拒绝、写入后输出错误 unknown、服务器/构建/目录回执和版本冲突、active 去重与终态再启动。`mcp-platform.test.ts` 验证 HTTP 身份、资源、预检、运行和停止。浏览器 `tests/control-e2e/mcp.spec.ts` 验证手动写入、原 key 重试及 Navigator 诊断观测。测试构建适配器不会请求 GitHub；CPU 诊断不代表 Product/GPU 验收。

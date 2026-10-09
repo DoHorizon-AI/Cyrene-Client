@@ -35,15 +35,15 @@ export const auditEvent = z.object({
 }).strict();
 const workspace = z.object({ workspaceId: identifier }).strict();
 const target = workspace.extend({ serverId: identifier });
-const mutation = target.extend({ expectedRevision: z.number().int().positive() });
+const mutation = target.extend({ expectedRevision: z.number().int().positive().describe("Current registration revision from servers_list/servers_resolve. A changed revision is rejected; reread before preparing a new write.") });
 export const commands = {
-  "servers.list": { input: workspace, output: z.object({ items: z.array(serverRecord) }).strict(), scope: "servers.read", readOnly: true },
-  "servers.status": { input: target, output: observation, scope: "servers.read", readOnly: true },
-  "servers.resolve": { input: target, output: resolvedServerSchema, scope: "servers.read", readOnly: true, description: "核对当前登记与在线 Node 身份；返回登记版本及 Node epoch，不申请资源租约。" },
-  "servers.events": { input: workspace.extend({ after: z.number().int().nonnegative().default(0) }), output: z.object({ items: z.array(auditEvent), nextCursor: z.number().int().nonnegative() }).strict(), scope: "servers.read", readOnly: true },
-  "servers.register": { input: workspace.extend({ spec: serverSpec }), output: serverRecord, scope: "servers.write", readOnly: false },
-  "servers.update": { input: mutation.extend({ spec: serverSpec }), output: serverRecord, scope: "servers.write", readOnly: false },
-  "servers.archive": { input: mutation, output: serverRecord, scope: "servers.write", readOnly: false },
+  "servers.list": { requiredScopes: ["servers.read"], effects: "read", external: false, input: workspace, output: z.object({ items: z.array(serverRecord) }).strict(), scope: "servers.read", readOnly: true, description: "列出工作空间的服务器登记及修订号，登记不代表已在线或已分配算力。" },
+  "servers.status": { requiredScopes: ["servers.read"], effects: "read", external: true, input: target, output: observation, scope: "servers.read", readOnly: true, description: "查询当前服务器的权威在线观测和可用监控能力，不连接远程 shell 或申请资源。" },
+  "servers.resolve": { requiredScopes: ["servers.read"], effects: "read", external: true, input: target, output: resolvedServerSchema, scope: "servers.read", readOnly: true, description: "核对当前登记与在线 Node 身份；返回登记版本及 Node epoch，不申请资源租约。" },
+  "servers.events": { requiredScopes: ["servers.read"], effects: "read", external: false, input: workspace.extend({ after: z.number().int().nonnegative().default(0).describe("Last nextCursor from servers_events; use 0 for the initial audit page. Events strictly after this sequence are returned.") }), output: z.object({ items: z.array(auditEvent), nextCursor: z.number().int().nonnegative().describe("Pass this durable audit sequence as after on the next servers_events read.") }).strict(), scope: "servers.read", readOnly: true, description: "按持久化游标读取服务器登记变更审计；返回 nextCursor 用于继续读取。" },
+  "servers.register": { requiredScopes: ["servers.write"], effects: "additive", external: false, input: workspace.extend({ spec: serverSpec }), output: serverRecord, scope: "servers.write", readOnly: false, description: "登记连接引用和资源意向；不安装 Agent、不连接服务器，也不申请资源租约。" },
+  "servers.update": { requiredScopes: ["servers.write"], effects: "update", external: false, input: mutation.extend({ spec: serverSpec }), output: serverRecord, scope: "servers.write", readOnly: false, description: "按当前 expectedRevision 更新服务器登记；不改变外部任务或服务器配置。" },
+  "servers.archive": { requiredScopes: ["servers.write"], effects: "destructive", external: false, input: mutation, output: serverRecord, scope: "servers.write", readOnly: false, description: "按当前 expectedRevision 归档服务器登记；不会停机、停止任务或删除外部资源。" },
 } as const;
 export type CommandName = keyof typeof commands;
 export type Output<N extends CommandName> = z.infer<(typeof commands)[N]["output"]>;
@@ -55,5 +55,7 @@ export const commandRequest = z.object({
 // 由可信传输层提供，不从模型或浏览器请求正文中接收。
 export interface Actor { id: string; workspaceIds: string[]; scopes: string[] }
 export class ControlError extends Error {
-  constructor(public code: string, message: string, public status = 400) { super(message); }
+  constructor(public code: string, message: string, public status = 400,
+    public details?: { existingRunId?: string; existingBuildId?: string },
+    public outcome: "rejected" | "unknown" = "rejected") { super(message); }
 }

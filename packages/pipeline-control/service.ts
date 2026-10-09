@@ -57,7 +57,7 @@ export class PipelineControl {
     if (!Object.hasOwn(pipelineCommands, request.name)) throw new ControlError("UNKNOWN_COMMAND", "未知流水线操作。");
     const name = request.name as PipelineCommand, definition = pipelineCommands[name];
     const input = definition.input.parse(request.input);
-    if (!actor.workspaceIds.includes(input.workspaceId) || !actor.scopes.includes(definition.readOnly ? "pipelines.read" : "pipelines.write")) throw new ControlError("FORBIDDEN", "没有此工作空间的流水线权限。", 403);
+    if (!actor.workspaceIds.includes(input.workspaceId) || !definition.requiredScopes.every(scope => actor.scopes.includes(scope))) throw new ControlError("FORBIDDEN", "没有此工作空间的流水线权限。", 403);
     if (name === "nodes.list_types") return { items: allDefinitions().map(({ configSchema, ...d }) => ({ ...d, active: getDefinition(d.type)?.version === d.version, configSchema: zodToJsonSchema(configSchema, { $refStrategy: "none" }) })) };
     if (name === "pipelines.preview_layout") {
       const args = pipelineCommands[name].input.parse(input);

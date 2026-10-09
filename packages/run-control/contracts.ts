@@ -28,7 +28,7 @@ export const stepSchema = z.object({
 export const runSchema = z.object({
   id: identifier, workspaceId: identifier, pipelineId: identifier, graphRevision: z.number().int().positive(), revision: z.number().int().positive(),
   document: pipelineSchema, state: z.enum(["queued", "running", "succeeded", "failed", "stopping", "stopped", "attention"]),
-  parentRunId: identifier.optional(), createdAt: z.string().datetime(), createdBy: identifier, placements: z.record(identifier, placementSchema), steps: z.array(stepSchema),
+  parentRunId: identifier.optional(), preflightFingerprint: z.string().length(64).optional(), createdAt: z.string().datetime(), createdBy: identifier, placements: z.record(identifier, placementSchema), steps: z.array(stepSchema),
   targets: z.record(identifier, z.array(resolvedServerSchema)).default({}),
 });
 export type Run = z.infer<typeof runSchema>;
@@ -39,23 +39,23 @@ export type RunDatabase = z.infer<typeof runDatabase>;
 export const emptyRunDatabase = (): RunDatabase => ({ version: 1, runs: [], attempts: [], events: [], receipts: [] });
 const workspace = z.object({ workspaceId: identifier }).strict();
 const target = workspace.extend({ runId: identifier });
-const eventInput = target.extend({ after: z.number().int().nonnegative().safe().default(0), limit: z.number().int().positive().max(500).default(100) });
-export const runObservationSchema = z.object({ run: runSchema, items: z.array(runEventSchema), cursor: z.number().int().nonnegative().safe() });
-const changeInput = target.extend({ expectedRevision: z.number().int().positive(), nodeId: identifier, config: nodeSchema.shape.config });
-const startInput = workspace.extend({ pipelineId: identifier, expectedGraphRevision: z.number().int().positive(), placements: z.record(identifier, placementSchema).default({}) });
+const eventInput = target.extend({ after: z.number().int().nonnegative().safe().default(0).describe("Last returned cursor; 0 starts from the beginning. Return only events after this durable sequence."), limit: z.number().int().positive().max(500).default(100) });
+export const runObservationSchema = z.object({ run: runSchema, items: z.array(runEventSchema), cursor: z.number().describe("Pass this durable event sequence as after on the next event read.").int().describe("Pass this durable event sequence as after on the next event read.").nonnegative().safe().describe("Pass this durable event sequence as after on the next observation.") });
+const changeInput = target.extend({ expectedRevision: z.number().int().positive().describe("Current expectedRevision from the corresponding read/preview. Stale values are rejected; reread before creating a new request."), nodeId: identifier, config: nodeSchema.shape.config });
+const startInput = workspace.extend({ pipelineId: identifier, expectedGraphRevision: z.number().int().positive().describe("Current expectedGraphRevision from the corresponding read/preview. Stale values are rejected; reread before creating a new request."), placements: z.record(identifier, placementSchema).default({}) });
 export const preflightSchema = z.object({ fingerprint: z.string(), issues: z.array(z.object({ nodeId: z.string().optional(), code: z.string(), message: z.string() })), capabilities: z.record(capabilitiesSchema), placements: z.record(placementSchema), targets: z.record(identifier, z.array(resolvedServerSchema)).default({}) });
 export const changePreviewSchema = z.object({ fingerprint: z.string(), mode: z.enum(["online", "branch", "checkpoint-branch", "rejected"]), affected: z.array(identifier), reusable: z.array(identifier), message: z.string(), expectedRevision: z.number().int() });
 export const runCommands = {
-  "runs.observe": { input: eventInput, output: runObservationSchema, readOnly: true, description: "从同一持久化快照读取运行状态与增量事件；使用返回游标继续读取，断线后可补齐。" },
-  "runs.attempts": { input: target, output: z.object({ items: z.array(runDatabase.shape.attempts._def.innerType.element) }), readOnly: true, description: "读取运行中各节点的持久化执行代次及权威观测。" },
-  "runs.artifacts": { input: target, output: z.object({ items: z.array(z.object({ nodeId: identifier, port: z.string(), artifact: artifactSchema, checkpoint: z.boolean() })) }), readOnly: true, description: "读取当前运行的已确认输出与检查点引用；不隐式下载或删除制品。" },
-  "runs.preflight": { input: startInput, output: preflightSchema, readOnly: true, description: "检查版本、节点执行能力及资源条件；不会创建任务或申请资源。" },
-  "runs.start": { input: startInput.extend({ expectedFingerprint: z.string().length(64) }), output: runSchema, readOnly: false, description: "提交固定图版本和镜像的工作流运行；需要 runs.write、pipelines.read 权限和幂等键。" },
-  "runs.list": { input: workspace, output: z.object({ items: z.array(runSchema.omit({ document: true, steps: true })) }), readOnly: true, description: "列出工作空间运行和分支。" },
-  "runs.get": { input: target, output: runSchema, readOnly: true, description: "读取任务关联、期望/实际配置、执行代次和结果。" },
-  "runs.events": { input: target.extend({ after: z.number().int().nonnegative().default(0), limit: z.number().int().positive().max(500).default(100) }), output: z.object({ items: z.array(runEventSchema), cursor: z.number().int() }), readOnly: true, description: "按持久化游标读取运行事件；断线后可补齐。" },
-  "runs.preview_change": { input: changeInput, output: changePreviewSchema, readOnly: true, description: "预览在线调整或新分支的影响，不改变执行。" },
-  "runs.apply_change": { input: changeInput.extend({ expectedFingerprint: z.string().length(64) }), output: runSchema, readOnly: false, description: "提交已预览的运行变更，版本变化时拒绝；影响下游时保留旧分支。" },
-  "runs.stop": { input: target.extend({ expectedRevision: z.number().int().positive() }), output: runSchema, readOnly: false, description: "记录停止意图；以执行权威确认的停止状态为准。" },
-  "runs.resume": { input: target.extend({ expectedRevision: z.number().int().positive() }), output: runSchema, readOnly: false, description: "恢复已确认终止的运行步骤；未知结果或仍在运行的步骤必须先核对。" },
+  "runs.observe": { requiredScopes: ["runs.read"], effects: "read", external: false, input: eventInput, output: runObservationSchema, readOnly: true, description: "从同一持久化快照读取运行状态与增量事件；使用返回游标继续读取，断线后可补齐。" },
+  "runs.attempts": { requiredScopes: ["runs.read"], effects: "read", external: false, input: target, output: z.object({ items: z.array(runDatabase.shape.attempts._def.innerType.element) }), readOnly: true, description: "读取运行中各节点的持久化执行代次及权威观测。" },
+  "runs.artifacts": { requiredScopes: ["runs.read"], effects: "read", external: false, input: target, output: z.object({ items: z.array(z.object({ nodeId: identifier, port: z.string(), artifact: artifactSchema, checkpoint: z.boolean() })) }), readOnly: true, description: "读取当前运行的已确认输出与检查点引用；不隐式下载或删除制品。" },
+  "runs.preflight": { requiredScopes: ["runs.read", "pipelines.read"], effects: "read", external: true, input: startInput, output: preflightSchema, readOnly: true, description: "检查版本、节点执行能力及资源条件；不会创建任务或申请资源。返回的 fingerprint 用于 runs_start.expectedFingerprint，保持相同参数和图版本。" },
+  "runs.start": { requiredScopes: ["runs.write", "pipelines.read"], effects: "additive", external: true, input: startInput.extend({ expectedFingerprint: z.string().length(64).describe("Exact fingerprint from the corresponding preflight/preview using these parameters. A changed plan is rejected; preview again before a new request.") }), output: runSchema, readOnly: false, description: "提交固定图版本和镜像的工作流运行；需要 runs.write、pipelines.read 权限和幂等键。" },
+  "runs.list": { requiredScopes: ["runs.read"], effects: "read", external: false, input: workspace, output: z.object({ items: z.array(runSchema.omit({ document: true, steps: true })) }), readOnly: true, description: "列出工作空间运行和分支。" },
+  "runs.get": { requiredScopes: ["runs.read"], effects: "read", external: false, input: target, output: runSchema, readOnly: true, description: "读取任务关联、期望/实际配置、执行代次和结果。" },
+  "runs.events": { requiredScopes: ["runs.read"], effects: "read", external: false, input: target.extend({ after: z.number().int().nonnegative().default(0).describe("Last returned cursor; 0 starts from the beginning. Return only events after this durable sequence."), limit: z.number().int().positive().max(500).default(100) }), output: z.object({ items: z.array(runEventSchema), cursor: z.number().describe("Pass this durable event sequence as after on the next event read.").int().describe("Pass this durable event sequence as after on the next event read.") }), readOnly: true, description: "按持久化游标读取运行事件；断线后可补齐。" },
+  "runs.preview_change": { requiredScopes: ["runs.read"], effects: "read", external: false, input: changeInput, output: changePreviewSchema, readOnly: true, description: "预览在线调整或新分支的影响，不改变执行。" },
+  "runs.apply_change": { requiredScopes: ["runs.write"], effects: "update", external: true, input: changeInput.extend({ expectedFingerprint: z.string().length(64).describe("Exact fingerprint from the corresponding preflight/preview using these parameters. A changed plan is rejected; preview again before a new request.") }), output: runSchema, readOnly: false, description: "提交已预览的运行变更，版本变化时拒绝；影响下游时保留旧分支。" },
+  "runs.stop": { requiredScopes: ["runs.write"], effects: "destructive", external: true, input: target.extend({ expectedRevision: z.number().int().positive().describe("Current expectedRevision from the corresponding read/preview. Stale values are rejected; reread before creating a new request.") }), output: runSchema, readOnly: false, description: "记录停止意图；以执行权威确认的停止状态为准。" },
+  "runs.resume": { requiredScopes: ["runs.write"], effects: "update", external: true, input: target.extend({ expectedRevision: z.number().int().positive().describe("Current expectedRevision from the corresponding read/preview. Stale values are rejected; reread before creating a new request.") }), output: runSchema, readOnly: false, description: "恢复已确认终止的运行步骤；未知结果或仍在运行的步骤必须先核对。" },
 } as const;
