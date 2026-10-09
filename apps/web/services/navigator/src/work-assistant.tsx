@@ -7,7 +7,8 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import QRCode from "qrcode";
 import { makeIdempotencyKey, NavigatorHttpError, type MemoryFact, type NavigatorApi, type NavigatorTaskEvent, type NavigatorTaskRecord, type QqConnectorHealth, type QqLoginChallenge, type WorkApproval, type WorkAttachment, type WorkConnector, type WorkInput, type WorkNotification } from "./api";
-import { assistantEventLabel, readAssistantTaskEvents } from "./task-event-stream";
+import { assistantEventLabel } from "./task-event-stream";
+import { useTaskStream } from "./useTaskStream";
 import { isQqQrExpired } from "./qq-login";
 import { Button, PageHeader, Panel, StateBlock, StatusPill } from "./components";
 import { useI18n } from "./i18n";
@@ -42,11 +43,7 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const [bindingId, setBindingId] = useState(""), [qqHealth, setQqHealth] = useState<QqConnectorHealth | null>(null), [qqError, setQqError] = useState("");
   const [challenge, setChallenge] = useState<QqChallengeView | null>(null), [qrImage, setQrImage] = useState(""), [qrBusy, setQrBusy] = useState(false);
   const [attachments, setAttachments] = useState<WorkAttachment[]>([]), [attachmentBusy, setAttachmentBusy] = useState(false), [attachmentError, setAttachmentError] = useState("");
-  const taskDetailRef = useRef<NavigatorTaskRecord | null>(null);
-  const taskStreamControllerRef = useRef<AbortController | null>(null);
-  const streamCursors = useRef(new Map<string, number>());
   const inputMessageIdsRef = useRef(new Map<string, { answer: string; messageId: string }>());
-  useEffect(() => { taskDetailRef.current = taskDetail; }, [taskDetail]);
   const effectiveWorkspaceId = workspaceId;
   const workspaceKnown = !!hostWorkspaceId && !!capabilityWorkspaceId;
   const workspaceAligned = workspaceKnown && hostWorkspaceId === workspaceId && capabilityWorkspaceId === workspaceId;
@@ -96,62 +93,24 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
     return () => controller.abort();
   }, [api, selectedTaskId]);
 
-  useEffect(() => {
-    if (!selectedTaskId || (taskDetail?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetail.status))) return;
-    const controller = new AbortController();
-    taskStreamControllerRef.current = controller;
-    let cursor = streamCursors.current.get(selectedTaskId) ?? 0;
-    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-    let refreshing = false, refreshAgain = false;
-    const refresh = async () => {
-      if (controller.signal.aborted) return;
-      if (refreshing) { refreshAgain = true; return; }
-      refreshing = true;
-      try {
-        const value = await api.getAssistantTask(selectedTaskId, controller.signal);
-        if (!controller.signal.aborted) {
-          setTaskDetail(current => current?.id === value.id && current.sequence > value.sequence ? current : value);
-          setTasks(current => current.map(task => task.id === value.id && task.sequence <= value.sequence ? value : task));
-          const [nextApprovals, nextInputs] = await Promise.all([api.getWorkApprovals(effectiveWorkspaceId), api.getWorkInputs(effectiveWorkspaceId)]);
-          if (!controller.signal.aborted) { setApprovals(nextApprovals); setPendingInputs(nextInputs); }
-        }
-      } catch (error) { if (!controller.signal.aborted) setDetailError(errorText(error)); }
-      finally { refreshing = false; if (refreshAgain && !controller.signal.aborted) { refreshAgain = false; scheduleRefresh(); } }
-    };
-    const scheduleRefresh = () => {
-      if (refreshTimer || controller.signal.aborted) return;
-      refreshTimer = setTimeout(() => { refreshTimer = undefined; void refresh(); }, 500);
-    };
-    const connect = async () => {
-      while (!controller.signal.aborted) {
-        try {
-          const response = await api.openAssistantTaskEvents(selectedTaskId, cursor, controller.signal);
-          cursor = await readAssistantTaskEvents(response, cursor, controller.signal, event => {
-            if (controller.signal.aborted) return;
-            streamCursors.current.set(selectedTaskId, event.sequence);
-            setTaskEvents(previous => previous.some(item => item.sequence === event.sequence) ? previous : [...previous.slice(-99), event]);
-            scheduleRefresh();
-          });
-        } catch (error) {
-          if (controller.signal.aborted) return;
-          setStreamError(errorText(error));
-          if (error instanceof NavigatorHttpError && error.status < 500 && error.status !== 408 && error.status !== 429) return;
-        }
-        if (controller.signal.aborted || (taskDetailRef.current?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetailRef.current.status))) return;
-        await pause(1200, controller.signal);
-      }
-    };
-    void connect();
-    return () => {
-      controller.abort();
-      clearTimeout(refreshTimer);
-      if (taskStreamControllerRef.current === controller) taskStreamControllerRef.current = null;
-    };
-  }, [api, selectedTaskId, effectiveWorkspaceId, taskDetail?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetail.status)]);
-
-  useEffect(() => {
-    if (taskDetail?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetail.status)) taskStreamControllerRef.current?.abort();
-  }, [taskDetail?.status]);
+  useTaskStream({
+    api, taskId: selectedTaskId, scopeKey: workspaceId,
+    terminal: taskDetail?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetail.status),
+    onEvent: event => setTaskEvents(previous => previous.some(item => item.sequence === event.sequence) ? previous : [...previous.slice(-99), event]),
+    onTask: value => {
+      setTaskDetail(current => current?.id === value.id && current.sequence > value.sequence ? current : value);
+      setTasks(current => current.map(task => task.id === value.id && task.sequence <= value.sequence ? value : task));
+    },
+    onRefresh: async signal => {
+      const [nextApprovals, nextInputs] = await Promise.allSettled([api.getWorkApprovals(effectiveWorkspaceId), api.getWorkInputs(effectiveWorkspaceId)]);
+      if (signal.aborted) return;
+      if (nextApprovals.status === "fulfilled") { setApprovals(nextApprovals.value); setApprovalsError(""); }
+      else setApprovalsError(errorText(nextApprovals.reason));
+      if (nextInputs.status === "fulfilled") { setPendingInputs(nextInputs.value); setInputsError(""); }
+      else setInputsError(errorText(nextInputs.reason));
+    },
+    onError: (error, source) => source === "stream" ? setStreamError(errorText(error)) : setDetailError(errorText(error)),
+  });
 
   useEffect(() => {
     if (!bindingId) { setQqHealth(null); return; }
@@ -439,13 +398,4 @@ async function fileToBase64(file: File): Promise<string> {
     binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
   }
   return btoa(binary);
-}
-
-function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  return new Promise(resolve => {
-    const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", finish); resolve(); };
-    const timer = setTimeout(finish, milliseconds);
-    signal.addEventListener("abort", finish, { once: true });
-  });
 }

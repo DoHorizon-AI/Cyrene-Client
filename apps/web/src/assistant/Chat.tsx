@@ -1,7 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavigatorApi, NavigatorHttpError, makeIdempotencyKey, type AssistantCapabilities, type AssistantExecution, type AssistantPermission, type AssistantProtocol, type AssistantProvider, type AssistantRuntime, type NavigatorTaskEvent, type NavigatorTaskRecord, type SessionPayload, type WorkApproval, type WorkAttachment, type WorkInput } from "../../services/navigator/src/api";
 import type { ExecutorSchemas } from "../../services/navigator/src/generated/contracts";
-import { assistantEventLabel, readAssistantTaskEvents } from "../../services/navigator/src/task-event-stream";
+import { assistantEventLabel } from "../../services/navigator/src/task-event-stream";
+import { useTaskStream } from "../../services/navigator/src/useTaskStream";
 import { useNavigatorSession } from "../services/NavigatorSessionProvider";
 import { useTeamIdentity } from "../team/TeamGate";
 import { useI18n } from "../i18n";
@@ -48,10 +49,9 @@ export default function Chat(props: AssistantWindowProps) {
   const [pending, setPending] = useState<Submission | null>(null);
   const [approvals, setApprovals] = useState<WorkApproval[]>([]), [inputs, setInputs] = useState<WorkInput[]>([]), [answers, setAnswers] = useState<Record<string, string>>({});
   const [taskEvents, setTaskEvents] = useState<Record<string, NavigatorTaskEvent[]>>({});
-  const [pageVisible, setPageVisible] = useState(() => !document.hidden);
   const [restoringHistory, setRestoringHistory] = useState(false);
   const mounted = useRef(true), selected = useRef(sessionId), operation = useRef(false), follow = useRef(true);
-  const streamCursors = useRef(new Map<string, number>()), fileInput = useRef<HTMLInputElement>(null), transcript = useRef<HTMLDivElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null), transcript = useRef<HTMLDivElement>(null);
   const inputRequests = useRef(new Map<string, { answer: string; messageId: string }>());
   const historyExtended = useRef(false);
   const restoredTargets = useRef(new Set<string>());
@@ -73,11 +73,6 @@ export default function Chat(props: AssistantWindowProps) {
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { if (props.toolsRequest) { setMcpVisited(true); setView("mcp"); } }, [props.toolsRequest]);
-  useEffect(() => {
-    const changed = () => setPageVisible(!document.hidden);
-    document.addEventListener("visibilitychange", changed);
-    return () => document.removeEventListener("visibilitychange", changed);
-  }, []);
   useEffect(() => { try { if (sessionId) localStorage.setItem(selectionKey, sessionId); else localStorage.removeItem(selectionKey); } catch { /* Selection is optional UI state. */ } }, [sessionId, selectionKey]);
   const fail = (reason: unknown) => { if (mounted.current) setError(message(reason)); };
 
@@ -88,9 +83,9 @@ export default function Chat(props: AssistantWindowProps) {
     if (!historyExtended.current) setNextCursor(page.nextCursor);
   }, [api]);
 
-  const reloadApprovals = useCallback(async () => {
+  const reloadApprovals = useCallback(async (signal?: AbortSignal) => {
     const results = await Promise.allSettled([api.getWorkApprovals(effectiveWorkspace), api.getWorkInputs(effectiveWorkspace)]);
-    if (!mounted.current) return;
+    if (!mounted.current || signal?.aborted) return;
     if (results[0].status === "fulfilled") setApprovals(results[0].value);
     if (results[1].status === "fulfilled") setInputs(results[1].value);
   }, [api, effectiveWorkspace]);
@@ -184,52 +179,14 @@ export default function Chat(props: AssistantWindowProps) {
     return () => { active = false; clearTimeout(timer); document.removeEventListener("visibilitychange", wake); window.removeEventListener("online", wake); };
   }, [auth?.authenticated, props.visible, activeTask?.id, pending?.requestId, reloadTasks, reloadApprovals]);
 
-  useEffect(() => {
-    if (!observedTask || !props.visible || !pageVisible || !auth?.authenticated) return;
-    const taskId = observedTask.id, controller = new AbortController();
-    const terminal = !isActiveTask(observedTask);
-    let failures = 0, refreshTimer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => {
-      if (refreshTimer || controller.signal.aborted) return;
-      refreshTimer = setTimeout(() => {
-        refreshTimer = undefined;
-        void api.getAssistantTask(taskId, controller.signal).then(task => {
-          if (!controller.signal.aborted) setTasks(previous => mergeTaskRecords(previous, [task]));
-        }, reason => { if (!controller.signal.aborted) fail(reason); });
-        void reloadApprovals();
-      }, 500);
-    };
-    const connect = async () => {
-      while (!controller.signal.aborted && !document.hidden) {
-        try {
-          const cursor = streamCursors.current.get(taskId) ?? 0;
-          const response = await api.openAssistantTaskEvents(taskId, cursor, controller.signal);
-          await readAssistantTaskEvents(response, cursor, controller.signal, event => {
-            if (controller.signal.aborted) return;
-            streamCursors.current.set(taskId, event.sequence);
-            setTaskEvents(previous => ({ ...previous, [taskId]: [...(previous[taskId] ?? []).filter(item => item.sequence !== event.sequence).slice(-99), event] }));
-            refresh();
-          });
-          if (terminal) return;
-          failures = 0;
-        } catch (reason) {
-          if (controller.signal.aborted) return;
-          fail(reason);
-          if (reason instanceof NavigatorHttpError && reason.status < 500 && ![408, 429].includes(reason.status)) return;
-          failures++;
-        }
-        await new Promise<void>(resolve => {
-          const finish = () => { clearTimeout(timer); controller.signal.removeEventListener("abort", finish); resolve(); };
-          const timer = setTimeout(finish, Math.min(30_000, 1000 * 2 ** Math.min(failures, 5)));
-          controller.signal.addEventListener("abort", finish, { once: true });
-        });
-      }
-    };
-    const wake = () => { if (document.hidden) controller.abort(); };
-    document.addEventListener("visibilitychange", wake);
-    void connect();
-    return () => { controller.abort(); clearTimeout(refreshTimer); document.removeEventListener("visibilitychange", wake); };
-  }, [api, auth?.authenticated, observedTask?.id, observedTask?.status, props.visible, pageVisible, reloadApprovals]);
+  useTaskStream({
+    api, taskId: observedTask?.id, scopeKey: selectionKey, enabled: props.visible && !!auth?.authenticated,
+    terminal: !!observedTask && !isActiveTask(observedTask), replayTerminal: true,
+    onEvent: (event, taskId) => setTaskEvents(previous => ({ ...previous, [taskId]: [...(previous[taskId] ?? []).filter(item => item.sequence !== event.sequence).slice(-99), event] })),
+    onTask: task => setTasks(previous => mergeTaskRecords(previous, [task])),
+    onRefresh: reloadApprovals,
+    onError: fail,
+  });
 
   useEffect(() => {
     if (!pending) return;
