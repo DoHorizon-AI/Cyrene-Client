@@ -42,6 +42,8 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run check
+      - name: Build the standalone Workspace Web root
+        run: npm run build:workspace-web
       - name: Build Studio web and control images
         run: |
           docker build -f deploy/studio.Dockerfile --target web --tag cyrene-studio:web-development .

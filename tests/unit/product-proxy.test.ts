@@ -3,7 +3,7 @@ import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SqliteStoreFactory } from "../../tooling/sqlite-store";
 import { createControlApplication } from "../../apps/control/application";
-import { productPermission } from "../../tooling/product-proxy";
+import { admittedLoopbackTarget, directProductUpstreamPath, productPermission } from "../../tooling/product-proxy";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -118,6 +118,124 @@ it("allowlists the Catalyst trial collection and encoded opaque block identifier
   expect(productPermission("POST", "/api/v1/catalyst/api/v1/datasets/ds-1/sources/batch")).toBe("products.write");
   expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets/ds-1/source-parse-reports")).toBe("products.read");
   expect(productPermission("GET", "/api/v1/catalyst/api/v1/datasets/ds-1/review-queue")).toBe("products.read");
+  expect(productPermission("GET", "/api/v1/catalyst/api/v1/content-revisions/rev-1/training-records")).toBe("products.read");
+  expect(productPermission("POST", "/api/v1/catalyst/api/v1/content-revisions/rev-1/training-records:edit")).toBe("products.write");
+  expect(productPermission("DELETE", "/api/v1/catalyst/api/v1/content-revisions/rev-1/training-records")).toBeNull();
   expect(productPermission("POST", "/api/v1/catalyst/api/v1/review-items/review%3A1/resolve")).toBe("products.operate");
   expect(productPermission("DELETE", "/api/v1/catalyst/api/v1/datasets/ds-1/sources")).toBeNull();
+});
+
+async function directFixture(includeEcho = true) {
+  const received: { url: string; body: string; authorization?: string; cookie?: string; csrf?: string; origin?: string }[] = [];
+  const upstream = createServer(async (req, res) => {
+    const chunks: Buffer[] = []; for await (const part of req) chunks.push(part);
+    received.push({ url: req.url!, body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization, cookie: req.headers.cookie, csrf: req.headers["x-csrf-token"] as string | undefined, origin: req.headers.origin });
+    res.writeHead(200, { "content-type": "application/json", "content-disposition": "attachment; filename=dataset.json" });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  cleanup.push(async () => { upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); });
+  const origin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+  const stores = new SqliteStoreFactory(":memory:");
+  const app = createControlApplication({
+    stores,
+    mode: "local",
+    publicOrigins: ["http://127.0.0.1:5180"],
+    productTargets: {
+      catalyst: { origin, token: "catalyst-server-secret" },
+      ...(includeEcho ? { echo: { origin, token: "echo-server-secret" } } : {}),
+    },
+  });
+  await app.ready;
+  await new Promise<void>(resolve => app.server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(async () => { app.server.closeAllConnections(); await new Promise<void>(resolve => app.server.close(() => resolve())); await stores.close(); });
+  const controlOrigin = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+  const request = (path: string, method = "GET", headers: Record<string, string> = {}, body?: string) => new Promise<{ status: number; text: string; headers: Record<string, string | string[]> }>((resolve, reject) => {
+    const req = httpRequest(controlOrigin + path, { method, headers: { host: "127.0.0.1:5180", origin: "http://127.0.0.1:5180", ...headers } }, res => {
+      const chunks: Buffer[] = []; res.on("data", chunk => chunks.push(chunk)); res.on("end", () => resolve({ status: res.statusCode!, text: Buffer.concat(chunks).toString(), headers: res.headers as Record<string, string | string[]> }));
+    }); req.on("error", reject); req.end(body);
+  });
+  return { app, received, request };
+}
+
+it("admits only exact loopback Product origins and maps the fixed Catalyst/Echo facades", () => {
+  expect(admittedLoopbackTarget("http://127.0.0.1:8123")).toBe("http://127.0.0.1:8123");
+  expect(admittedLoopbackTarget("http://localhost:8123/")).toBe("http://localhost:8123");
+  expect(admittedLoopbackTarget("http://[::1]:8123")).toBe("http://[::1]:8123");
+  expect(() => admittedLoopbackTarget("https://products.example.test")).toThrow("loopback");
+  expect(() => admittedLoopbackTarget("http://127.0.0.1:8123/api/v1")).toThrow("without credentials, path");
+  expect(() => admittedLoopbackTarget("http://user:pass@127.0.0.1:8123")).toThrow("without credentials");
+  expect(directProductUpstreamPath("/api/v1/catalyst/datasets?limit=10")).toBe("/api/v1/datasets?limit=10");
+  expect(directProductUpstreamPath("/api/v1/catalyst/api/v1/datasets/ds-1/sources/batch?mode=append")).toBe("/api/v1/datasets/ds-1/sources/batch?mode=append");
+  expect(directProductUpstreamPath("/api/v1/catalyst/api/v1/content-revisions/r1/blocks/block%3A4/edits")).toBe("/api/v1/content-revisions/r1/blocks/block%3A4/edits");
+  expect(directProductUpstreamPath("/api/v1/echo/evaluation-suites/suite-1")).toBe("/api/v1/evaluation-suites/suite-1");
+  expect(() => directProductUpstreamPath("/api/v1/catalyst/api/v1/datasets%2fother")).toThrow();
+});
+
+it("serves the local Navigator session contract and forwards scoped Product data without browser credentials", async () => {
+  const f = await directFixture();
+  const sessionResponse = await f.request("/api/v1/auth/session");
+  expect(sessionResponse.status).toBe(200);
+  const session = JSON.parse(sessionResponse.text);
+  expect(session).toMatchObject({ authenticated: true, state: "AUTHENTICATED", sessionId: "local", refreshable: false, refreshed: false });
+  expect(session.csrfToken).toMatch(/^[a-f0-9]{64}$/);
+  expect(sessionResponse.text).not.toContain("server-secret");
+  expect((await f.request("/api/v1/auth/session/refresh", "POST", { "content-type": "application/json" }, "{}")).status).toBe(503);
+
+  expect((await f.request("/api/v1/catalyst/datasets", "POST", { "content-type": "application/json" }, "{}" )).status).toBe(403);
+  expect((await f.request("/api/v1/catalyst/datasets", "POST", { "x-csrf-token": "wrong", "content-type": "application/json" }, "{}" )).status).toBe(403);
+  expect((await f.request("/api/v1/catalyst/api/v1/datasets/ds-1/sources?kind=text", "POST", {
+    "x-csrf-token": session.csrfToken,
+    "content-type": "application/json",
+    cookie: "browser-session=unrelated",
+    "x-product-authorization": "Bearer browser-controlled",
+  }, '{"name":"fixture"}')).status).toBe(200);
+  expect(f.received).toHaveLength(1);
+  expect(f.received[0]).toMatchObject({
+    url: "/api/v1/datasets/ds-1/sources?kind=text",
+    body: '{"name":"fixture"}',
+    authorization: "Bearer catalyst-server-secret",
+  });
+  expect(f.received[0]?.cookie).toBeUndefined();
+  expect(f.received[0]?.csrf).toBeUndefined();
+  expect(f.received[0]?.origin).toBeUndefined();
+
+  expect((await f.request("/api/v1/echo/evaluation-suites/suite-1", "GET", { cookie: "browser-session=unrelated" })).status).toBe(200);
+  expect(f.received[1]).toMatchObject({ url: "/api/v1/evaluation-suites/suite-1", authorization: "Bearer echo-server-secret" });
+  expect((await f.request("/api/v1/catalyst/api/v1/datasets/ds-1/delete", "DELETE", { "x-csrf-token": session.csrfToken })).status).toBe(403);
+  expect((await f.request("/api/v1/catalyst/api/v1/datasets", "GET", { origin: "https://attacker.example" })).status).toBe(403);
+  expect(f.received).toHaveLength(2);
+});
+
+it("keeps optional Echo disabled unless its loopback origin and server credential are configured", async () => {
+  const f = await directFixture(false);
+  expect((await f.request("/api/v1/echo/evaluation-suites/suite-1")).status).toBe(503);
+  expect(f.received).toHaveLength(0);
+  expect(() => createControlApplication({
+    stores: new SqliteStoreFactory(":memory:"),
+    mode: "local",
+    publicOrigins: ["http://127.0.0.1:5180"],
+    productTargets: { catalyst: { origin: "http://127.0.0.1:9", token: "secret" } },
+    navigatorUrl: "http://127.0.0.1:9",
+  })).toThrow("without Navigator");
+});
+
+it("keeps the direct session projection and Product routes unavailable when direct targets are not configured", async () => {
+  const stores = new SqliteStoreFactory(":memory:");
+  const app = createControlApplication({ stores, mode: "local", publicOrigins: ["http://127.0.0.1:5180"] });
+  await app.ready;
+  await new Promise<void>(resolve => app.server.listen(0, "127.0.0.1", resolve));
+  cleanup.push(async () => { app.server.closeAllConnections(); await new Promise<void>(resolve => app.server.close(() => resolve())); await stores.close(); });
+  const origin = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+  const request = (path: string) => new Promise<{ status: number; text: string }>((resolve, reject) => {
+    const req = httpRequest(origin + path, { headers: { host: "127.0.0.1:5180", origin: "http://127.0.0.1:5180" } }, res => {
+      const chunks: Buffer[] = []; res.on("data", chunk => chunks.push(chunk)); res.on("end", () => resolve({ status: res.statusCode!, text: Buffer.concat(chunks).toString() }));
+    }); req.on("error", reject); req.end();
+  });
+
+  const session = await request("/api/v1/auth/session");
+  expect(session.status).toBe(503);
+  expect(session.text).not.toContain("csrfToken");
+  expect(session.text).not.toContain("AUTHENTICATED");
+  expect((await request("/api/v1/catalyst/datasets")).status).toBe(503);
 });

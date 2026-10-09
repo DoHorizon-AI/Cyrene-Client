@@ -87,4 +87,6 @@ STUDIO_LOCAL_DIAGNOSTICS=1
 
 更新能力不暴露为 MCP 工具。更新仅在 local 模式由用户确认，可能重启组件；不能让模型用参数中的确认字段绕过审批。
 
+本机工作负载命令 `workloads.status/check/stage/apply` 同样只通过 local 控制界面和 HTTP 提供，使用独立的 `workloads.read/install` 权限。安装或应用计划会改变本机组件及运行时状态，可能重启服务；它们不进入 MCP 工具列表，不能由模型替用户确认安装。
+
 `mcp-command-contracts.test.ts` 验证 tools/list 唯一名称、annotations、schema、共享权限，以及真实 tools/call 的输入拒绝、写入后输出错误 unknown、服务器/构建/目录回执和版本冲突、active 去重与终态再启动。`mcp-platform.test.ts` 验证 HTTP 身份、资源、预检、运行和停止。浏览器 `tests/control-e2e/mcp.spec.ts` 验证手动写入、原 key 重试及 Navigator 诊断观测。测试构建适配器不会请求 GitHub；CPU 诊断不代表 Product/GPU 验收。

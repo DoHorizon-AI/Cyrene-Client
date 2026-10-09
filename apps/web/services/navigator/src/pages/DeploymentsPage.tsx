@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, formatDate, PageHeader, Panel, ResourceTable, StateBlock, StatusPill, text } from "../components";
+import { Button, formatDate, PageHeader, Panel, ResourceTable, StateBlock, StatusPill, text, WorkflowSteps, type WorkflowStep } from "../components";
 import { type DeploymentEvent, type JsonRecord } from "../api";
 import { useI18n } from "../i18n";
 import { type PageProps, resourceId, endpointSummary, errorMessage } from "./shared";
@@ -161,94 +161,21 @@ export function DeploymentsPage({ api }: PageProps) {
           ) : eventsError ? (
             <StateBlock kind="error" title={t("Events unavailable")} detail={eventsError} />
           ) : deploymentEvents && deploymentEvents.length > 0 ? (
-            <div style={{ marginTop: "12px" }}>
-              {/* Phase sequence visualization */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  marginBottom: "20px",
-                  overflowX: "auto",
-                  padding: "8px 0",
-                }}
-              >
-                {["QUEUED", "LOADING", "PROBING", "READY"].map((p, idx) => {
-                  const hasPassed = deploymentEvents.some((e) => e.phase === p);
-                  return (
-                    <div key={p} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span
-                        style={{
-                          padding: "4px 10px",
-                          borderRadius: "12px",
-                          fontSize: "12px",
-                          fontWeight: 600,
-                          fontFamily: "var(--mono)",
-                          background: hasPassed ? "rgba(201, 242, 123, 0.15)" : "rgba(255, 255, 255, 0.05)",
-                          color: hasPassed ? "var(--lime)" : "var(--faint)",
-                          border: `1px solid ${hasPassed ? "var(--lime)" : "var(--line)"}`,
-                        }}
-                      >
-                        {p}
-                      </span>
-                      {idx < 3 ? <span style={{ color: "var(--faint)" }}>→</span> : null}
-                    </div>
-                  );
-                })}
-                {deploymentEvents.some((e) => e.phase === "FAILED") ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ color: "var(--red)" }}>→</span>
-                    <span
-                      style={{
-                        padding: "4px 10px",
-                        borderRadius: "12px",
-                        fontSize: "12px",
-                        fontWeight: 600,
-                        fontFamily: "var(--mono)",
-                        background: "rgba(255, 139, 120, 0.15)",
-                        color: "var(--red)",
-                        border: "1px solid var(--red)",
-                      }}
-                    >{t("FAILED")}</span>
-                  </div>
-                ) : null}
-              </div>
+            <div className="dh-phase-timeline">
+              <WorkflowSteps steps={deploymentPhaseSteps(deploymentEvents, t)} label={t("Deployment phases")} />
 
-              {/* Detailed event timeline list */}
               <div className="service-list">
                 {deploymentEvents.map((evt) => (
-                  <div
-                    key={evt.sequence}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "40px 100px 1fr auto",
-                      alignItems: "center",
-                      gap: "12px",
-                      padding: "10px 0",
-                      borderBottom: "1px solid var(--line)",
-                      fontSize: "12px",
-                    }}
-                  >
+                  <div className="dh-event-row" key={evt.sequence}>
                     <span className="mono-label">#{evt.sequence}</span>
                     <StatusPill value={evt.phase} />
                     <div>
                       <span>{evt.message}</span>
                       {evt.failureCode ? (
-                        <span
-                          style={{
-                            display: "block",
-                            color: "var(--red)",
-                            fontWeight: 600,
-                            marginTop: "2px",
-                            fontFamily: "var(--mono)",
-                          }}
-                        >{t("Failure:")}{evt.failureCode}
-                        </span>
+                        <span className="dh-event-row__failure">{t("Failure:")}{evt.failureCode}</span>
                       ) : null}
                     </div>
-                    <span style={{ color: "var(--muted)", fontSize: "11px" }}>
-                      {formatDate(evt.occurredAt)}
-                    </span>
+                    <span className="dh-event-row__time">{formatDate(evt.occurredAt)}</span>
                   </div>
                 ))}
               </div>
@@ -264,4 +191,19 @@ export function DeploymentsPage({ api }: PageProps) {
       ) : null}
     </div>
   );
+}
+
+const DEPLOYMENT_PHASES = ["QUEUED", "LOADING", "PROBING", "READY"] as const;
+
+function deploymentPhaseSteps(events: readonly DeploymentEvent[], t: (message: string) => string): WorkflowStep[] {
+  const passed = DEPLOYMENT_PHASES.map((phase) => events.some((event) => event.phase === phase));
+  const reached = passed.lastIndexOf(true);
+  if (events.some((event) => event.phase === "FAILED")) {
+    const timeline = DEPLOYMENT_PHASES.slice(0, reached + 1).map((phase, index): WorkflowStep => ({ id: phase, label: phase, state: passed[index] ? "done" : "pending" }));
+    return [...timeline, { id: "FAILED", label: t("FAILED"), state: "blocked" }];
+  }
+  return DEPLOYMENT_PHASES.map((phase, index): WorkflowStep => {
+    if (passed[index] && index === reached && phase !== "READY") return { id: phase, label: phase, detail: t("In progress"), state: "running" };
+    return { id: phase, label: phase, state: passed[index] ? "done" : "pending" };
+  });
 }

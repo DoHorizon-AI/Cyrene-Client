@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { CSSProperties, FormEvent } from "react";
 import { Button, Field, formatDate, MetricCard, PageHeader, Panel, ResourceTable, StateBlock, StatusPill, text } from "../components";
 import { makeIdempotencyKey } from "../api";
 import { pushRunRoute, routeForPath } from "../router";
@@ -36,7 +36,9 @@ function LossChart({ series }: { series: number[] }) {
       if (index === 0) context.moveTo(x, y);
       else context.lineTo(x, y);
     });
-    context.strokeStyle = "#7dd3fc";
+    // The stroke follows the canvas CSS color so the chart stays on the design tokens.
+    // 中文：折线颜色取自 canvas 的 CSS color，保持与设计 token 一致。
+    context.strokeStyle = getComputedStyle(canvas).color || "currentColor";
     context.lineWidth = 1.5;
     context.stroke();
   }, [series]);
@@ -45,9 +47,9 @@ function LossChart({ series }: { series: number[] }) {
   return (
     <canvas
       ref={canvasRef}
+      className="dh-sparkline"
       width={480}
       height={120}
-      style={{ width: "100%", height: "120px" }}
       aria-label={t("Training loss over steps")}
     />
   );
@@ -274,26 +276,17 @@ export function RunsPage({ api }: { api: TrainingRunClient }) {
             </div>
 
             {currentStep !== null && totalSteps ? (
-              <div style={{ marginTop: "16px" }}>
-                <div
-                  role="progressbar"
-                  aria-valuenow={currentStep}
-                  aria-valuemin={0}
-                  aria-valuemax={totalSteps}
-                  style={{ height: "8px", background: "var(--color-bg-subtle, #181c20)", borderRadius: "4px", overflow: "hidden" }}
-                >
-                  <div
-                    style={{
-                      width: `${Math.min(100, Math.round((currentStep / totalSteps) * 100))}%`,
-                      height: "100%",
-                      background: "var(--lime, #7dd3fc)",
-                    }}
-                  />
-                </div>
-              </div>
+              <div
+                className="dh-meter"
+                role="progressbar"
+                aria-valuenow={currentStep}
+                aria-valuemin={0}
+                aria-valuemax={totalSteps}
+                style={{ "--dh-meter": `${Math.min(100, Math.round((currentStep / totalSteps) * 100))}%` } as CSSProperties}
+              />
             ) : null}
 
-            <div style={{ marginTop: "16px" }}>
+            <div className="dh-chart">
               <LossChart series={lossSeries} />
             </div>
 
@@ -308,20 +301,20 @@ export function RunsPage({ api }: { api: TrainingRunClient }) {
             ) : null}
             {actionNotice ? <p className="form-message form-message--success">{actionNotice}</p> : null}
 
-            <div style={{ marginTop: "16px" }}>
-              <strong style={{ display: "block", marginBottom: "8px", fontSize: "13px" }}>{t("Event logs (last 50):")}</strong>
-              <div style={{ maxHeight: "260px", overflowY: "auto", background: "var(--color-bg-subtle, #181c20)", padding: "12px", borderRadius: "6px", fontFamily: "monospace", fontSize: "12px" }}>
+            <div className="dh-chart">
+              <strong className="dh-section-label">{t("Event logs (last 50):")}</strong>
+              <div className="dh-log">
                 {events.length === 0 ? (
-                  <div style={{ color: "var(--muted, #888)" }}>{t("No realtime stream events captured yet.")}</div>
+                  <div className="dh-log__empty">{t("No realtime stream events captured yet.")}</div>
                 ) : (
                   events.map((evt, idx) => {
                     const seq = String(evt["sequence"] ?? idx + 1);
                     const kind = String(evt["kind"] ?? evt["event"] ?? "event");
                     const payload = evt["payload"] ? JSON.stringify(evt["payload"]) : evt["message"] ?? JSON.stringify(evt);
                     return (
-                      <div key={seq} style={{ marginBottom: "4px", lineHeight: "1.4" }}>
-                        <span style={{ color: "var(--muted, #888)", marginRight: "8px" }}>#{seq}</span>
-                        <span style={{ color: "var(--blue, #64B5F6)", marginRight: "8px" }}>[{kind}]</span>
+                      <div className="dh-log__row" key={seq}>
+                        <span className="dh-log__seq">#{seq}</span>
+                        <span className="dh-log__kind">[{kind}]</span>
                         <span>{String(payload)}</span>
                       </div>
                     );

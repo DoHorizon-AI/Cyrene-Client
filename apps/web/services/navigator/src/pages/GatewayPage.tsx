@@ -236,9 +236,8 @@ console.log(response.choices[0].message.content);`,
                   const isSelected = selectedRoute && text(selectedRoute["id"]) === text(row["id"]);
                   return (
                     <button
-                      className="link-button"
+                      className={isSelected ? "link-button link-button--selected" : "link-button"}
                       onClick={() => setSelectedRoute(row)}
-                      style={{ fontWeight: isSelected ? "bold" : "normal", textDecoration: "underline", background: "none", border: "none", cursor: "pointer", color: "inherit", padding: 0 }}
                     >
                       {pattern} {isSelected ? "◀ (Selected)" : ""}
                     </button>
@@ -266,7 +265,7 @@ console.log(response.choices[0].message.content);`,
                     );
                   }
                   return (
-                    <div style={{ display: "flex", gap: "6px" }}>
+                    <div className="dh-toolbar">
                       <Button onClick={() => setSelectedRoute(row)}>{t("View detail")}</Button>
                       <Button tone="primary" onClick={() => void handleUseInNavigator(row)}>{t("在 Navigator 中使用")}</Button>
                     </div>
@@ -301,7 +300,7 @@ console.log(response.choices[0].message.content);`,
             <Detail label="Created" value={formatDate(selectedRoute["createdAt"] || selectedRoute["created_at"])} />
           </dl>
 
-          <div style={{ marginTop: "12px", marginBottom: "16px", display: "flex", gap: "8px" }}>
+          <div className="dh-toolbar dh-toolbar--spaced">
             <Button
               onClick={() => {
                 void navigator.clipboard.writeText(baseUrl);
@@ -317,18 +316,21 @@ console.log(response.choices[0].message.content);`,
             >{t("在 Navigator 中使用")}</Button>
           </div>
 
-          <div style={{ marginTop: "20px" }}>
-            <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center" }}>
-              <strong style={{ marginRight: "12px" }}>{t("Integration code:")}</strong>
-              {(["curl", "python", "javascript"] as const).map((tab) => (
-                <Button
-                  key={tab}
-                  tone={activeCodeTab === tab ? "primary" : "quiet"}
-                  onClick={() => setActiveCodeTab(tab)}
-                >
-                  {tab === "curl" ? "cURL" : tab === "python" ? "Python" : "JavaScript"}
-                </Button>
-              ))}
+          <div className="dh-integration">
+            <div className="dh-toolbar dh-integration__bar">
+              <strong className="dh-section-label">{t("Integration code:")}</strong>
+              <div className="dh-segmented">
+                {(["curl", "python", "javascript"] as const).map((tab) => (
+                  <Button
+                    key={tab}
+                    tone={activeCodeTab === tab ? "primary" : "quiet"}
+                    aria-pressed={activeCodeTab === tab}
+                    onClick={() => setActiveCodeTab(tab)}
+                  >
+                    {tab === "curl" ? "cURL" : tab === "python" ? "Python" : "JavaScript"}
+                  </Button>
+                ))}
+              </div>
               <Button
                 onClick={() => {
                   void navigator.clipboard.writeText(snippets[activeCodeTab]);
@@ -339,7 +341,7 @@ console.log(response.choices[0].message.content);`,
                 {copiedSnippet ? "Copied!" : "Copy snippet"}
               </Button>
             </div>
-            <pre style={{ background: "var(--color-bg-subtle, #181c20)", padding: "16px", borderRadius: "6px", overflowX: "auto", fontSize: "13px", lineHeight: "1.5" }}>
+            <pre className="dh-code-block">
               <code>{snippets[activeCodeTab]}</code>
             </pre>
           </div>
@@ -352,18 +354,17 @@ console.log(response.choices[0].message.content);`,
         meta={apiKeys ? `${apiKeys.filter((k) => k.state === "ACTIVE").length} active` : "EXCHANGE KEYS"}
       >
         {createdSecret ? (
-          <div className="callout callout--orange" style={{ marginBottom: "20px", display: "block" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-              <span className="callout__mark" aria-hidden="true" style={{ fontSize: "18px", fontWeight: "bold" }}>⚠</span>
-              <strong style={{ color: "var(--orange, #FF9800)" }}>{t("API Key Created:")}{createdKeyName}</strong>
+          <div className="callout callout--orange callout--stacked">
+            <div className="callout__title">
+              <span className="callout__mark" aria-hidden="true">!</span>
+              <strong>{t("API Key Created:")}{createdKeyName}</strong>
             </div>
-            <p style={{ marginBottom: "12px" }}>{t("此密钥不会再次显示，请立即复制并安全保存。关闭后将无法重新查看完整明文。")}</p>
-            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "12px" }}>
+            <p>{t("此密钥不会再次显示，请立即复制并安全保存。关闭后将无法重新查看完整明文。")}</p>
+            <div className="dh-toolbar callout__secret">
               <input
                 readOnly
                 value={createdSecret}
                 className="input-mono"
-                style={{ flex: 1, padding: "8px 12px", fontSize: "14px", background: "rgba(0,0,0,0.3)" }}
               />
               <Button
                 tone="primary"
@@ -449,7 +450,7 @@ console.log(response.choices[0].message.content);`,
                       <Button tone="danger" onClick={() => void handleRevokeKey(row.id, row.name)}>{t("Revoke")}</Button>
                     );
                   }
-                  return <span style={{ color: "var(--muted)" }}>{t("Revoked")}</span>;
+                  return <span className="muted">{t("Revoked")}</span>;
                 },
               },
             ]}

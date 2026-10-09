@@ -5,7 +5,7 @@
 本轮在 `latest-20261007/Cyrene-Client` 和 `Cyrene-Services/Cyrene-Navigator`
 的 `fix/navigator-session-integration-20261008` 上实施。旧工作树、安装包和用户数据库保留。
 现有整合先保存为 Client `3f25743`、Navigator `aaa64f0` 本地检查点；后续按期和模块单独提交。
-本轮没有推送、创建远端 PR 或部署。
+阶段修复与验证时没有推送、创建远端 PR 或部署；后续提交与远端同步见下方记录。
 
 | 阶段 | Client 提交 | Navigator 提交 |
 | --- | --- | --- |
@@ -40,3 +40,20 @@ Node 回归使用隔离 Node 24.13.0，下载自官方并核对 SHASUM；没有�
 Client 完整 `npm run check` 退出 0：契约一致性、TypeScript/Vite 构建、304 项单元、73 项界面、5 项控制服务和 4 项安全浏览器测试通过；6 项 PostgreSQL 测试因未配置测试数据库跳过。浏览器使用本机已安装的 Edge。LiteGraph 的 eval 和较大 bundle 提示仍存在，构建成功。
 
 实现与使用说明见 [Navigator 助手整合](navigator-assistant-integration.md)、[MCP 工作台](mcp-workbench.md)。
+
+## 2026-10-09 远端同步
+
+用户本轮要求提交修改并获取远端更新。以 Client `2283551` 为本地修复检查点，先创建
+`backup/review-fixes-before-sync-20261009`，再通过普通 `--no-ff` 合并获取到的
+`origin/develop@b3c3f96`（较此前 `1ef7af7` 新增 19 个提交）。推送和远端回读由主代理在本次合并提交后完成。
+
+冲突按模块职责处理：保留共享 Cookie/session authority、Navigator 代理权限、工作空间与请求体检查、MCP 契约和已拆分的页面；将远端页面设计搬到 `pages/` 各模块，`pages.tsx` 保持 11 行导出入口。
+同时保留 Catalyst 训练数据整理、新设计样式、本机 Product 直连、工作负载计划及独立 Web/Control 发布工具。依赖新增字体与 esbuild，MCP SDK 保持 `1.32.1`；旧模型助手没有恢复。Product 状态栏使用现有共享配对、退出接口。
+
+合并验证中修复了发布工具对 Windows 原始路径、正斜杠路径和 JSON 转义路径的漏检；Windows GNU tar 读回增加 `--force-local`，防止盘符被解释为远端主机，Linux 归档参数不变。链接回归在 Windows 使用经 `lstat` 确认的 junction，仍在归档前拒绝；其他平台保留文件 symlink。更新和工作负载安装命令明确不向 MCP 开放。旧会话栏浏览器定位器随远端状态栏设计调整，保留原认证断言。
+
+最终完整 `npm run check` 退出 0：契约核对、主应用构建、336 项单元、75 项界面、5 项控制服务和 4 项安全浏览器测试通过；6 项 PostgreSQL 测试因没有测试数据库跳过。新增 `build:workspace-web`、Control 的 esbuild 打包与 `node --check` 也通过。另有 8 项定向页面回归通过，包含数据分区切换后保留草稿及部署状态展示。
+
+此次 Windows 检查仅在子进程 PATH 中使用 Git GNU tar 1.35，未修改全局环境。16 个浏览器 worker 曾触发 `net::ERR_NO_BUFFER_SPACE`，导致设计样式资源加载失败；最终用 `STUDIO_E2E_WORKERS=4` 运行全部场景，零重试。该可选参数只接受正整数，不设置时保留原并发设置；`STUDIO_BROWSER_CHANNEL=msedge` 使用本机 Edge。构建中的 LiteGraph eval 和较大 bundle 提示仍存在。
+
+本轮未执行 Linux 安装包发布、真实 Product/GPU/模型任务或部署。用户限定为提交与同步，因此不创建或合并 PR、不清理当前活跃分支和工作树；备份分支及旧工作树保留，方便回滚与后续开发。

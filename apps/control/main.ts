@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { PostgresStoreFactory } from "../../tooling/postgres-store";
 import { SqliteStoreFactory } from "../../tooling/sqlite-store";
 import { admittedTarget } from "../../tooling/settings-proxy";
+import { admittedLoopbackTarget, isLoopbackHost, type DirectProductId } from "../../tooling/product-proxy";
 import { createControlApplication } from "./application";
 import { loadNodePackages } from "../../tooling/node-packages";
 import { ProductExecutionAdapter } from "../../packages/run-control/http-adapter";
@@ -26,7 +27,24 @@ for (const name of ["yield", "echo"]) {
 }
 const buildProfiles = process.env.STUDIO_BUILD_PROFILES_FILE ? buildProfile.array().max(100).parse(JSON.parse(await readFile(process.env.STUDIO_BUILD_PROFILES_FILE, "utf8"))) : [];
 const githubToken = process.env.STUDIO_GITHUB_TOKEN_FILE ? (await readFile(process.env.STUDIO_GITHUB_TOKEN_FILE, "utf8")).trim() : process.env.STUDIO_GITHUB_TOKEN;
-const application = createControlApplication({ stores, mode, workspaceId: process.env.STUDIO_WORKSPACE_ID, localDiagnostics: process.env.STUDIO_LOCAL_DIAGNOSTICS === "1", mcpReadOnly: process.env.STUDIO_MCP_READ_ONLY === "1", publicOrigins: (process.env.STUDIO_PUBLIC_ORIGINS ?? "http://127.0.0.1:5180").split(",").map(s => s.trim()), navigatorUrl: admittedTarget(process.env.STUDIO_NAVIGATOR_URL), localApiToken: process.env.STUDIO_LOCAL_API_TOKEN, loadPackages: () => loadNodePackages(process.env.STUDIO_NODE_PACKAGES_DIR), adapters, buildProfiles, buildAdapter: githubToken ? new GitHubBuildAdapter(() => githubToken) : undefined });
+const navigatorUrl = admittedTarget(process.env.STUDIO_NAVIGATOR_URL);
+const directEnvironmentNames = ["STUDIO_CATALYST_URL", "STUDIO_CATALYST_API_TOKEN", "STUDIO_CATALYST_API_TOKEN_FILE", "STUDIO_ECHO_URL", "STUDIO_ECHO_API_TOKEN", "STUDIO_ECHO_API_TOKEN_FILE"];
+const directConfigured = directEnvironmentNames.some(name => !!process.env[name]?.trim());
+const productTargets: Partial<Record<DirectProductId, { origin: string; token: string }>> = {};
+if (directConfigured) {
+  if (mode !== "local" || navigatorUrl) throw new Error("Direct Product origins require local mode with STUDIO_NAVIGATOR_URL unset.");
+  const controlHost = process.env.STUDIO_CONTROL_HOST ?? "127.0.0.1";
+  if (!isLoopbackHost(controlHost)) throw new Error("Direct Product mode requires STUDIO_CONTROL_HOST to be loopback.");
+  for (const service of ["catalyst", "echo"] as const) {
+    const prefix = `STUDIO_${service.toUpperCase()}`;
+    const url = process.env[`${prefix}_URL`]?.trim();
+    const token = await readConfiguredSecret(`${prefix}_API_TOKEN`);
+    if (Boolean(url) !== Boolean(token)) throw new Error(`${prefix}_URL and ${prefix}_API_TOKEN or ${prefix}_API_TOKEN_FILE are required together`);
+    if (url && token) productTargets[service] = { origin: admittedLoopbackTarget(url)!, token };
+  }
+  if (!productTargets.catalyst) throw new Error("Direct Product mode requires STUDIO_CATALYST_URL and its server-side token.");
+}
+const application = createControlApplication({ stores, mode, workspaceId: process.env.STUDIO_WORKSPACE_ID, localDiagnostics: process.env.STUDIO_LOCAL_DIAGNOSTICS === "1", mcpReadOnly: process.env.STUDIO_MCP_READ_ONLY === "1", publicOrigins: (process.env.STUDIO_PUBLIC_ORIGINS ?? "http://127.0.0.1:5180").split(",").map(s => s.trim()), navigatorUrl, productTargets: directConfigured ? productTargets : undefined, localApiToken: process.env.STUDIO_LOCAL_API_TOKEN, loadPackages: () => loadNodePackages(process.env.STUDIO_NODE_PACKAGES_DIR), adapters, buildProfiles, buildAdapter: githubToken ? new GitHubBuildAdapter(() => githubToken) : undefined });
 await application.ready;
 if (process.argv.includes("--bootstrap-admin")) {
   if (!process.env.STUDIO_ADMIN_USER || !process.env.STUDIO_ADMIN_PASSWORD) throw new Error("Set STUDIO_ADMIN_USER and STUDIO_ADMIN_PASSWORD for this command only");

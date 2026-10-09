@@ -68,8 +68,9 @@ it("discovers unique portable names, dotted titles, formal schemas and effect an
   expect(JSON.stringify(guide)).toContain("IDEMPOTENCY_CONFLICT"); expect(JSON.stringify(guide)).toContain("unknown");
   const response = await fetch(`${origin}/studio-commands/v1/session`, { headers: { authorization: "Bearer mcp-contract-token" } });
   const session = await response.json();
-  expect(session.commands.filter((command: any) => !command.name.startsWith("updates.")).map((command: any) => command.name).sort()).toEqual(tools.map(tool => tool.title).sort());
+  expect(session.commands.filter((command: any) => !/^(updates|workloads)\./.test(command.name)).map((command: any) => command.name).sort()).toEqual(tools.map(tool => tool.title).sort());
   expect(tools.some(tool => tool.name.startsWith("updates_"))).toBe(false);
+  expect(tools.some(tool => tool.name.startsWith("workloads_"))).toBe(false);
 });
 
 it("filters every required scope and fails closed for unlisted or foreign-workspace calls", async () => {

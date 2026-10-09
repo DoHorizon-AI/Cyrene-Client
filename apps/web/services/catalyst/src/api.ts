@@ -108,6 +108,59 @@ export interface ContentRevision {
   reviewedAt?: string;
   reviewNote?: string;
   resourceVersion: number;
+  trainingDataSnapshot?: TrainingDataSnapshot;
+}
+
+export interface TrainingCurationCounts {
+  total: number;
+  recognized: number;
+  formatErrors: number;
+  duplicateCandidates: number;
+  pendingReview: number;
+  excluded: number;
+  eligible: number;
+}
+
+export interface TrainingDataSnapshot {
+  schemaVersion: "cyrene.training-record.v1";
+  artifact: ArtifactRef;
+  recordCount: number;
+  counts: TrainingCurationCounts;
+}
+
+export interface TrainingRecordIssue {
+  code: string;
+  message: string;
+  severity: "warning" | "error";
+}
+
+export interface TrainingDataRecord {
+  schemaVersion: "cyrene.training-record.v1";
+  id: string;
+  sampleId: string;
+  sourceRevisionId: string;
+  sourceFamilyId: string;
+  conversationId?: string | null;
+  ordinal: number;
+  locator: Record<string, unknown>;
+  rawRecord?: unknown;
+  rawLine?: string | null;
+  detectedFormat: string;
+  normalized?: { messages: Array<{ role: string; content: string }> } | null;
+  disposition: "eligible" | "review" | "excluded";
+  issues: TrainingRecordIssue[];
+  contentDigest: string;
+  recipeDigest: string;
+  processingHistory: Array<Record<string, unknown>>;
+  policy?: ContentPolicy;
+}
+
+export interface TrainingDataRecordPage {
+  revisionId: string;
+  offset: number;
+  limit: number;
+  total: number;
+  records: TrainingDataRecord[];
 }
 
 export interface ContentBlockPage {
@@ -118,7 +171,7 @@ export interface ContentBlockPage {
   blocks: ContentBlock[];
 }
 
-export type RunOperation = "parse" | "buildKnowledge" | "prepareSft" | "generateQa";
+export type RunOperation = "parse" | "curateTrainingData" | "buildKnowledge" | "prepareSft" | "generateQa";
 export type RunState = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED";
 
 export interface ProcessingFailure {
@@ -160,10 +213,10 @@ export interface DatasetVersion {
   dataTools?: {
     contentRevisionId: string;
     sourceRevisionIds: string[];
-    knowledgeProfile: string;
-    knowledgeArtifact: ArtifactRef;
-    sftProfile: string;
-    sftArtifact: ArtifactRef;
+    knowledgeProfile?: string;
+    knowledgeArtifact?: ArtifactRef;
+    sftProfile?: string;
+    sftArtifact?: ArtifactRef;
     stale: boolean;
   };
 }
@@ -197,7 +250,8 @@ export interface SourceParseReport {
   resourceVersion: number;
 }
 
-export type ReviewItemKind = "PARSER_WARNING" | "OCR_WARNING" | "PARSE_FAILURE" | "UNSUPPORTED_SOURCE";
+export type ReviewItemKind = "PARSER_WARNING" | "OCR_WARNING" | "PARSE_FAILURE" | "UNSUPPORTED_SOURCE"
+  | "TRAINING_STRUCTURE" | "TRAINING_DUPLICATE" | "TRAINING_QUALITY" | "TRAINING_UNSUPPORTED" | "TRAINING_LEAKAGE";
 export type ReviewItemState = "OPEN" | "ACKNOWLEDGED" | "REJECTED";
 
 export interface ReviewItem {
@@ -207,6 +261,7 @@ export interface ReviewItem {
   sourceRevisionId: string;
   processingRunId: string;
   contentRevisionId?: string;
+  recordId?: string;
   kind: ReviewItemKind;
   code: string;
   message: string;
@@ -235,6 +290,9 @@ export interface ContentRevisionSummary {
 export interface ReviewQueue {
   items: ReviewItem[];
   generatedDrafts: ContentRevisionSummary[];
+  offset?: number;
+  limit?: number;
+  total?: number;
 }
 
 export type ContentApprovalBlockReason =
@@ -279,7 +337,19 @@ export interface CreateProcessingRunRequest {
   contentRevisionId?: string;
   config?: {
     sftMode?: "instruction" | "conversation";
+    outputFormat?: "sft" | "messages" | "promptCompletion";
     split?: { train: number; validation: number; test: number };
+    sourcePolicies?: Record<string, ContentPolicy>;
+    curation?: {
+      id: string;
+      version: string;
+      format: TrainingDataFormat;
+      fieldMapping: Record<string, string>;
+      roleMapping: Record<string, string>;
+      maxCharacters: number;
+      minCharacters: number;
+      unicodeNormalization: "NFC" | "NFKC";
+    };
     generation?: {
       maxExamples: number;
       maxCalls: number;
@@ -287,6 +357,31 @@ export interface CreateProcessingRunRequest {
       maxOutputTokens?: number;
     };
   };
+}
+
+export type TrainingDataFormat = "auto" | "alpaca" | "promptCompletion" | "messages" | "sharegpt" | "chatml";
+
+export interface TrainingRecordEdit {
+  recordId: string;
+  action: "approve" | "exclude" | "remap";
+  note?: string;
+  format?: TrainingDataFormat;
+  fieldMapping?: Record<string, string>;
+  roleMapping?: Record<string, string>;
+  rawRecord?: Record<string, unknown>;
+}
+
+export interface EditTrainingRecordsRequest {
+  resourceVersion: number;
+  edits: TrainingRecordEdit[];
+  note?: string;
+}
+
+export interface ReviewQueueFilters {
+  kind?: ReviewItemKind;
+  code?: string;
+  offset?: number;
+  limit?: number;
 }
 
 export interface EditBlockRequest {
@@ -357,8 +452,14 @@ export class CatalystDataToolsClient {
     return this.json(this.datasetPath(datasetId, `source-parse-reports${suffix}`));
   }
 
-  getReviewQueue(datasetId: string): Promise<ReviewQueue> {
-    return this.json(this.datasetPath(datasetId, "review-queue"));
+  getReviewQueue(datasetId: string, filters: ReviewQueueFilters = {}): Promise<ReviewQueue> {
+    const query = new URLSearchParams();
+    if (filters.kind) query.set("kind", filters.kind);
+    if (filters.code) query.set("code", filters.code);
+    if (filters.offset !== undefined) query.set("offset", String(filters.offset));
+    if (filters.limit !== undefined) query.set("limit", String(filters.limit));
+    const suffix = query.size > 0 ? `?${query}` : "";
+    return this.json(this.datasetPath(datasetId, `review-queue${suffix}`));
   }
 
   resolveReviewItem(
@@ -401,6 +502,26 @@ export class CatalystDataToolsClient {
     return this.json(this.route(`/api/v1/content-revisions/${pathId(revisionId)}/blocks?${query}`));
   }
 
+  listTrainingRecords(
+    revisionId: string,
+    filters: { offset?: number; limit?: number; disposition?: TrainingDataRecord["disposition"]; issueCode?: string } = {},
+  ): Promise<TrainingDataRecordPage> {
+    const query = new URLSearchParams();
+    if (filters.offset !== undefined) query.set("offset", String(filters.offset));
+    if (filters.limit !== undefined) query.set("limit", String(filters.limit));
+    if (filters.disposition) query.set("disposition", filters.disposition);
+    if (filters.issueCode) query.set("issueCode", filters.issueCode);
+    const suffix = query.size > 0 ? `?${query}` : "";
+    return this.json(this.route(`/api/v1/content-revisions/${pathId(revisionId)}/training-records${suffix}`));
+  }
+
+  editTrainingRecords(revisionId: string, request: EditTrainingRecordsRequest): Promise<ContentRevision> {
+    return this.json(
+      this.route(`/api/v1/content-revisions/${pathId(revisionId)}/training-records:edit`),
+      jsonRequest("POST", request),
+    );
+  }
+
   editBlock(revisionId: string, blockId: string, request: EditBlockRequest): Promise<ContentRevision> {
     return this.json(
       this.route(`/api/v1/content-revisions/${pathId(revisionId)}/blocks/${pathId(blockId)}/edits`),
@@ -421,7 +542,7 @@ export class CatalystDataToolsClient {
 
   publishVersion(
     datasetId: string,
-    request: { contentRevisionId: string; knowledgeRunId: string; sftRunId: string },
+    request: { contentRevisionId: string; knowledgeRunId?: string; sftRunId: string },
   ): Promise<DatasetVersion> {
     return this.json(this.datasetPath(datasetId, "data-tools/versions"), jsonRequest("POST", request));
   }

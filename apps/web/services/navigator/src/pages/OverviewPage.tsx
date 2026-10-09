@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { count, Button, formatDate, MetricCard, PageHeader, Panel, StateBlock, StatusPill } from "../components";
+import { count, Button, formatDate, MetricCard, PageHeader, Panel, StateBlock, StatusPill, statusTone } from "../components";
 import { type JsonRecord, type SystemStatus } from "../api";
 import { useI18n } from "../i18n";
 import { type PageProps, Detail, settledValue } from "./shared";
@@ -122,7 +122,7 @@ export function OverviewPage({ api }: PageProps) {
             </div>
           </Panel>
 
-          <Panel title={t("Issues")} meta={<span className="mono-label">{failures.length}{t("FAILED")}</span>}>
+          <Panel title={t("Issues")} meta={<span className="mono-label">{failures.length} {t("FAILED")}</span>}>
             {failures.length === 0 ? (
               <StateBlock
                 kind="empty"
@@ -196,10 +196,10 @@ export function OverviewPage({ api }: PageProps) {
             {system?.blockers && system.blockers.length > 0 ? (
               <div className="attention-list">
                 {system.blockers.map((blocker) => (
-                  <div className="attention-item" key={blocker.code}>
-                    <span className="attention-item__icon" aria-hidden="true" style={{ color: "var(--red)", borderColor: "var(--red)" }}>!</span>
+                  <div className="attention-item attention-item--danger" key={blocker.code}>
+                    <span className="attention-item__icon" aria-hidden="true">!</span>
                     <div>
-                      <strong style={{ color: "var(--red)" }}>{blocker.code}</strong>
+                      <strong className="input-mono">{blocker.code}</strong>
                       <p>{blocker.message}</p>
                     </div>
                   </div>
@@ -223,12 +223,12 @@ export function OverviewPage({ api }: PageProps) {
                 {system.plugins.map((plugin) => (
                   <div className="service-row" key={plugin.name}>
                     <span
-                      className={`service-dot ${plugin.state === "READY" ? "service-dot--good" : "service-dot--bad"}`}
+                      className={`service-dot service-dot--${statusTone(plugin.state)}`}
                       aria-hidden="true"
                     />
                     <div>
                       <strong>{plugin.name}</strong>
-                      {plugin.kind ? <span style={{ marginLeft: "8px", color: "var(--muted)", fontSize: "11px" }}>({plugin.kind})</span> : null}
+                      {plugin.kind ? <small className="service-row__kind">({plugin.kind})</small> : null}
                     </div>
                     <StatusPill value={plugin.state} />
                   </div>

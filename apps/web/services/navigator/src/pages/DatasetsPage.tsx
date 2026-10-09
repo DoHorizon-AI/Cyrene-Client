@@ -56,6 +56,9 @@ export function DatasetsPage({ api }: PageProps) {
   const [instructionField, setInstructionField] = useState("");
   const [inputField, setInputField] = useState("");
   const [outputField, setOutputField] = useState("");
+  // Default section keeps the dataset name field visible for the editor-tab flow.
+  // 中文：默认停在「数据集与版本」，名称输入保持可见，文档工作台单独成页以缩短长页面。
+  const [datasetSection, setDatasetSection] = useState<"registry" | "prepare" | "documents">("registry");
 
   const detectedFields = (() => {
     const row = preparations?.find((item) => text(item["id"]) === preparationId);
@@ -210,6 +213,24 @@ export function DatasetsPage({ api }: PageProps) {
         action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={loading}>{t("Refresh datasets")}</Button>}
       />
 
+      <div className="dh-segmented dataset-sections" role="tablist" aria-label={t("Dataset workspace")}>
+        {([
+          ["registry", "Datasets and versions"],
+          ["prepare", "Structured preparation"],
+          ["documents", "Document workbench"],
+        ] as const).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={`button${datasetSection === id ? " button--primary" : ""}`}
+            role="tab"
+            aria-selected={datasetSection === id}
+            onClick={() => setDatasetSection(id)}
+          >{t(label)}</button>
+        ))}
+      </div>
+
+      <div hidden={datasetSection !== "registry"}>
       <Panel title={t("New dataset container")} meta={<span className="mono-label">{t("CATALYST OWNS STATE")}</span>}>
         <form className="form-grid form-grid--compact" onSubmit={submitDataset}>
           <Field label="Name">
@@ -219,13 +240,15 @@ export function DatasetsPage({ api }: PageProps) {
             <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("Curated instruction examples")} />
           </Field>
           <div className="form-actions">
-            <Button tone="primary" type="submit" disabled={submitting}>{submitting ? "Creating..." : "Create dataset"}</Button>
+            <Button tone={datasets && datasets.length > 0 ? undefined : "primary"} type="submit" disabled={submitting}>{submitting ? t("Creating...") : t("Create dataset")}</Button>
             {formError ? <span className="form-message form-message--error" role="alert">{formError}</span> : null}
             {notice ? <span className="form-message form-message--success">{notice}</span> : null}
           </div>
         </form>
       </Panel>
+      </div>
 
+      <div hidden={datasetSection !== "prepare"}>
       <Panel title={t("Prepare data")} meta={<span className="mono-label">{t("UPLOAD → MAP → PREPARE → PUBLISH")}</span>}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
           <Field label="Dataset" hint="Preparation always belongs to one dataset.">
@@ -314,14 +337,15 @@ export function DatasetsPage({ api }: PageProps) {
         ) : null}
 
         <div className="form-actions">
-          <Button tone="primary" disabled={!preparationId || workflowBusy} onClick={() => void handleMap()}>
-            {workflowBusy ? "Working..." : "Save mapping"}
+          <Button disabled={!preparationId || workflowBusy} onClick={() => void handleMap()}>
+            {workflowBusy ? t("Working...") : t("Save mapping")}
           </Button>
           <Button
             disabled={!preparationId || workflowBusy}
             onClick={() => void runWorkflow("Preparation", () => api.confirmPreparation(preparationId))}
           >{t("Prepare")}</Button>
           <Button
+            tone={preparationId ? "primary" : undefined}
             disabled={!preparationId || workflowBusy}
             onClick={() => void runWorkflow("Publish", () => api.publishPreparation(preparationId))}
           >{t("Publish version")}</Button>
@@ -333,7 +357,9 @@ export function DatasetsPage({ api }: PageProps) {
         {workflowError ? <p className="inline-error" role="alert">{workflowError}</p> : null}
         {workflowNotice ? <p className="form-message form-message--success">{workflowNotice}</p> : null}
       </Panel>
+      </div>
 
+      <div hidden={datasetSection !== "documents"}>
       <CatalystDataToolsPanel
         datasets={datasets}
         datasetsLoading={loading}
@@ -341,8 +367,10 @@ export function DatasetsPage({ api }: PageProps) {
         onRefreshDatasets={() => setReloadKey((value) => value + 1)}
         transport={api}
       />
+      </div>
 
-      <Panel title={t("Dataset containers")} meta={datasets ? `${datasets.length} records` : "LIVE READ"}>
+      <div hidden={datasetSection !== "registry"}>
+      <Panel title={t("Dataset containers")} meta={datasets ? `${datasets.length} ${t("records")}` : t("LIVE READ")}>
         {loading ? (
           <StateBlock kind="loading" title={t("Reading datasets")} detail="Catalyst is the authority for containers and their lifecycle." />
         ) : error ? (
@@ -381,7 +409,7 @@ export function DatasetsPage({ api }: PageProps) {
 
       <Panel
         title={t("Dataset version sample preview")}
-        meta={previewData ? `${previewData.totalRows} total rows` : "CATALYST DUCKDB"}
+        meta={previewData ? `${previewData.totalRows} ${t("total rows")}` : t("CATALYST DUCKDB")}
       >
         <form
           className="form-grid form-grid--compact"
@@ -390,7 +418,7 @@ export function DatasetsPage({ api }: PageProps) {
             void loadPreview(previewVersionId, previewLimit, previewOffset);
           }}
         >
-          <div style={{ display: "flex", gap: "12px", alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div className="dh-inline-form">
             <div style={{ flex: "1 1 300px" }}>
               <Field label="Dataset version ID" hint="UUID of the prepared dataset version">
                 <input
@@ -424,11 +452,11 @@ export function DatasetsPage({ api }: PageProps) {
                 />
               </Field>
             </div>
-            <div>
+            <div className="dh-inline-form__action">
               <Button
-                tone="primary"
                 type="submit"
                 disabled={previewLoading || !previewVersionId.trim()}
+                loading={previewLoading}
               >
                 {previewLoading ? "Loading..." : "预览样本"}
               </Button>
@@ -445,59 +473,38 @@ export function DatasetsPage({ api }: PageProps) {
         ) : previewError ? (
           <StateBlock kind="error" title={t("Preview unavailable")} detail={previewError} />
         ) : previewData ? (
-          <div style={{ marginTop: "16px" }}>
-            <p style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "12px" }}>{t("Displaying")}{previewData.rows.length}{t("rows (out of")}{previewData.totalRows}{t("total rows) for version")}<code className="input-mono">{previewData.versionId}</code>
+          <div className="dh-preview">
+            <p className="dh-preview__summary">{t("Displaying")}{previewData.rows.length}{t("rows (out of")}{previewData.totalRows}{t("total rows) for version")}<code className="input-mono">{previewData.versionId}</code>
             </p>
-            <div style={{ display: "grid", gap: "12px" }}>
+            <div className="dh-record-list">
               {previewData.rows.map((row) => (
-                <div
-                  key={row.index}
-                  style={{
-                    background: "rgba(17, 29, 34, 0.6)",
-                    border: "1px solid var(--line)",
-                    borderRadius: "6px",
-                    padding: "12px",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                <div className="dh-record" key={row.index}>
+                  <div className="dh-record__head">
                     <span className="mono-label">{t("ROW #")}{row.index + 1}</span>
                   </div>
-                  <div style={{ display: "grid", gap: "6px", fontSize: "13px" }}>
+                  <div className="dh-record__fields">
                     {row.mapped["instruction"] !== undefined ? (
                       <div>
-                        <strong style={{ color: "var(--blue)" }}>{t("Instruction:")}</strong>
+                        <strong>{t("Instruction:")}</strong>
                         <span>{String(row.mapped["instruction"])}</span>
                       </div>
                     ) : null}
                     {row.mapped["input"] ? (
                       <div>
-                        <strong style={{ color: "var(--muted)" }}>{t("Input:")}</strong>
+                        <strong>{t("Input:")}</strong>
                         <span>{String(row.mapped["input"])}</span>
                       </div>
                     ) : null}
                     {row.mapped["output"] !== undefined ? (
                       <div>
-                        <strong style={{ color: "var(--lime)" }}>{t("Output:")}</strong>
+                        <strong>{t("Output:")}</strong>
                         <span>{String(row.mapped["output"])}</span>
                       </div>
                     ) : null}
                   </div>
-                  <details style={{ marginTop: "8px", fontSize: "12px", color: "var(--faint)" }}>
-                    <summary style={{ cursor: "pointer", userSelect: "none" }}>{t("Raw record JSON")}</summary>
-                    <pre
-                      style={{
-                        background: "var(--ink-soft)",
-                        padding: "8px",
-                        borderRadius: "4px",
-                        overflowX: "auto",
-                        marginTop: "6px",
-                        color: "var(--text)",
-                        fontFamily: "var(--mono)",
-                        fontSize: "11px",
-                      }}
-                    >
-                      {JSON.stringify(row.raw, null, 2)}
-                    </pre>
+                  <details>
+                    <summary>{t("Raw record JSON")}</summary>
+                    <pre className="dh-code-block">{JSON.stringify(row.raw, null, 2)}</pre>
                   </details>
                 </div>
               ))}
@@ -511,6 +518,7 @@ export function DatasetsPage({ api }: PageProps) {
           />
         )}
       </Panel>
+      </div>
     </div>
   );
 }

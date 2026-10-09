@@ -101,6 +101,51 @@ export function productBodyLimit(path: string, navigatorRule?: NavigatorProxyPol
 }
 
 // Product operations exposed by the migrated management pages. No arbitrary paths.
+import { isIP } from "node:net";
+
+export type DirectProductId = "catalyst" | "echo";
+
+/** Admit only a loopback HTTP(S) origin for an explicitly configured local Product service. */
+export function admittedLoopbackTarget(raw?: string): string | undefined {
+  if (!raw?.trim()) return undefined;
+  if (raw !== raw.trim()) throw new Error("Product service URL must not contain surrounding whitespace.");
+  const url = new URL(raw);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+    throw new Error("Product service URL must be an HTTP(S) origin without credentials, path, query, or fragment.");
+  }
+  if (!isLoopbackHost(url.hostname)) throw new Error("Direct Product services must use a loopback URL.");
+  return url.origin;
+}
+
+/** Accept only literal loopback addresses or the exact localhost name. */
+export function isLoopbackHost(hostname: string): boolean {
+  if (hostname === "localhost") return true;
+  const address = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const version = isIP(address);
+  if (version === 4) return Number(address.split(".")[0]) === 127;
+  return version === 6 && address.toLowerCase() === "::1";
+}
+
+/** Return the fixed Product namespace from a path admitted by productPermission. */
+export function directProductId(path: string): DirectProductId | null {
+  if (path === "/api/v1/catalyst" || path.startsWith("/api/v1/catalyst/")) return "catalyst";
+  if (path === "/api/v1/echo" || path.startsWith("/api/v1/echo/")) return "echo";
+  return null;
+}
+
+/** Map the Client's fixed service facade to the corresponding Product API root. */
+export function directProductUpstreamPath(requestUrl: string): string {
+  const queryIndex = requestUrl.indexOf("?");
+  const pathname = queryIndex < 0 ? requestUrl : requestUrl.slice(0, queryIndex);
+  const query = queryIndex < 0 ? "" : requestUrl.slice(queryIndex);
+  const product = directProductId(pathname);
+  if (!product || /%(?:2f|5c|2e|25|00)/i.test(pathname) || pathname.includes("..") || pathname.includes("\\")) throw new Error("Request is outside a direct Product facade.");
+  const prefix = `/api/v1/${product}`;
+  const suffix = pathname.slice(prefix.length);
+  const apiPath = suffix.startsWith("/api/v1/") ? suffix.slice("/api/v1".length) : suffix;
+  return `/api/v1${apiPath}${query}`;
+}
+
 export function productPermission(method: string, path: string): string | null {
   if (!safePath(path)) return null;
   const navigator = navigatorProxyPolicy(method, path);
@@ -131,6 +176,8 @@ export function productPermission(method: string, path: string): string | null {
     ["POST", `catalyst/api/v1/processing-runs/${id}/(cancel|retry)`, "operate"],
     ["GET", `catalyst/api/v1/datasets/${id}/content-revisions`, "read"],
     ["GET", `catalyst/api/v1/content-revisions/${id}/blocks`, "read"],
+    ["GET", `catalyst/api/v1/content-revisions/${id}/training-records`, "read"],
+    ["POST", `catalyst/api/v1/content-revisions/${id}/training-records:edit`, "write"],
     ["POST", `catalyst/api/v1/content-revisions/${id}/blocks/${workId}/edits`, "write"],
     ["POST", `catalyst/api/v1/content-revisions/${id}/review`, "operate"],
     ["POST", `catalyst/api/v1/datasets/${id}/data-tools/versions`, "operate"],

@@ -101,9 +101,15 @@
   text-align: left;
 }
 
+.product-workspace .work-assistant__task-list button:hover:not(:disabled) {
+  border-color: var(--dh-border-hover);
+  background: var(--dh-bg-hover);
+}
+
 .product-workspace .work-assistant__task-list button.is-selected {
-  border-color: #5876ac;
-  background: #303b50;
+  border-color: var(--dh-border-hover);
+  background: var(--dh-bg-hover);
+  box-shadow: inset 2px 0 0 var(--dh-orchid);
 }
 
 .product-workspace .work-assistant__task-list button > span,
@@ -219,7 +225,7 @@
   border: 1px solid var(--line);
   border-radius: 4px;
   color: var(--orange);
-  background: rgba(201, 166, 107, 0.06);
+  background: var(--dh-warning-soft);
   font-size: 12px;
 }
 
@@ -241,7 +247,8 @@
   place-items: center;
   padding: 8px;
   border-radius: 4px;
-  background: #fff;
+  /* QR codes need a light quiet zone to stay scannable. 中文：二维码需要浅色留白才能识别。 */
+  background: var(--dh-white);
 }
 
 .product-workspace .work-assistant__qr img {

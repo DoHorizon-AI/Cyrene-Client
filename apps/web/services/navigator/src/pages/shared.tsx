@@ -16,7 +16,7 @@ export function Detail({ label, value, mono = false }: { label: string; value: s
   return (
     <div className="detail-item">
       <dt>{t(label)}</dt>
-      <dd className={mono ? "input-mono" : undefined}>{t(value)}</dd>
+      <dd className={mono ? "input-mono" : undefined} title={mono ? value : undefined}>{t(value)}</dd>
     </div>
   );
 }

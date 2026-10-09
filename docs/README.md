@@ -17,4 +17,5 @@ Cyrene Client 文档索引与设计说明 / Documentation index and architecture
 | [`workspace-bff-nginx.md`](workspace-bff-nginx.md) | Default-off, verified-HTTPS Nginx routing for same-origin Workspace BFF calls / 同源 Workspace BFF 的默认关闭与 HTTPS 校验 Nginx 路由 |
 | [`workspace-training.md`](workspace-training.md) | Local and private Workspace run navigation, event recovery, and current execution boundaries / 本机及私有 Workspace 的任务导航、事件恢复与当前执行边界 |
 | [`workspace-device-approval-web.md`](workspace-device-approval-web.md) | Independent root Web image, `/device-approval` deep-link hosting, and deployment dependencies / 独立根 Web 镜像、`/device-approval` 深层链接托管与部署依赖 |
+| [`workspace-web-release.md`](workspace-web-release.md) | Immutable static Workspace Web component releases and local workload Control bridge / Workspace Web 不可变静态组件发布与本机 workload Control 桥接 |
 | [`adr/`](adr/) | Architecture decision records / 架构决策记录 |

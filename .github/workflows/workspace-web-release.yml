@@ -1,0 +1,338 @@
+name: Immutable Workspace Web release
+
+on:
+  push:
+    branches: [develop, main, release]
+  workflow_dispatch:
+    inputs:
+      schema_sha:
+        description: Exact merged Workspace authority commit used for schemas and Catalog v2
+        required: false
+        type: string
+        default: "5d489807d49d29b75721b735ea04c1c844f64ddd"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workspace-web-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish an attested static Workspace Client
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: write
+      attestations: write
+      artifact-metadata: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: DoHorizon-AI/Cyrene-Client
+      SOURCE_COMMIT: ${{ github.sha }}
+      SOURCE_REF: ${{ github.ref }}
+      PREDICATE_TYPE: https://slsa.dev/provenance/v1
+      WORKSPACE_SCHEMA_SHA: ${{ github.event.inputs.schema_sha || '5d489807d49d29b75721b735ea04c1c844f64ddd' }}
+
+    steps:
+      - name: Check out the exact integration-branch source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Define isolated workflow temp paths
+        run: |
+          set -euo pipefail
+          echo "RELEASE_DIR=$RUNNER_TEMP/workspace-web-release" >> "$GITHUB_ENV"
+          echo "SCHEMA_DIR=$RUNNER_TEMP/workspace-schema/governance" >> "$GITHUB_ENV"
+
+      - name: Wait for successful Client CI on this exact pushed source
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REF" in
+            refs/heads/develop) channel=preview ;;
+            refs/heads/main|refs/heads/release) channel=stable ;;
+            *) echo "unsupported release source ref: $SOURCE_REF" >&2; exit 2 ;;
+          esac
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "release source must be a full Git SHA-1" >&2
+            exit 2
+          }
+          for attempt in $(seq 1 60); do
+            runs=$(gh api --method GET "repos/$REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f head_sha="$SOURCE_COMMIT" -f event=push -f per_page=100)
+            if printf '%s' "$runs" | jq -e --arg sha "$SOURCE_COMMIT" '
+              [.workflow_runs[] | select(.head_sha == $sha and .event == "push" and .conclusion == "success")] | length > 0
+            ' >/dev/null; then
+              echo "Client CI succeeded for $SOURCE_REF@$SOURCE_COMMIT ($channel)"
+              exit 0
+            fi
+            state=$(printf '%s' "$runs" | jq -r --arg sha "$SOURCE_COMMIT" '
+              [.workflow_runs[] | select(.head_sha == $sha and .event == "push")] |
+              if length == 0 then "missing" else (sort_by(.created_at) | last | .status + ":" + (.conclusion // "pending")) end
+            ')
+            case "$state" in
+              completed:failure|completed:cancelled|completed:timed_out|completed:action_required)
+                echo "Client CI did not pass for $SOURCE_COMMIT (state=$state)" >&2
+                exit 1
+                ;;
+            esac
+            echo "Waiting for exact-SHA Client CI ($attempt/60; state=$state)"
+            sleep 30
+          done
+          echo "Client CI did not finish successfully within 30 minutes for $SOURCE_COMMIT" >&2
+          exit 1
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Build the standalone Workspace Web root
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build:workspace-web
+          test -f dist-workspace-web/index.html
+
+      - name: Read the merged Workspace manifest schemas
+        run: |
+          set -euo pipefail
+          [[ "$WORKSPACE_SCHEMA_SHA" =~ ^[0-9a-f]{40}$ && "$WORKSPACE_SCHEMA_SHA" != 0000000000000000000000000000000000000000 ]] || {
+            echo "pin the merged Workspace authority SHA in the release workflow before publishing" >&2
+            exit 2
+          }
+          git init "$RUNNER_TEMP/workspace-schema"
+          git -C "$RUNNER_TEMP/workspace-schema" remote add origin https://github.com/DoHorizon-AI/Cyrene-Workspace.git
+          git -C "$RUNNER_TEMP/workspace-schema" fetch --no-tags --depth=1 origin "$WORKSPACE_SCHEMA_SHA"
+          git -C "$RUNNER_TEMP/workspace-schema" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/workspace-schema" rev-parse HEAD)" = "$WORKSPACE_SCHEMA_SHA"
+          test -f "$SCHEMA_DIR/component-release-manifest-v2.schema.json"
+          test -f "$SCHEMA_DIR/component-release-index-v1.schema.json"
+          test -f "$SCHEMA_DIR/component-catalog-v2.schema.json"
+          test -f "$SCHEMA_DIR/component-catalog-v2.json"
+          echo "Using pinned Workspace schema and Catalog v2 commit $WORKSPACE_SCHEMA_SHA"
+
+      - name: Build the immutable source-SHA release assets
+        env:
+          CHANNEL: ${{ github.ref == 'refs/heads/develop' && 'preview' || 'stable' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RELEASE_DIR"
+          node --import tsx tooling/release/static-web-component.ts \
+            --site dist-workspace-web \
+            --output "$RELEASE_DIR" \
+            --source-ref "$SOURCE_REF" \
+            --source-commit "$SOURCE_COMMIT" \
+            --channel "$CHANNEL" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --generated-at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+      - name: Install the pinned JSON Schema validator
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12.14'
+
+      - name: Install the pinned JSON Schema validator
+        run: python -m pip install --disable-pip-version-check 'jsonschema==4.26.0' 'referencing==0.37.0'
+
+      - name: Validate manifest, index, payload file map, and source identity
+        run: |
+          set -euo pipefail
+          python tooling/release/validate_static_web_release.py \
+            --directory "$RELEASE_DIR" \
+            --schema-directory "$SCHEMA_DIR" \
+            --catalog "$SCHEMA_DIR/component-catalog-v2.json" \
+            --source-ref "$SOURCE_REF" \
+            --source-commit "$SOURCE_COMMIT"
+
+      - name: Verify and reuse an already published immutable source-SHA release
+        id: existing
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel=stable
+          [[ "$SOURCE_REF" == refs/heads/develop ]] && channel=preview
+          release_tag="$channel-cyrene-client-workspace-web-$SOURCE_COMMIT"
+          if gh api "repos/$REPOSITORY/releases/tags/$release_tag" > "$RUNNER_TEMP/workspace-web-existing.json" 2> "$RUNNER_TEMP/workspace-web-existing.err"; then
+            existing=true
+          elif grep -Fq 'HTTP 404' "$RUNNER_TEMP/workspace-web-existing.err"; then
+            existing=false
+          else
+            cat "$RUNNER_TEMP/workspace-web-existing.err" >&2
+            exit 1
+          fi
+          if [[ "$existing" == false ]]; then
+            echo 'published=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python - "$RUNNER_TEMP/workspace-web-existing.json" "$release_tag" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          release = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if release.get("tag_name") != sys.argv[2]:
+              raise SystemExit("existing source-SHA release has a different tag")
+          if release.get("immutable") is not True:
+              raise SystemExit("existing static-web release is not immutable")
+          PY
+          tag=$(gh api "repos/$REPOSITORY/git/ref/tags/$release_tag")
+          test "$(printf '%s' "$tag" | jq -r '.object.type')" = commit
+          test "$(printf '%s' "$tag" | jq -r '.object.sha')" = "$SOURCE_COMMIT"
+          mkdir -p "$RUNNER_TEMP/workspace-web-published"
+          gh release download "$release_tag" --repo "$REPOSITORY" --dir "$RUNNER_TEMP/workspace-web-published"
+          current_archive=$(find "$RELEASE_DIR" -maxdepth 1 -type f -name 'cyrene-client-workspace-web-*.tar.gz' -print -quit)
+          published_archive=$(find "$RUNNER_TEMP/workspace-web-published" -maxdepth 1 -type f -name 'cyrene-client-workspace-web-*.tar.gz' -print -quit)
+          test -n "$current_archive" && test -n "$published_archive"
+          cmp -- "$current_archive" "$published_archive"
+          python tooling/release/validate_static_web_release.py \
+            --directory "$RUNNER_TEMP/workspace-web-published" \
+            --schema-directory "$SCHEMA_DIR" \
+            --catalog "$SCHEMA_DIR/component-catalog-v2.json" \
+            --source-ref "$SOURCE_REF" \
+            --source-commit "$SOURCE_COMMIT"
+          for subject in \
+            "$(basename "$published_archive")" \
+            cyrene-client-workspace-web.manifest.json \
+            component-release-index-v1.json; do
+            gh attestation verify "$RUNNER_TEMP/workspace-web-published/$subject" \
+              --bundle "$RUNNER_TEMP/workspace-web-published/$subject.attestation.jsonl" \
+              --repo "$REPOSITORY" \
+              --signer-workflow "$REPOSITORY/.github/workflows/workspace-web-release.yml" \
+              --source-ref "$SOURCE_REF" \
+              --source-digest "$SOURCE_COMMIT" \
+              --predicate-type "$PREDICATE_TYPE"
+          done
+          echo 'published=true' >> "$GITHUB_OUTPUT"
+
+      - name: Create provenance attestations for archive, manifest, and index
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          set -euo pipefail
+          cd "$RELEASE_DIR"
+          sha256sum \
+            cyrene-client-workspace-web-"$SOURCE_COMMIT".tar.gz \
+            cyrene-client-workspace-web.manifest.json \
+            component-release-index-v1.json > "$RUNNER_TEMP/workspace-web-subjects.sha256"
+
+      - name: Sign every immutable release subject
+        if: steps.existing.outputs.published != 'true'
+        uses: actions/attest@v4
+        with:
+          subject-checksums: ${{ runner.temp }}/workspace-web-subjects.sha256
+
+      - name: Download and verify detached attestations
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          set -euo pipefail
+          cd "$RELEASE_DIR"
+          for subject in \
+            "cyrene-client-workspace-web-$SOURCE_COMMIT.tar.gz" \
+            cyrene-client-workspace-web.manifest.json \
+            component-release-index-v1.json; do
+            digest="sha256:$(sha256sum "$subject" | cut -d ' ' -f 1)"
+            gh attestation download "$RELEASE_DIR/$subject" --repo "$REPOSITORY" --predicate-type "$PREDICATE_TYPE"
+            mv -- "$digest.jsonl" "$RELEASE_DIR/$subject.attestation.jsonl"
+            gh attestation verify "$RELEASE_DIR/$subject" \
+              --bundle "$RELEASE_DIR/$subject.attestation.jsonl" \
+              --repo "$REPOSITORY" \
+              --signer-workflow "$REPOSITORY/.github/workflows/workspace-web-release.yml" \
+              --source-ref "$SOURCE_REF" \
+              --source-digest "$SOURCE_COMMIT" \
+              --predicate-type "$PREDICATE_TYPE"
+          done
+
+      - name: Revalidate the complete attested release asset set
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          set -euo pipefail
+          python tooling/release/validate_static_web_release.py \
+            --directory "$RELEASE_DIR" \
+            --schema-directory "$SCHEMA_DIR" \
+            --catalog "$SCHEMA_DIR/component-catalog-v2.json" \
+            --source-ref "$SOURCE_REF" \
+            --source-commit "$SOURCE_COMMIT"
+
+      - name: Pin the exact source SHA and publish the immutable release
+        if: steps.existing.outputs.published != 'true'
+        env:
+          CHANNEL: ${{ github.ref == 'refs/heads/develop' && 'preview' || 'stable' }}
+        run: |
+          set -euo pipefail
+          release_tag="$CHANNEL-cyrene-client-workspace-web-$SOURCE_COMMIT"
+          if tag=$(gh api "repos/$REPOSITORY/git/ref/tags/$release_tag" 2> "$RUNNER_TEMP/workspace-web-tag.err"); then
+            test "$(printf '%s' "$tag" | jq -r '.object.type')" = commit
+            test "$(printf '%s' "$tag" | jq -r '.object.sha')" = "$SOURCE_COMMIT"
+          elif grep -Fq 'HTTP 404' "$RUNNER_TEMP/workspace-web-tag.err"; then
+            gh api --method POST "repos/$REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$release_tag" \
+              -f "sha=$SOURCE_COMMIT" >/dev/null
+          else
+            cat "$RUNNER_TEMP/workspace-web-tag.err" >&2
+            exit 1
+          fi
+          notes="$RUNNER_TEMP/workspace-web-release-notes.md"
+          cat > "$notes" <<EOF
+          Official static Workspace Web Client release.
+
+          Source: $REPOSITORY@$SOURCE_COMMIT ($SOURCE_REF)
+          Component: cyrene-client-workspace-web
+          Target: linux-ubuntu-24.04-x86_64-web (static-web)
+          Publisher workflow: $REPOSITORY/.github/workflows/workspace-web-release.yml
+          EOF
+          release_args=(--repo "$REPOSITORY" --verify-tag --title "Cyrene Client Workspace Web $SOURCE_COMMIT" --notes-file "$notes")
+          if [[ "$CHANNEL" == preview ]]; then release_args+=(--prerelease); fi
+          gh release create "$release_tag" "${release_args[@]}" \
+            "$RELEASE_DIR/cyrene-client-workspace-web-$SOURCE_COMMIT.tar.gz" \
+            "$RELEASE_DIR/cyrene-client-workspace-web.manifest.json" \
+            "$RELEASE_DIR/component-release-index-v1.json" \
+            "$RELEASE_DIR/cyrene-client-workspace-web-$SOURCE_COMMIT.tar.gz.attestation.jsonl" \
+            "$RELEASE_DIR/cyrene-client-workspace-web.manifest.json.attestation.jsonl" \
+            "$RELEASE_DIR/component-release-index-v1.json.attestation.jsonl"
+
+      - name: Read back and verify the immutable release assets
+        if: steps.existing.outputs.published != 'true'
+        env:
+          CHANNEL: ${{ github.ref == 'refs/heads/develop' && 'preview' || 'stable' }}
+        run: |
+          set -euo pipefail
+          release_tag="$CHANNEL-cyrene-client-workspace-web-$SOURCE_COMMIT"
+          gh api "repos/$REPOSITORY/releases/tags/$release_tag" > "$RUNNER_TEMP/workspace-web-release.json"
+          python - "$RUNNER_TEMP/workspace-web-release.json" "$release_tag" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          release = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if release.get("tag_name") != sys.argv[2]:
+              raise SystemExit("published static-web release has the wrong immutable source tag")
+          if release.get("immutable") is not True:
+              raise SystemExit("GitHub did not mark the newly published release immutable")
+          PY
+          tag=$(gh api "repos/$REPOSITORY/git/ref/tags/$release_tag")
+          test "$(printf '%s' "$tag" | jq -r '.object.type')" = commit
+          test "$(printf '%s' "$tag" | jq -r '.object.sha')" = "$SOURCE_COMMIT"
+          mkdir -p "$RUNNER_TEMP/workspace-web-readback"
+          gh release download "$release_tag" --repo "$REPOSITORY" --dir "$RUNNER_TEMP/workspace-web-readback"
+          for name in \
+            "cyrene-client-workspace-web-$SOURCE_COMMIT.tar.gz" \
+            cyrene-client-workspace-web.manifest.json \
+            component-release-index-v1.json \
+            "cyrene-client-workspace-web-$SOURCE_COMMIT.tar.gz.attestation.jsonl" \
+            cyrene-client-workspace-web.manifest.json.attestation.jsonl \
+            component-release-index-v1.json.attestation.jsonl; do
+            cmp -- "$RELEASE_DIR/$name" "$RUNNER_TEMP/workspace-web-readback/$name"
+          done
+          python tooling/release/validate_static_web_release.py \
+            --directory "$RUNNER_TEMP/workspace-web-readback" \
+            --schema-directory "$SCHEMA_DIR" \
+            --catalog "$SCHEMA_DIR/component-catalog-v2.json" \
+            --source-ref "$SOURCE_REF" \
+            --source-commit "$SOURCE_COMMIT"

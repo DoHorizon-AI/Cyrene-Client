@@ -241,54 +241,19 @@ export function ChatPage({ api }: PageProps) {
               </div>
             ) : null}
 
-            <div
-              style={{
-                display: "grid",
-                gap: "12px",
-                maxHeight: "450px",
-                overflowY: "auto",
-                padding: "12px",
-                background: "var(--ink-soft)",
-                borderRadius: "6px",
-                border: "1px solid var(--line)",
-                marginBottom: "16px",
-              }}
-            >
+            <div className="dh-chat">
               {messages.filter((m) => m.role !== "system").length === 0 ? (
-                <div style={{ color: "var(--muted)", textAlign: "center", padding: "24px 0" }}>{t("Start conversation with")}<code>{activeRoute.modelId}</code>
+                <div className="dh-chat__empty">{t("Start conversation with")}<code>{activeRoute.modelId}</code>
                 </div>
               ) : (
                 messages
                   .filter((m) => m.role !== "system")
                   .map((msg, idx) => (
-                    <div
-                      key={idx}
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: msg.role === "user" ? "flex-end" : "flex-start",
-                      }}
-                    >
-                      <span className="mono-label" style={{ marginBottom: "4px" }}>
-                        {msg.role === "user" ? "YOU" : activeRoute.modelId}
+                    <div key={idx} className={msg.role === "user" ? "dh-chat__message dh-chat__message--user" : "dh-chat__message"}>
+                      <span className="dh-chat__role">
+                        {msg.role === "user" ? "YOU" : <span className="dh-mono">{activeRoute.modelId}</span>}
                       </span>
-                      <div
-                        style={{
-                          maxWidth: "85%",
-                          padding: "10px 14px",
-                          borderRadius: "8px",
-                          background:
-                            msg.role === "user"
-                              ? "rgba(201, 242, 123, 0.12)"
-                              : "rgba(17, 29, 34, 0.9)",
-                          border: `1px solid ${
-                            msg.role === "user" ? "var(--lime)" : "var(--line)"
-                          }`,
-                          whiteSpace: "pre-wrap",
-                          fontSize: "13px",
-                          lineHeight: "1.5",
-                        }}
-                      >
+                      <div className="dh-chat__bubble">
                         {msg.content || (sending && idx === messages.length - 1 ? "..." : "")}
                       </div>
                     </div>
@@ -296,9 +261,8 @@ export function ChatPage({ api }: PageProps) {
               )}
             </div>
 
-            <form onSubmit={sendMessage} style={{ display: "flex", gap: "8px" }}>
+            <form className="dh-chat__composer" onSubmit={sendMessage}>
               <input
-                style={{ flex: 1, padding: "10px 14px", borderRadius: "6px" }}
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
                 placeholder={t("Type a message...")}

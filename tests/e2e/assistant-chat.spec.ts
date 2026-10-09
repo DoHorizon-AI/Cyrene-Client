@@ -202,7 +202,7 @@ test("restoring an older selected session loads earlier tasks before enabling co
 test("chat and Product share a single rotation, updated CSRF and logout state", async ({ page }) => {
   const state = await fixture(page, false, false, new Date(Date.now() + 33_000).toISOString());
   await menuAction(page, "工具", "服务状态");
-  await expect(page.locator(".product-session-bar")).toContainText("Product 服务已连接");
+  await expect(page.locator(".product-session-chip, .product-session-bar")).toContainText("Product 已连接");
   await expect.poll(state.refreshes, { timeout: 6000 }).toBe(1);
   await page.getByLabel("消息", { exact: true }).fill("Shared session after rotation");
   const sent = page.waitForRequest(request => new URL(request.url()).pathname === "/api/v1/navigator/tasks" && request.method() === "POST");

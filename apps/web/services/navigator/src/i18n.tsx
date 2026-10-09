@@ -380,6 +380,7 @@ export function initialLocale(): AppLocale {
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
   const [locale, setLocale] = useState<AppLocale>(initialLocale);
+  if (typeof document !== "undefined") document.documentElement.lang = locale;
   useEffect(() => {
     document.documentElement.lang = locale;
     try { window.localStorage.setItem(LOCALE_STORAGE_KEY, locale); } catch { /* optional preference */ }
@@ -413,6 +414,7 @@ export function LanguageSelect({ compact = false }: { compact?: boolean }) {
 }
 
 export function ControlledLocaleProvider({ children, locale, setLocale }: { children: ReactNode; locale: AppLocale; setLocale: (locale: AppLocale) => void }) {
+  if (typeof document !== "undefined") document.documentElement.lang = locale;
   const value = useMemo(() => ({ locale, setLocale, t: (message: string) => translate(message, locale) }), [locale, setLocale]);
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

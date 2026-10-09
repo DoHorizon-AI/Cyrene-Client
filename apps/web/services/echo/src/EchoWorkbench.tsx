@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { JsonRecord, NavigatorApi } from "../../navigator/src/api";
+import { Button, StatusPill, statusTone, WorkflowSteps, type WorkflowStep, type WorkflowStepState } from "../../navigator/src/components";
 import { useI18n } from "../../../src/i18n";
 import {
   EchoApi,
@@ -233,93 +234,210 @@ export function EchoWorkbench({ api: transport }: EchoWorkbenchProps) {
     ? stringValue(activeInput.targetDatasetVersion) ?? stringValue(asRecord(activeInput.sourceRef)?.uri)
     : null;
   const activePackageDigest = stringValue(asRecord(activeInput?.targetPackageArtifact)?.digest);
+  const workflow = echoWorkflow({ tx, suite, target, activeTargetRef, activeInput, fileInfo, run, report, evaluating: busy && loading });
+  // One filled action: create the suite, then bind an input, then run.
+  // 中文：同一时刻只实心一个推进按钮：先建套件，再绑定输入，最后运行。
+  const advance = !suite ? "suite" : !activeInput ? "input" : "run";
+  const stateLabel = (value: string) => echoStatusLabel(value, locale === "zh-CN");
 
-  return <div className="echo-workbench">
-    <header className="echo-header">
+  return <div className="page-stack echo-workbench">
+    <header className="page-header">
       <div>
-        <span className="echo-eyebrow">ECHO / EXACT MATCH</span>
+        <p className="eyebrow">Echo / Exact match</p>
         <h1>{tx("评测工作台", "Evaluation workbench")}</h1>
-        <p>{tx("导入独立的 reference/actual JSONL，通过 Echo Product API 运行精确匹配，并查看绑定目标版本与输入摘要的报告。", "Import independent reference/actual JSONL, run exact match through the Echo Product API, and inspect a report bound to the target version and input digest.")}</p>
+        <p className="page-description">{tx("导入独立的 reference/actual JSONL，通过 Echo Product API 运行精确匹配，并查看绑定目标版本与输入摘要的报告。", "Import independent reference/actual JSONL, run exact match through the Echo Product API, and inspect a report bound to the target version and input digest.")}</p>
       </div>
-      <div className="echo-badge">{tx("真实 Echo API", "Live Echo API")}</div>
+      <div className="page-header__action"><StatusPill value={tx("真实 Echo API", "Live Echo API")} tone="info" /></div>
     </header>
 
-    {error && <p className="echo-alert" role="alert">{error}</p>}
-    {notice && <p className="echo-notice" role="status">{notice}</p>}
+    <WorkflowSteps steps={workflow} label={tx("评测流程进度", "Evaluation workflow progress")} />
 
-    <section className="echo-section-grid">
-      <section className="echo-card" aria-labelledby="echo-suite-title">
-        <div className="echo-section-heading"><span>01</span><div><h2 id="echo-suite-title">{tx("评测套件", "Evaluation suite")}</h2><p>{tx("定义 exact_match 使用的字段和通过阈值。", "Set the fields and pass threshold for exact_match.")}</p></div></div>
-        <label className="echo-field">{tx("套件名称", "Suite name")}<input value={suiteName} onChange={event => setSuiteName(event.target.value)} maxLength={200} disabled={busy} /></label>
-        <div className="echo-form-row">
-          <label className="echo-field">{tx("参考字段", "Reference field")}<input value="reference" readOnly /></label>
-          <label className="echo-field">{tx("实际字段", "Actual field")}<input value="actual" readOnly /></label>
+    {error && <p className="dh-notice dh-notice--danger" role="alert">{error}</p>}
+    {notice && <p className="dh-notice dh-notice--success" role="status">{notice}</p>}
+
+    <div className="echo-section-grid">
+      <section className="panel" id="echo-suite" aria-labelledby="echo-suite-title">
+        <div className="panel__heading"><h2 id="echo-suite-title">{tx("评测套件", "Evaluation suite")}</h2><span className="panel__meta"><span className="dh-mono">exact_match.v1</span></span></div>
+        <p className="panel__lede">{tx("定义 exact_match 使用的字段和通过阈值。", "Set the fields and pass threshold for exact_match.")}</p>
+        <div className="echo-fields">
+          <label className="field"><span className="field__label">{tx("套件名称", "Suite name")}</span><input value={suiteName} onChange={event => setSuiteName(event.target.value)} maxLength={200} disabled={busy} /></label>
+          <div className="echo-form-row">
+            <label className="field"><span className="field__label">{tx("参考字段", "Reference field")}</span><input className="input-mono" value="reference" readOnly /></label>
+            <label className="field"><span className="field__label">{tx("实际字段", "Actual field")}</span><input className="input-mono" value="actual" readOnly /></label>
+          </div>
+          <label className="field"><span className="field__label">{tx("通过阈值", "Pass threshold")}</span><input type="number" min="0" max="1" step="0.01" value={threshold} onChange={event => setThreshold(event.target.value)} disabled={busy} /></label>
         </div>
-        <label className="echo-field">{tx("通过阈值", "Pass threshold")}<input type="number" min="0" max="1" step="0.01" value={threshold} onChange={event => setThreshold(event.target.value)} disabled={busy} /></label>
         <p className="echo-hint">{tx("指标定义：exact_match 按 reference 与 actual 的精确相等计数，matched / evaluated 得出指标值；缺少任一字段的样本标记为跳过并排除分母，评测错误单独计入失败。阈值只用于套件门禁。", "Metric definition: exact_match counts exact reference/actual equality; matched / evaluated is the metric value. Rows missing either field are skipped and excluded from the denominator; evaluation errors count as failures. The threshold applies only to the suite gate.")}</p>
-        <button className="echo-primary" type="button" disabled={busy} onClick={() => void createSuite()}>{tx("创建 exact-match 套件", "Create exact-match suite")}</button>
-        <div className="echo-divider"><span>{tx("或载入已有套件", "or load an existing suite")}</span></div>
-        <div className="echo-inline-action"><input aria-label={tx("已有套件 ID", "Existing suite ID")} placeholder={tx("粘贴 EvaluationSuite UUID", "Paste an EvaluationSuite UUID")} value={suiteIdDraft} onChange={event => { setSuiteIdDraft(event.target.value); setSuite(null); setRun(null); setReport(null); setSamples([]); }} disabled={busy} /><button type="button" disabled={busy || !suiteIdDraft.trim()} onClick={() => void loadSuite()}>{tx("载入", "Load")}</button></div>
-        {suite && <div className="echo-resource"><span className="echo-state">{suite.evaluator}</span><strong>{suite.name}</strong><code>{suite.id}</code><small>{tx("门禁阈值", "Gate threshold")}: {suite.threshold}</small></div>}
+        <div className="form-actions"><Button tone={advance === "suite" ? "primary" : undefined} type="button" disabled={busy} onClick={() => void createSuite()}>{tx("创建 exact-match 套件", "Create exact-match suite")}</Button></div>
+        <div className="dh-divider">{tx("或载入已有套件", "or load an existing suite")}</div>
+        <div className="echo-inline-action"><input className="input-mono" aria-label={tx("已有套件 ID", "Existing suite ID")} placeholder={tx("粘贴 EvaluationSuite UUID", "Paste an EvaluationSuite UUID")} value={suiteIdDraft} onChange={event => { setSuiteIdDraft(event.target.value); setSuite(null); setRun(null); setReport(null); setSamples([]); }} disabled={busy} /><Button type="button" disabled={busy || !suiteIdDraft.trim()} onClick={() => void loadSuite()}>{tx("载入", "Load")}</Button></div>
+        {suite && <div className="echo-resource">
+          <div className="echo-resource__head"><strong>{suite.name}</strong><code>{suite.evaluator}</code></div>
+          <dl className="dh-kv"><dt>{tx("套件 ID", "Suite ID")}</dt><dd className="dh-id">{suite.id}</dd><dt>{tx("门禁阈值", "Gate threshold")}</dt><dd>{suite.threshold}</dd></dl>
+        </div>}
       </section>
 
-      <section className="echo-card" aria-labelledby="echo-input-title">
-        <div className="echo-section-heading"><span>02</span><div><h2 id="echo-input-title">{tx("目标与输入", "Target and input")}</h2><p>{tx("报告会绑定 Catalyst DatasetVersion、包摘要和原始评测输入摘要。", "Reports bind the Catalyst DatasetVersion, package digest, and immutable evaluation input digest.")}</p></div></div>
-        <label className="echo-field">{tx("Catalyst 数据集", "Catalyst dataset")}<select value={datasetId} onChange={event => setDatasetId(event.target.value)} disabled={busy}>
-          <option value="">{tx("选择数据集", "Select a dataset")}</option>
-          {datasets.map(dataset => {
-            const id = resourceId(dataset);
-            return id ? <option key={id} value={id}>{resourceName(dataset, id)}</option> : null;
-          })}
-        </select></label>
-        <label className="echo-field">{tx("已发布版本 / 包", "Published version / package")}<select value={selectedTarget} onChange={event => setSelectedTarget(event.target.value)} disabled={busy || !versions.length}>
-          <option value="">{versions.length ? tx("选择数据工具包", "Select a data-tools package") : tx("该数据集尚无可用数据工具包", "No data-tools package is available for this dataset")}</option>
-          {targetChoices.map(choice => <option key={choice.key} value={choice.key}>{choice.versionId} · {choice.profile.toUpperCase()} · {shortDigest(choice.artifact.digest)}{choice.stale ? ` · ${tx("已过期", "stale")}` : ""}</option>)}
-        </select></label>
-        {target && <div className="echo-target-summary"><small>{tx("目标版本", "Target version")}</small><code>{target.versionRef}</code><small>{tx("包摘要", "Package digest")}</small><code>{target.artifact.digest}</code></div>}
-
-        <label className="echo-field">{tx("Reference / actual JSONL", "Reference / actual JSONL")}<input type="file" accept=".jsonl,.ndjson,application/jsonl,application/x-ndjson" onChange={event => void readSelectedFile(event.target.files?.[0] ?? null)} disabled={busy} /></label>
+      <section className="panel" id="echo-input" aria-labelledby="echo-input-title">
+        <div className="panel__heading"><h2 id="echo-input-title">{tx("目标与输入", "Target and input")}</h2><span className="panel__meta">Catalyst → Echo</span></div>
+        <p className="panel__lede">{tx("报告会绑定 Catalyst DatasetVersion、包摘要和原始评测输入摘要。", "Reports bind the Catalyst DatasetVersion, package digest, and immutable evaluation input digest.")}</p>
+        <div className="echo-fields">
+          <label className="field"><span className="field__label">{tx("Catalyst 数据集", "Catalyst dataset")}</span><select value={datasetId} onChange={event => setDatasetId(event.target.value)} disabled={busy}>
+            <option value="">{tx("选择数据集", "Select a dataset")}</option>
+            {datasets.map(dataset => {
+              const id = resourceId(dataset);
+              return id ? <option key={id} value={id}>{resourceName(dataset, id)}</option> : null;
+            })}
+          </select></label>
+          <label className="field"><span className="field__label">{tx("已发布版本 / 包", "Published version / package")}</span><select className="input-mono" value={selectedTarget} onChange={event => setSelectedTarget(event.target.value)} disabled={busy || !versions.length}>
+            <option value="">{versions.length ? tx("选择数据工具包", "Select a data-tools package") : tx("该数据集尚无可用数据工具包", "No data-tools package is available for this dataset")}</option>
+            {targetChoices.map(choice => <option key={choice.key} value={choice.key}>{choice.versionId} · {choice.profile.toUpperCase()} · {shortDigest(choice.artifact.digest)}{choice.stale ? ` · ${tx("已过期", "stale")}` : ""}</option>)}
+          </select></label>
+          {target && <dl className="dh-kv echo-target-summary"><dt>{tx("目标版本", "Target version")}</dt><dd>{target.versionRef}</dd><dt>{tx("包摘要", "Package digest")}</dt><dd>{target.artifact.digest}</dd></dl>}
+          <label className="field"><span className="field__label">{tx("Reference / actual JSONL", "Reference / actual JSONL")}</span><input type="file" accept=".jsonl,.ndjson,application/jsonl,application/x-ndjson" onChange={event => void readSelectedFile(event.target.files?.[0] ?? null)} disabled={busy} /></label>
+        </div>
         <p className="echo-hint">{tx("每行需有唯一 sampleId；reference 或 actual 可缺失，以便 Echo 将未评估样本计入覆盖报告。单次最多 1,000 条、16 MiB。", "Each row needs a unique sampleId. Missing reference or actual values are retained for Echo coverage reporting. Limit: 1,000 rows and 16 MiB per input.")}</p>
         {fileInfo && <div className="echo-preview-counts"><span>{tx("样本", "Samples")} <strong>{fileInfo.total}</strong></span><span>{tx("可评估", "Evaluable")} <strong>{fileInfo.evaluable}</strong></span><span>{tx("缺 reference", "Missing reference")} <strong>{fileInfo.missingReference}</strong></span><span>{tx("缺 actual", "Missing actual")} <strong>{fileInfo.missingActual}</strong></span></div>}
-        {inputs.length > 0 && <label className="echo-field">{tx("已导入评测输入", "Imported evaluation input")}<select value={activeInput?.id ?? ""} onChange={event => void selectSavedInput(event.target.value)} disabled={busy}>
+        {inputs.length > 0 && <label className="field echo-saved-input"><span className="field__label">{tx("已导入评测输入", "Imported evaluation input")}</span><select className="input-mono" value={activeInput?.id ?? ""} onChange={event => void selectSavedInput(event.target.value)} disabled={busy}>
           <option value="">{tx("选择本次输入", "Choose the input for this run")}</option>
           {inputs.filter(isReferenceActualInput).map(item => <option key={item.id} value={item.id}>{item.id} · {item.state}</option>)}
         </select></label>}
-        {activeInput && <div className="echo-resource"><span className="echo-state">{activeInput.state}</span><strong>{tx("已绑定评测目标", "Target bound")}</strong><code>{activeInput.id}</code>{activeTargetRef && <><small>{tx("数据集版本", "Dataset version")}</small><code>{activeTargetRef}</code></>}{activePackageDigest && <><small>{tx("目标包摘要", "Target package digest")}</small><code>{activePackageDigest}</code></>}</div>}
-        <button className="echo-secondary" type="button" disabled={busy || !file || !fileInfo || !target} onClick={() => void importInput()}>{tx("上传并保存评测输入", "Upload and save evaluation input")}</button>
+        {activeInput && <div className="echo-resource">
+          <div className="echo-resource__head"><strong>{tx("已绑定评测目标", "Target bound")}</strong><StatusPill value={stateLabel(activeInput.state)} tone={statusTone(activeInput.state)} /></div>
+          <dl className="dh-kv"><dt>{tx("输入 ID", "Input ID")}</dt><dd className="dh-id">{activeInput.id}</dd>{activeTargetRef && <><dt>{tx("数据集版本", "Dataset version")}</dt><dd>{activeTargetRef}</dd></>}{activePackageDigest && <><dt>{tx("目标包摘要", "Target package digest")}</dt><dd>{activePackageDigest}</dd></>}</dl>
+        </div>}
+        <div className="form-actions"><Button tone={advance === "input" ? "primary" : undefined} type="button" disabled={busy || !file || !fileInfo || !target} onClick={() => void importInput()}>{tx("上传并保存评测输入", "Upload and save evaluation input")}</Button></div>
       </section>
+    </div>
+
+    <section className="panel echo-run" id="echo-run" aria-labelledby="echo-run-title">
+      <div className="panel__heading"><h2 id="echo-run-title">{tx("运行真实评测", "Run evaluation")}</h2><span className="panel__meta"><span className="dh-mono">evaluation.runner.v1</span></span></div>
+      <p className="panel__lede">{tx("Echo 会调用已配置的 evaluation.runner.v1；不会把本地或 Studio 预演标为评测结果。", "Echo calls the configured evaluation.runner.v1. A local or Studio pipeline preview is never reported as an evaluation result.")}</p>
+      <div className="echo-run-bar">
+        <div className="echo-run-bar__summary">{suite ? <strong>{suite.name}</strong> : <span>{tx("尚未选择套件", "No suite selected")}</span>}<small>{activeInput ? <>{tx("输入", "Input")}: <span className="dh-id">{activeInput.id}</span></> : tx("尚未选择输入", "No input selected")}</small></div>
+        <div className="echo-run-bar__actions">{run && !report && <Button type="button" disabled={busy} onClick={() => void refreshRun()}>{tx("刷新状态", "Refresh status")}</Button>}<Button tone={advance === "run" ? "primary" : undefined} type="button" disabled={busy || !suite || !activeInput} loading={busy} onClick={() => void evaluate()}>{busy ? tx("正在处理…", "Working…") : tx("运行 Echo", "Run Echo")}</Button></div>
+      </div>
+      {run && <div className="echo-run-state"><StatusPill value={stateLabel(run.state)} tone={statusTone(run.state)} /><code>{run.id}</code>{run.failure && <span className="echo-run-state__failure">{String(run.failure.message ?? run.failure.code ?? "")}</span>}</div>}
     </section>
 
-    <section className="echo-card echo-run-card" aria-labelledby="echo-run-title">
-      <div className="echo-section-heading"><span>03</span><div><h2 id="echo-run-title">{tx("运行真实评测", "Run evaluation")}</h2><p>{tx("Echo 会调用已配置的 evaluation.runner.v1；不会把本地或 Studio 预演标为评测结果。", "Echo calls the configured evaluation.runner.v1. A local or Studio pipeline preview is never reported as an evaluation result.")}</p></div></div>
-      <div className="echo-run-actions"><div>{suite ? <strong>{suite.name}</strong> : <span>{tx("尚未选择套件", "No suite selected")}</span>}<small>{activeInput ? `${tx("输入", "Input")}: ${activeInput.id}` : tx("尚未选择输入", "No input selected")}</small></div><div className="echo-button-group"><button className="echo-primary" type="button" disabled={busy || !suite || !activeInput} onClick={() => void evaluate()}>{busy ? tx("正在处理…", "Working…") : tx("运行 Echo", "Run Echo")}</button>{run && !report && <button type="button" disabled={busy} onClick={() => void refreshRun()}>{tx("刷新状态", "Refresh status")}</button>}</div></div>
-      {run && <div className="echo-run-state"><span className={`echo-state ${run.state.toLowerCase()}`}>{run.state}</span><code>{run.id}</code>{run.failure && <span>{String(run.failure.message ?? run.failure.code ?? "")}</span>}</div>}
-    </section>
-
-    {report && <section className="echo-card echo-report-card" aria-labelledby="echo-report-title">
-      <div className="echo-report-heading"><div><span className="echo-eyebrow">PERSISTED EVALUATION REPORT</span><h2 id="echo-report-title">{tx("评测报告", "Evaluation report")}</h2><p>{tx("评测目标、输入摘要、指标与逐样本状态均来自 Echo 导出的 JSON 报告。", "Target, input digest, metrics, and per-sample states come from the JSON report exported by Echo.")}</p></div><button className="echo-primary" type="button" disabled={busy} onClick={() => void downloadReport()}>{tx("下载 JSON 报告", "Download JSON report")}</button></div>
-      <div className="echo-coverage-grid">
+    {report && <section className="panel echo-report" id="echo-report" aria-labelledby="echo-report-title">
+      <div className="echo-report__heading">
+        <div>
+          <p className="eyebrow">{tx("持久化评测报告", "Persisted evaluation report")}</p>
+          <h2 id="echo-report-title">{tx("评测报告", "Evaluation report")}</h2>
+          <p className="panel__lede">{tx("评测目标、输入摘要、指标与逐样本状态均来自 Echo 导出的 JSON 报告。", "Target, input digest, metrics, and per-sample states come from the JSON report exported by Echo.")}</p>
+        </div>
+        <Button type="button" disabled={busy} onClick={() => void downloadReport()}>{tx("下载 JSON 报告", "Download JSON report")}</Button>
+      </div>
+      <div className="metric-grid">
         <CoverageCard label={tx("总样本", "Total samples")} value={report.coverage.total} />
-        <CoverageCard label={tx("已评估", "Evaluated")} value={report.coverage.evaluated} />
-        <CoverageCard label={tx("失败", "Failed")} value={report.coverage.failed} />
-        <CoverageCard label={tx("跳过", "Skipped")} value={report.coverage.skipped} />
+        <CoverageCard label={tx("已评估", "Evaluated")} value={report.coverage.evaluated} accent="lime" />
+        <CoverageCard label={tx("失败", "Failed")} value={report.coverage.failed} accent="red" />
+        <CoverageCard label={tx("跳过", "Skipped")} value={report.coverage.skipped} accent="amber" />
       </div>
-      <div className="echo-report-meta"><span>{tx("目标版本", "Target version")} <code>{report.target.versionRef}</code></span><span>{tx("包摘要", "Package digest")} <code>{report.target.packageDigest}</code></span><span>{tx("输入摘要", "Input digest")} <code>{report.inputDigest}</code></span><span>{tx("评估器", "Evaluator")} <code>{report.evaluator.id} v{report.evaluator.version}</code></span></div>
-      <h3>{tx("命名指标", "Named metrics")}</h3>
-      <div className="echo-metrics">
-        {report.metrics.map(metric => <article key={metric.name}><span>{metric.name}</span><strong>{formatRatio(metric.value)}</strong><small>{metric.matched} / {metric.evaluated} {tx("匹配", "matched")}</small></article>)}
+      <dl className="detail-grid detail-grid--wrap echo-report__meta">
+        <div className="detail-item"><dt>{tx("目标版本", "Target version")}</dt><dd className="input-mono">{report.target.versionRef}</dd></div>
+        <div className="detail-item"><dt>{tx("包摘要", "Package digest")}</dt><dd className="input-mono">{report.target.packageDigest}</dd></div>
+        <div className="detail-item"><dt>{tx("输入摘要", "Input digest")}</dt><dd className="input-mono">{report.inputDigest}</dd></div>
+        <div className="detail-item"><dt>{tx("评估器", "Evaluator")}</dt><dd className="input-mono">{report.evaluator.id} v{report.evaluator.version}</dd></div>
+      </dl>
+      <h3 className="dh-section-label">{tx("命名指标", "Named metrics")}</h3>
+      <div className="metric-grid metric-grid--inline">
+        {report.metrics.map(metric => <article className="metric-card metric-card--blue" key={metric.name}><p className="metric-card__label"><span className="dh-mono">{metric.name}</span></p><strong>{formatRatio(metric.value)}</strong><p className="metric-card__detail">{metric.matched} / {metric.evaluated} {tx("匹配", "matched")}</p></article>)}
       </div>
-      <h3>{tx("逐样本证据", "Per-sample evidence")}</h3>
-      <div className="echo-table-scroll"><table className="echo-samples-table"><thead><tr><th>{tx("Sample ID", "Sample ID")}</th><th>{tx("状态", "Status")}</th><th>reference</th><th>actual</th><th>{tx("说明", "Detail")}</th></tr></thead><tbody>
-        {sampleEvidence.map(sample => <tr key={sample.sampleId}><td><code>{sample.sampleId}</code></td><td><span className={`echo-state ${sample.status.toLowerCase()}`}>{sample.status}</span></td><td>{formatValue(sample.reference)}</td><td>{formatValue(sample.actual)}</td><td>{sample.message ?? sample.code ?? (sample.exactMatch === true ? tx("完全匹配", "Exact match") : sample.exactMatch === false ? tx("未匹配", "No exact match") : "—")}</td></tr>)}
+      <h3 className="dh-section-label">{tx("逐样本证据", "Per-sample evidence")}</h3>
+      <div className="table-scroll"><table className="resource-table echo-samples-table"><thead><tr><th>{tx("样本 ID", "Sample ID")}</th><th>{tx("状态", "Status")}</th><th>{tx("参考值", "reference")}</th><th>{tx("实际值", "actual")}</th><th>{tx("说明", "Detail")}</th></tr></thead><tbody>
+        {sampleEvidence.map(sample => <tr key={sample.sampleId}><td><code>{sample.sampleId}</code></td><td><StatusPill value={stateLabel(sample.status)} tone={statusTone(sample.status)} /></td><td className="echo-sample-value">{formatValue(sample.reference)}</td><td className="echo-sample-value">{formatValue(sample.actual)}</td><td>{sample.message ?? sample.code ?? (sample.exactMatch === true ? tx("完全匹配", "Exact match") : sample.exactMatch === false ? tx("未匹配", "No exact match") : "—")}</td></tr>)}
       </tbody></table></div>
       {loading && <p className="echo-hint">{tx("正在加载样本证据…", "Loading sample evidence…")}</p>}
     </section>}
   </div>;
 }
 
-function CoverageCard({ label, value }: { label: string; value: number }) {
-  return <article className="echo-coverage-card"><span>{label}</span><strong>{value}</strong></article>;
+/** Chinese labels for Echo run and sample states. Tone still comes from the raw value. 中文：状态文案本地化，颜色仍按原始状态计算。 */
+function echoStatusLabel(value: string, zh: boolean): string {
+  if (!zh) return value;
+  const labels: Record<string, string> = {
+    SUCCEEDED: "已完成",
+    READY: "就绪",
+    FAILED: "失败",
+    RUNNING: "运行中",
+    QUEUED: "排队中",
+    PROCESSING: "处理中",
+    PENDING: "等待中",
+    SKIPPED: "已跳过",
+    CANCELLED: "已取消",
+    CANCELED: "已取消",
+    INTERRUPTED: "已中断",
+    MATCHED: "已匹配",
+    UNMATCHED: "未匹配",
+    PASS: "通过",
+    FAIL: "未通过",
+  };
+  return labels[value.trim().toUpperCase()] ?? value;
+}
+
+function CoverageCard({ label, value, accent = "gray" }: { label: string; value: number; accent?: "gray" | "lime" | "red" | "amber" }) {
+  return <article className={`metric-card metric-card--${accent}`}><p className="metric-card__label">{label}</p><strong>{value}</strong></article>;
+}
+
+interface EchoWorkflowInput {
+  tx: (zh: string, en: string) => string;
+  suite: EvaluationSuite | null;
+  target: TargetPackageChoice | null;
+  activeTargetRef: string | null;
+  activeInput: EvaluationInput | null;
+  fileInfo: ReturnType<typeof inspectReferenceActualJsonl> | null;
+  run: EvaluationRun | null;
+  report: EvaluationReport | null;
+  evaluating: boolean;
+}
+
+/**
+ * Summarize the evaluation flow from existing workbench state; no extra reads.
+ * 中文：根据工作台现有状态汇总评测流程，不额外请求接口。
+ */
+function echoWorkflow({ tx, suite, target, activeTargetRef, activeInput, fileInfo, run, report, evaluating }: EchoWorkflowInput): WorkflowStep[] {
+  const runStep: WorkflowStep = { id: "run", label: tx("运行", "Run"), targetId: "echo-run", state: "pending", detail: tx("需要套件与输入", "Needs suite and input") };
+  if (run) {
+    const tone = statusTone(run.state);
+    const state: WorkflowStepState = tone === "bad" ? "blocked" : tone === "good" ? "done" : tone === "warn" ? "attention" : tone === "live" ? "running" : "current";
+    runStep.state = state;
+    runStep.detail = run.state;
+  } else if (evaluating) {
+    runStep.state = "running";
+    runStep.detail = tx("评测中", "Evaluating");
+  } else if (suite && activeInput) {
+    runStep.state = "current";
+    runStep.detail = tx("可以运行", "Ready to run");
+  }
+  const headline = report?.metrics?.[0];
+  return [
+    { id: "suite", label: tx("评测套件", "Suite"), targetId: "echo-suite", state: suite ? "done" : "pending", detail: suite ? suite.name : tx("创建或载入", "Create or load") },
+    {
+      id: "target",
+      label: tx("目标包", "Target"),
+      targetId: "echo-input",
+      state: target || activeTargetRef ? "done" : "pending",
+      detail: target ? `${target.profile.toUpperCase()} · ${shortDigest(target.artifact.digest)}` : activeTargetRef ? tx("已绑定", "Bound") : tx("选择已发布包", "Pick a package"),
+    },
+    {
+      id: "input",
+      label: tx("评测输入", "Input"),
+      targetId: "echo-input",
+      state: activeInput ? "done" : fileInfo ? "current" : "pending",
+      detail: activeInput
+        ? fileInfo ? tx(`${fileInfo.total} 条样本`, `${fileInfo.total} samples`) : activeInput.state
+        : fileInfo ? tx(`${fileInfo.total} 条待导入`, `${fileInfo.total} rows to import`) : tx("导入 JSONL", "Import JSONL"),
+    },
+    runStep,
+    {
+      id: "report",
+      label: tx("报告", "Report"),
+      targetId: report ? "echo-report" : undefined,
+      state: report ? "done" : "pending",
+      detail: headline ? `${headline.name} ${formatRatio(headline.value)}` : tx("等待结果", "Awaiting results"),
+    },
+  ];
 }
 
 function packageChoices(version: JsonRecord): TargetPackageChoice[] {

@@ -1,7 +1,8 @@
 .mcp-panel{display:flex;flex-direction:column;gap:10px;padding:12px;font-size:12px;min-width:0}
-.mcp-panel p{margin:0;line-height:1.6;overflow-wrap:anywhere}.mcp-muted,.mcp-panel small{color:var(--text-muted,#92959e)}
+.mcp-panel p{margin:0;line-height:1.6;overflow-wrap:anywhere}.mcp-muted,.mcp-panel small{color:var(--dh-text-tertiary)}
 .mcp-heading,.mcp-actions,.mcp-tabs{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.mcp-heading{justify-content:space-between}
-.mcp-tabs{border-bottom:1px solid #41434a;padding-bottom:8px}.mcp-tabs button[aria-pressed=true]{background:#3b4965;color:#fff}
-.mcp-panel textarea,.mcp-panel input,.mcp-panel select{box-sizing:border-box;width:100%;color:inherit;background:#25262b;border:1px solid #45474f;border-radius:3px;padding:7px}
-.mcp-panel textarea{resize:vertical;font:12px/1.5 monospace}.mcp-panel pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.6 monospace;max-height:300px;overflow:auto;background:#232429;padding:8px}
+.mcp-tabs{border-bottom:1px solid var(--dh-border);padding-bottom:8px}.mcp-tabs button[aria-pressed=true]{background:var(--dh-bg-selected);color:var(--dh-text-primary);box-shadow:inset 0 -2px 0 var(--dh-indicator)}
+.mcp-panel textarea,.mcp-panel input,.mcp-panel select{box-sizing:border-box;width:100%;color:var(--dh-text-primary);background:var(--dh-bg-field);border:1px solid var(--dh-border-strong);border-radius:var(--dh-radius-sm);padding:7px}
+.mcp-panel textarea:focus-visible,.mcp-panel input:focus-visible,.mcp-panel select:focus-visible{outline:none;border-color:var(--dh-focus);box-shadow:var(--dh-focus-ring)}
+.mcp-panel textarea{resize:vertical;font:12px/1.5 var(--dh-font-mono)}.mcp-panel pre{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.6 var(--dh-font-mono);max-height:300px;overflow:auto;background:var(--dh-bg-canvas);padding:8px}
 .mcp-panel details{min-width:0}.mcp-panel summary{cursor:pointer;padding:5px 0}.mcp-conversation{display:flex;flex-direction:column;gap:12px}.mcp-conversation p{white-space:pre-wrap}
