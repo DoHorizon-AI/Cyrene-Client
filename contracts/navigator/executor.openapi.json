@@ -1,0 +1,2605 @@
+{
+  "openapi": "3.1.2",
+  "info": {
+    "title": "Navigator Executor and Assistant API",
+    "version": "1.0.0"
+  },
+  "security": [
+    {
+      "NavigatorBearer": []
+    }
+  ],
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "operationId": "executorHealth",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createTask",
+        "description": "Admit one durable queued turn. Reuse Idempotency-Key for the same normalized submission; changed fields conflict.",
+        "responses": {
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "schema": {
+              "$ref": "#/components/schemas/TaskId"
+            }
+          },
+          {
+            "name": "X-Idempotency-Key",
+            "in": "header",
+            "deprecated": true,
+            "schema": {
+              "$ref": "#/components/schemas/TaskId"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCreateInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/dispatch": {
+      "post": {
+        "operationId": "dispatchQueuedTasks",
+        "description": "Trusted executor host dispatcher; not a browser admission shortcut.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DispatchResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}": {
+      "get": {
+        "operationId": "getTask",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TaskId"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteTask",
+        "description": "Compatibility alias for cancellation. It does not delete history.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TaskId"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{taskId}/status": {
+      "get": {
+        "operationId": "getTaskStatus",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TaskId"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{taskId}/stream": {
+      "get": {
+        "operationId": "streamTask",
+        "responses": {
+          "200": {
+            "description": "Authoritative durable SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE id is the Work event sequence. Event is payload.type (or message for untyped extension data). data is one JSON payload."
+                },
+                "x-event-payload": {
+                  "$ref": "#/components/schemas/TaskStreamEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TaskId"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{taskId}/events": {
+      "get": {
+        "operationId": "streamTaskEvents",
+        "responses": {
+          "200": {
+            "description": "Authoritative durable SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE id is the Work event sequence. Event is payload.type (or message for untyped extension data). data is one JSON payload."
+                },
+                "x-event-payload": {
+                  "$ref": "#/components/schemas/TaskStreamEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TaskId"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{taskId}/dispatch": {
+      "post": {
+        "operationId": "dispatchTask",
+        "responses": {
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TaskId"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{taskId}/cancel": {
+      "post": {
+        "operationId": "cancelTask",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TaskId"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/execute": {
+      "post": {
+        "operationId": "executeTask",
+        "description": "Trusted synchronous compatibility endpoint; stream=true or Accept:text/event-stream selects executor event SSE.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskOutcome"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "x-event-payload": {
+                  "$ref": "#/components/schemas/ExecutorStreamEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCreateInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assistant/capabilities": {
+      "get": {
+        "operationId": "assistantCapabilities",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantCapabilities"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assistant/providers": {
+      "get": {
+        "operationId": "listApiProviders",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiProviders"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assistant/providers/{providerId}": {
+      "put": {
+        "operationId": "putApiProvider",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiProvider"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "providerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ProviderId"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiProviderInput"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteApiProvider",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer credential required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource or route not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Task idempotency or session selection conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Host or upstream failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "providerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ProviderId"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ProviderId": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+      },
+      "TaskId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+      },
+      "RuntimeId": {
+        "type": "string",
+        "enum": [
+          "harness",
+          "codex",
+          "claude",
+          "cursor",
+          "codebuddy",
+          "workbuddy"
+        ]
+      },
+      "Permission": {
+        "type": "string",
+        "enum": [
+          "read-only",
+          "ask",
+          "auto",
+          "full-access"
+        ]
+      },
+      "ExecutionStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "aborted",
+          "waiting_approval",
+          "waiting_input"
+        ]
+      },
+      "HarnessExecutionSelection": {
+        "type": "object",
+        "properties": {
+          "runtime": {
+            "type": "string",
+            "const": "harness"
+          },
+          "providerId": {
+            "$ref": "#/components/schemas/ProviderId"
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "effort": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "permission": {
+            "type": "string",
+            "enum": [
+              "read-only",
+              "ask"
+            ]
+          }
+        },
+        "required": [
+          "runtime"
+        ],
+        "additionalProperties": false
+      },
+      "NativeExecutionSelection": {
+        "type": "object",
+        "properties": {
+          "runtime": {
+            "type": "string",
+            "enum": [
+              "codex",
+              "claude",
+              "cursor",
+              "codebuddy",
+              "workbuddy"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "effort": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "permission": {
+            "$ref": "#/components/schemas/Permission"
+          }
+        },
+        "required": [
+          "runtime"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutionSelection": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/HarnessExecutionSelection"
+          },
+          {
+            "$ref": "#/components/schemas/NativeExecutionSelection"
+          }
+        ]
+      },
+      "Model": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "efforts": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 200,
+              "minLength": 1
+            }
+          },
+          "images": {
+            "type": "boolean"
+          },
+          "contextWindow": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000000
+          },
+          "maxTokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000000
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "efforts",
+          "images"
+        ],
+        "additionalProperties": false
+      },
+      "ModelInput": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "efforts": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            "maxItems": 10
+          },
+          "images": {
+            "type": "boolean"
+          },
+          "contextWindow": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000000
+          },
+          "maxTokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000000
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "ApiProtocol": {
+        "type": "string",
+        "enum": [
+          "openai-completions",
+          "openai-responses",
+          "anthropic-messages"
+        ]
+      },
+      "ApiProvider": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ProviderId"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ApiProtocol"
+          },
+          "baseUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2000
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Model"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "configured": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "protocol",
+          "baseUrl",
+          "models",
+          "configured"
+        ],
+        "additionalProperties": false
+      },
+      "ApiProviderInput": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ProviderId"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ApiProtocol"
+          },
+          "baseUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2000
+          },
+          "apiKey": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[!-~]+$",
+            "writeOnly": true,
+            "description": "Required for new providers and when changing endpoint or protocol. Never returned."
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelInput"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "name",
+          "baseUrl",
+          "models"
+        ],
+        "additionalProperties": false
+      },
+      "ApiProviders": {
+        "type": "object",
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiProvider"
+            }
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "additionalProperties": false
+      },
+      "RuntimeInfo": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/RuntimeId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Model"
+            }
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Permission"
+            }
+          },
+          "resume": {
+            "type": "boolean"
+          },
+          "approvalScopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "once",
+                "task"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "available",
+          "models"
+        ],
+        "additionalProperties": false
+      },
+      "AssistantCapabilities": {
+        "type": "object",
+        "properties": {
+          "defaultRuntime": {
+            "type": "string",
+            "const": "harness"
+          },
+          "workspaceId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "mcpConfigured": {
+            "type": "boolean"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiProvider"
+            }
+          },
+          "runtimes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeInfo"
+            }
+          }
+        },
+        "required": [
+          "defaultRuntime",
+          "workspaceId",
+          "mcpConfigured",
+          "providers",
+          "runtimes"
+        ],
+        "additionalProperties": false
+      },
+      "TaskCreateInput": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "taskId": {
+            "$ref": "#/components/schemas/TaskId"
+          },
+          "sessionId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "cwd": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing directory, realpath-contained in host allowedCwdRoots."
+          },
+          "agentPreset": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Registered host-allowed preset; navigator-native-* is reserved."
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "Cannot exceed host maxTimeoutMs (default six hours)."
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/ExecutionSelection"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Fixed context snapshot and attachment references. The navigator namespace is host-owned."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "additionalProperties": false
+      },
+      "TaskRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "sessionId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "createdAt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "startedAt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "endedAt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "output": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "workspaceId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "executorOwned": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Immutable marker: signed metadata is mandatory for executor-owned tasks."
+          }
+        },
+        "required": [
+          "id",
+          "sessionId",
+          "prompt",
+          "status",
+          "createdAt",
+          "output",
+          "reasoning",
+          "durationMs"
+        ],
+        "additionalProperties": false
+      },
+      "TaskPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskRecord"
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "additionalProperties": false
+      },
+      "TaskOutcome": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "sessionId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "output": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "taskId",
+          "sessionId",
+          "status",
+          "output",
+          "reasoning",
+          "durationMs"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorStatusEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "status"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "sessionId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "sessionId",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorTextEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "text-delta"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorReasoningEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "reasoning-delta"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorToolCallEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "tool-call"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "callId": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "args": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "callId",
+          "tool",
+          "args"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorToolResultEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "tool-result"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "callId": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          },
+          "isError": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "callId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorProgressEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "subagent-progress"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "provider": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "provider"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorSubagentTextEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "subagent-assistant-delta"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "provider": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "provider",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorBlockedEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "subagent-blocked"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "provider": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "reasonCode": {
+            "type": "string",
+            "enum": [
+              "SANDBOX_BOUNDARY_DENIED",
+              "SANDBOX_PROFILE_UNAVAILABLE",
+              "SANDBOX_MODE_UNVERIFIED",
+              "SUBAGENT_TIMEOUT",
+              "SUBAGENT_FAILED"
+            ]
+          },
+          "toolCategory": {
+            "type": "string",
+            "enum": [
+              "file",
+              "command",
+              "network",
+              "other",
+              "unknown"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "provider",
+          "runId",
+          "reasonCode",
+          "toolCategory",
+          "count"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorPermissionEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "permission"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "provider": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "denied"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "provider",
+          "decision"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorFinishEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "finish"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "output": {
+            "type": "string"
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "status",
+          "output",
+          "durationMs"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorErrorEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "error"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "message": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "timestamp",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "ExecutorStreamEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ExecutorStatusEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorTextEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorReasoningEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorToolCallEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorToolResultEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorProgressEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorSubagentTextEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorBlockedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorPermissionEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorFinishEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutorErrorEvent"
+          }
+        ]
+      },
+      "ApprovalAutoGrantedEvent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "approval.auto_granted"
+          },
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1
+          },
+          "grantKey": {
+            "type": "string"
+          },
+          "approvalId": {
+            "type": "string"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "type",
+          "taskId",
+          "kind",
+          "grantKey",
+          "approvalId",
+          "tool",
+          "summary",
+          "details"
+        ],
+        "additionalProperties": false
+      },
+      "WorkTaskStreamEvent": {
+        "type": "object",
+        "properties": {
+          "type": {},
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "seq"
+        ],
+        "additionalProperties": true,
+        "not": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "enum": [
+                "status",
+                "text-delta",
+                "reasoning-delta",
+                "tool-call",
+                "tool-result",
+                "subagent-progress",
+                "subagent-assistant-delta",
+                "subagent-blocked",
+                "permission",
+                "finish",
+                "error",
+                "approval.auto_granted"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "description": "Authoritative Work event payload with its sequence. Work lifecycle, user.note and host extension events pass through unchanged; these are not model assertions of task status."
+      },
+      "TaskStreamEvent": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ExecutorStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ApprovalAutoGrantedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/WorkTaskStreamEvent"
+          }
+        ]
+      },
+      "CancelResult": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "cancelled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "taskId",
+          "cancelled"
+        ],
+        "additionalProperties": false
+      },
+      "DispatchResult": {
+        "type": "object",
+        "properties": {
+          "started": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "started"
+        ],
+        "additionalProperties": false
+      },
+      "DeletedResult": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false
+      },
+      "HttpError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "service": {
+            "type": "string",
+            "const": "cyrene-navigator-executor"
+          },
+          "version": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "status",
+          "service",
+          "version",
+          "timestamp"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "securitySchemes": {
+      "NavigatorBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

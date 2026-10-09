@@ -28,6 +28,8 @@ MCP wire 名称改为 `pipelines_get`、`runs_start` 等下划线形式，HTTP �
 
 Navigator 代理的权限、工作空间、浏览器专属操作、请求体校验、大小限制和上游别名集中在 `tooling/product-proxy.ts` 的声明式策略。任务保留字段与禁止的 Work 写路由仍在转发前拒绝；模型提供方 ID 与宿主契约一致，为小写字母开头、最多 64 位的小写字母/数字/连字符。代理保留查询参数、原始上传和 SSE，不扩大路径白名单。
 
+任务、助手与流事件的权威 OpenAPI 位于 Navigator `contracts/product/v1/executor.openapi.json`，持久化 Work 契约仍位于 `work.openapi.json`。Client 用 `npm run contracts:navigator` 同步脱敏契约快照并生成 `ExecutorSchemas`/`WorkSchemas` 类型；`npm run contracts:navigator:check` 不依赖其他仓库，检查提交的快照与类型是否一致，已纳入 `npm run check`。更新步骤见 `contracts/navigator/README.md`。
+
 - `apps/web/src/assistant/` 提供同一实例在右侧栏与主编辑区之间移动的对话界面。新版 Navigator 工作助手管理页与聊天界面读取同一任务记录。
 - `/api/v1/navigator/tasks` 映射到已配对 Navigator 的 `/api/v1/tasks`。新增顶层 `execution` 选择个人运行时、API 提供方、模型、思考深度和权限；任务 ID 也是稳定的提交幂等键。
 - `/api/v1/navigator/assistant/capabilities` 和 `providers` 映射到 Navigator 相应接口。能力发现只呈现实际宿主支持的配置；API key 只写入宿主凭据存储，不进入浏览器持久化或任务 metadata。
