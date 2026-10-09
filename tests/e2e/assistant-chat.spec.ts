@@ -247,3 +247,25 @@ for (const probe of ["slow", "failed"] as const) test(`workspace identity ${prob
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect.poll(() => state.submissions.length).toBe(1);
 });
+
+test("extracted chat components use the shared English dictionary and retain permission confirmation", async ({ page }) => {
+  const state = await fixture(page);
+  await page.getByRole("combobox", { name: "语言", exact: true }).selectOption("en-US");
+  await expect(page.getByRole("button", { name: "New chat", exact: true })).toBeVisible();
+  await page.getByLabel("Agent", { exact: true }).selectOption("codex");
+  page.once("dialog", async dialog => {
+    expect(dialog.message()).toContain("Enable it for subsequent tasks?");
+    await dialog.dismiss();
+  });
+  await page.getByLabel("Permission mode", { exact: true }).selectOption("auto");
+  await expect(page.getByLabel("Permission mode", { exact: true })).toHaveValue("ask");
+  await page.getByLabel("Message", { exact: true }).fill("Dictionary task");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => state.tasks.length).toBe(1);
+  await page.getByRole("button", { name: "Chat history", exact: true }).click();
+  await expect(page.locator(".assistant-history")).toContainText("Dictionary task");
+  await expect(page.getByRole("button", { name: "Read legacy chat export", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "API configuration", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Reasoning levels (comma separated, optional)", { exact: true })).toBeVisible();
+});
