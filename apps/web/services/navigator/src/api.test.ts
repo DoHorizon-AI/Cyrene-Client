@@ -4,7 +4,7 @@
 // -----------------------------------------------------------------------------
 // 中文：// 中文：模块职责：测试会话轮换与同源 Product 代理客户端。
 
-import { NavigatorApi } from "./api";
+import { NavigatorApi, type Fetcher } from "./api";
 import { describe, expect, it } from "vitest";
 
 function response(body: unknown, status = 200): Response {
@@ -15,6 +15,51 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("NavigatorApi", () => {
+  it("shares cookie rotation and CSRF across a rebuilt session owner", async () => {
+    const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "old-csrf", refreshed: false };
+    let release!: (value: Response) => void;
+    const calls: { path: string; csrf: string | null }[] = [];
+    const fetcher: Fetcher = async (input, init) => {
+      const path = String(input);
+      calls.push({ path, csrf: new Headers(init?.headers).get("X-CSRF-Token") });
+      if (path.endsWith("/refresh")) return new Promise(resolve => { release = resolve; });
+      return init?.method === "DELETE" ? response(undefined, 204) : response(session);
+    };
+    const oldOwner = new NavigatorApi(fetcher);
+    await oldOwner.getSession();
+    const refreshing = oldOwner.refreshSession();
+    await Promise.resolve();
+    const newOwner = new NavigatorApi(fetcher);
+    const logout = newOwner.logout();
+    await Promise.resolve();
+    expect(calls).toHaveLength(2);
+    release(response({ ...session, csrfToken: "rotated-csrf", refreshed: true }));
+    await Promise.all([refreshing, logout]);
+    expect(calls[2]).toEqual({ path: "/api/v1/auth/session", csrf: "rotated-csrf" });
+    expect(oldOwner.sessionCsrfToken).toBeNull();
+    expect(newOwner.sessionCsrfToken).toBeNull();
+  });
+
+  it("does not let an old owner's late denial expire a newly paired owner", async () => {
+    const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "new-session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "new-csrf", refreshed: false };
+    let release!: (value: Response) => void, reads = 0, refreshes = 0;
+    const fetcher: Fetcher = async input => {
+      if (String(input).endsWith("/pair")) return response(session);
+      if (String(input).endsWith("/refresh")) { refreshes++; return response({}, 401); }
+      return reads++ === 0 ? new Promise(resolve => { release = resolve; }) : response([]);
+    };
+    const oldOwner = new NavigatorApi(fetcher);
+    const pending = oldOwner.requestProductResponse("/api/v1/echo/status", { method: "GET" });
+    const newOwner = new NavigatorApi(fetcher);
+    await newOwner.pair("one-time-code");
+    release(response({}, 401));
+    expect((await pending).status).toBe(200);
+    expect(refreshes).toBe(0);
+    expect(newOwner.sessionCsrfToken).toBe("new-csrf");
+  });
+
   it("serializes refresh, pair, and logout including the rotating CSRF token", async () => {
     const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "session", expiresAt: null,
       refreshExpiresAt: null, refreshable: true, csrfToken: "old-csrf", refreshed: false };

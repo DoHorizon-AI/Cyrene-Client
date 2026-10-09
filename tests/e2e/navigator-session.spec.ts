@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 
-test("logout is sent after an in-flight refresh and removes its real browser cookie", async ({ page, context }) => {
+for (const rebuildOwner of [false, true]) test(`logout waits for in-flight refresh and removes its cookie (rebuilt owner: ${rebuildOwner})`, async ({ page, context }) => {
   const entry = `/@fs/${resolve("apps/web/services/navigator/src/api.ts").replaceAll("\\", "/")}`;
   const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "fixture-session", expiresAt: null,
     refreshExpiresAt: null, refreshable: true, csrfToken: "old-csrf", refreshed: false };
@@ -30,7 +30,12 @@ test("logout is sent after an in-flight refresh and removes its real browser coo
     state.refresh = state.api.refreshSession();
   }, entry);
   await refreshArrived;
-  await page.evaluate(() => { (window as any).logout = (window as any).api.logout(); });
+  await page.evaluate(async ({ entry, rebuildOwner }) => {
+    const state = window as any;
+    const { NavigatorApi } = await import(entry);
+    state.logoutOwner = rebuildOwner ? new NavigatorApi() : state.api;
+    state.logout = state.logoutOwner.logout();
+  }, { entry, rebuildOwner });
   expect(logoutSent).toBe(false);
   release();
   await page.evaluate(async () => { await (window as any).logout; await (window as any).refresh; });
@@ -38,4 +43,5 @@ test("logout is sent after an in-flight refresh and removes its real browser coo
   expect(logoutCsrf).toBe("rotated-csrf");
   expect((await context.cookies()).find(cookie => cookie.name === "fixture_auth")).toBeUndefined();
   expect(await page.evaluate(() => (window as any).api.sessionCsrfToken)).toBeNull();
+  expect(await page.evaluate(() => (window as any).logoutOwner.sessionCsrfToken)).toBeNull();
 });

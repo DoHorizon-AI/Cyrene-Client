@@ -4,19 +4,49 @@ import { AUTH_SESSION_PATH, AUTH_REFRESH_PATH, AUTH_PAIR_PATH, AUTH_LOGOUT_PATH 
 import { parseSession } from "./parsers/session";
 import { jsonRequest, readResponse, readCookie } from "./requests";
 
+interface CookieAuthority {
+  csrfToken: string | null;
+  session: SessionPayload | null;
+  generation: number;
+  mutationTail: Promise<void>;
+  pendingMutations: number;
+  refreshInFlight: Promise<SessionPayload> | null;
+  listeners: Set<(session: SessionPayload) => void>;
+}
+// Provider identity changes rebuild the UI, while browser cookies remain shared.
+// Custom fetchers identify independent transports (including isolated fixtures).
+const defaultFetcher: Fetcher = (input, init) => globalThis.fetch(input, init);
+const authorities = new WeakMap<Fetcher, CookieAuthority>();
+function cookieAuthority(fetcher: Fetcher): CookieAuthority {
+  let authority = authorities.get(fetcher);
+  if (!authority) {
+    authority = { csrfToken: null, session: null, generation: 0, mutationTail: Promise.resolve(),
+      pendingMutations: 0, refreshInFlight: null, listeners: new Set() };
+    authorities.set(fetcher, authority);
+  }
+  return authority;
+}
+
 /** Owns the shared browser session and authenticated same-origin transport. */
 export class NavigatorTransport {
-  constructor(private readonly fetcher: Fetcher = globalThis.fetch.bind(globalThis)) {}
+  private readonly authority: CookieAuthority;
+  constructor(private readonly fetcher: Fetcher = defaultFetcher) { this.authority = cookieAuthority(fetcher); }
 
-  private csrfToken: string | null = null;
-  private refreshInFlight: Promise<SessionPayload> | null = null;
+  private get csrfToken() { return this.authority.csrfToken; }
+  private set csrfToken(value: string | null) { this.authority.csrfToken = value; }
+  private get refreshInFlight() { return this.authority.refreshInFlight; }
+  private set refreshInFlight(value: Promise<SessionPayload> | null) { this.authority.refreshInFlight = value; }
   private sessionExpiredHandler: (() => void) | null = null;
-  private session: SessionPayload | null = null;
-  private readonly sessionListeners = new Set<(session: SessionPayload) => void>();
+  private get session() { return this.authority.session; }
+  private set session(value: SessionPayload | null) { this.authority.session = value; }
+  private get sessionListeners() { return this.authority.listeners; }
   private restoreInFlight: Promise<SessionPayload> | null = null;
-  private sessionGeneration = 0;
-  private authMutationTail: Promise<void> = Promise.resolve();
-  private pendingAuthMutations = 0;
+  private get sessionGeneration() { return this.authority.generation; }
+  private set sessionGeneration(value: number) { this.authority.generation = value; }
+  private get authMutationTail() { return this.authority.mutationTail; }
+  private set authMutationTail(value: Promise<void>) { this.authority.mutationTail = value; }
+  private get pendingAuthMutations() { return this.authority.pendingMutations; }
+  private set pendingAuthMutations(value: number) { this.authority.pendingMutations = value; }
 
   get sessionCsrfToken(): string | null { return this.csrfToken; }
   subscribeSession(listener: (session: SessionPayload) => void): () => void {
@@ -79,6 +109,7 @@ export class NavigatorTransport {
    * 中文：读取会话状态，不会将匿名访问转换为错误。
    */
   async getSession(): Promise<SessionPayload> {
+    if (this.pendingAuthMutations) await this.waitForSessionMutations();
     await this.waitForSessionMutations();
     const generation = this.sessionGeneration;
     const result = await this.requestJson(AUTH_SESSION_PATH, { method: "GET" }, parseSession, false);
@@ -135,7 +166,7 @@ export class NavigatorTransport {
     const result = this.authMutationTail.then(() => {
       this.sessionGeneration++;
       return operation();
-    }).finally(() => { this.pendingAuthMutations--; });
+    }).finally(() => { this.sessionGeneration++; this.pendingAuthMutations--; });
     this.authMutationTail = result.then(() => undefined, () => undefined);
     return result;
   }
