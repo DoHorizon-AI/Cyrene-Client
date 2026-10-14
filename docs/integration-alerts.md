@@ -148,7 +148,12 @@ Navigator Web Host from `CYRENE_NAVIGATOR_ROOT` with
 to a fake Exchange HTTP endpoint. This is simulated routing evidence using a
 synthetic bearer; it does not validate a real Platform identity or call an
 Exchange tenant. The test is skipped when either environment variable is absent.
+Client CI checks out Navigator at `e90288c8a4ecbcb3711d554366e7ac5227e62397`,
+installs its declared Python dependencies, and enables this test; the test rejects
+any Navigator source tree whose `HEAD` differs from that pin.
 
 单元测试使用本地 API fixture 验证权限状态、Control 操作者范围、错误脱敏、连接投影、事件去重、离线恢复和过期时间显示。测试不会访问服务商 API、发送邮件，也不能证明 Client 页面关闭时的浏览器通知投递。
 
 可选的 `tests/integration/exchange-proxy-loopback.test.ts` 在设置 `CYRENE_NAVIGATOR_ROOT` 与 `CYRENE_NAVIGATOR_PYTHON` 后启动真实 Navigator Web Host，通过运行中的本地 Control HTTP 服务转发到假 Exchange HTTP endpoint。此项是使用合成 bearer 的模拟路由证据；它不会验证真实 Platform 身份，也不会调用 Exchange 租户。缺少任一环境变量时会跳过该测试。
+
+Client CI 会检出 Navigator 固定提交 `e90288c8a4ecbcb3711d554366e7ac5227e62397`，安装其声明的 Python 依赖并启用此测试；测试会拒绝 `HEAD` 与固定提交不一致的 Navigator 源码树。

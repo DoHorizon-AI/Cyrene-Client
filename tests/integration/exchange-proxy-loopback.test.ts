@@ -9,7 +9,7 @@
 // │  · 验证授权范围、SSE、feed、续期 GET 与最终身份 header                 │
 // └─────────────────────────────────────────────────────────────────────┘
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer, request as httpRequest, type Server } from "node:http";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,12 +19,15 @@ import { createControlApplication } from "../../apps/control/application";
 
 const navigatorRoot = process.env.CYRENE_NAVIGATOR_ROOT;
 const navigatorPython = process.env.CYRENE_NAVIGATOR_PYTHON;
+const navigatorSourceCommit = "e90288c8a4ecbcb3711d554366e7ac5227e62397";
 const enabled = !!navigatorRoot && !!navigatorPython;
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 describe.skipIf(!enabled)("SIMULATED Control → Navigator Web Host → Exchange loopback", () => {
   it("relays feed, SSE, and renewal GET with only the explicit first-party bearer", async () => {
+    const sourceCommit = execFileSync("git", ["-C", navigatorRoot!, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    expect(sourceCommit).toBe(navigatorSourceCommit);
     const renewalSessionId = "00000000-0000-4000-8000-000000000001";
     const records: { method: string; path: string; authorization?: string; workspaceId?: string; dedicatedAuthorization?: string; cookie?: string; accept?: string; lastEventId?: string }[] = [];
     const fakeExchange = createHttpServer((req, res) => {
