@@ -58,6 +58,8 @@ function page(...items: IntegrationNotification[]): NotificationPage {
   return { notifications: items, nextSequence: items.at(-1)?.sequence ?? 0 };
 }
 
+const existingGrantManagementUrl = "https://work.weixin.qq.com/ai/aiHelper/authorizationList?aibotid=12345678901234567&bar_style_type=3&for_native=true&forceInnerBrowser=1&from=chat&hide_more_btn=true&pc_bar_bg=f6f6f7%2C202021&str_aibotid=bot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&type=6&ww_vh=640&ww_vw=640";
+
 function clientFor(requestProductResponse: (path: string, init?: RequestInit) => Promise<Response>): IntegrationsClient {
   return new IntegrationsClient({ requestProductResponse } as unknown as Pick<NavigatorApi, "requestProductResponse">);
 }
@@ -102,7 +104,7 @@ describe("Client integration views", () => {
   });
 
   it("accepts only the canonical existing-profile WeCom grant-management URL", () => {
-    const canonical = "https://work.weixin.qq.com/ai/aiHelper/authorizationList?aibotid=12345678901234567&bar_style_type=3&for_native=true&forceInnerBrowser=1&from=chat&hide_more_btn=true&pc_bar_bg=f6f6f7%2C202021&str_aibotid=bot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&type=6&ww_vh=640&ww_vw=640";
+    const canonical = existingGrantManagementUrl;
     const shuffled = "https://work.weixin.qq.com/ai/aiHelper/authorizationList?ww_vw=640&type=6&str_aibotid=bot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&aibotid=12345678901234567&from=chat&ww_vh=640&pc_bar_bg=f6f6f7%2C202021&hide_more_btn=true&forceInnerBrowser=1&for_native=true&bar_style_type=3";
     expect(validateExistingGrantManagementURL(canonical)).toBe(canonical);
     expect(validateExistingGrantManagementURL(shuffled)).toBe(canonical);
@@ -112,6 +114,7 @@ describe("Client integration views", () => {
     const malformed = [
       canonical.replace("work.weixin.qq.com", "work.weixin.qq.com.evil.example"),
       canonical.replace("work.weixin.qq.com/ai/aiHelper", "user@work.weixin.qq.com/ai/aiHelper"),
+      canonical.replace("work.weixin.qq.com/ai/aiHelper", "open.work.weixin.qq.com/ai/aiHelper"),
       canonical.replace("https://work.weixin.qq.com/", "https://work.weixin.qq.com:443/"),
       canonical.replace("/ai/aiHelper/authorizationList", "/ai/aiHelper/authorizationlist"),
       `${canonical}#fragment`,
@@ -119,6 +122,7 @@ describe("Client integration views", () => {
       `${canonical}&type=6`,
       canonical.replace("&ww_vw=640", ""),
       canonical.replace("type=6", "type=5"),
+      canonical.replace("type=6", "type=4"),
       canonical.replace("from=chat", "from=other"),
       canonical.replace("forceInnerBrowser=1", "forceInnerBrowser=0"),
       canonical.replace("bar_style_type=3", "bar_style_type=2"),
@@ -134,6 +138,17 @@ describe("Client integration views", () => {
       expect(validateExistingGrantManagementURL(value)).toBeNull();
       expect(safeOfficialRenewalUrl(value)).toBeNull();
     }
+  });
+
+  it("parses Exchange's existing-profile authorization URL for a later explicit user action", async () => {
+    const client = clientFor(async () => jsonResponse({
+      sessionRef: "session-management", authorizationRef: "authorization-1", state: "WAITING_USER",
+      createdAt: "2026-10-14T12:00:00Z", expiresAt: null,
+      authorizationUrl: existingGrantManagementUrl, generation: 3,
+    }, 202, { Location: "/api/v1/accounts/renewal-sessions/session-management" }));
+    const result = await client.beginRenewal("authorization-1", "renew-management-once");
+    expect(result.authorizationUrl).toBe(existingGrantManagementUrl);
+    expect(safeOfficialRenewalUrl(result.authorizationUrl)).toBe(existingGrantManagementUrl);
   });
 
   it("allows same-key retry only for WeCom's known ambiguous VERIFYING start", () => {
