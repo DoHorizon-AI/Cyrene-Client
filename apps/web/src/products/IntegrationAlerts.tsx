@@ -110,19 +110,76 @@ export function browserNotificationPermissionLabel(
       : permission === "denied" ? translate("Blocked in browser settings") : translate("Not enabled");
 }
 
-/** Accept the WeCom QR route's fixed HTTPS origin, path, and query shape; the URL is never rendered as text. */
-export function safeOfficialRenewalUrl(value: string | null): string | null {
-  if (!value || value.includes("#") || !/^https:\/\/work\.weixin\.qq\.com\/ai\/qc\/gen\?/.test(value)) return null;
+const wecomOrigin = "https://work.weixin.qq.com";
+const activationQrPath = "/ai/qc/gen";
+const existingGrantManagementPath = "/ai/aiHelper/authorizationList";
+const existingGrantManagementQueryKeys = [
+  "aibotid", "bar_style_type", "for_native", "forceInnerBrowser", "from", "hide_more_btn",
+  "pc_bar_bg", "str_aibotid", "type", "ww_vh", "ww_vw",
+] as const;
+
+/** Parse one exact vendor-owned HTTPS navigation route; never accept a host or path prefix. */
+function parseOfficialWeComUrl(value: string | null, path: string): URL | null {
+  if (!value || value.includes("#") || !value.startsWith(`${wecomOrigin}${path}?`)) return null;
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:" || url.hostname !== "work.weixin.qq.com" || url.host !== "work.weixin.qq.com"
-      || url.username || url.password || url.pathname !== "/ai/qc/gen" || url.hash) return null;
-    const sources = url.searchParams.getAll("source"), codes = url.searchParams.getAll("scode");
-    const keys = [...url.searchParams.keys()].sort();
-    if (keys.join(",") !== "scode,source" || sources.length !== 1 || sources[0] !== "wecom_cli_external"
-      || codes.length !== 1 || !/^[A-Za-z0-9_-]{8,256}$/.test(codes[0] ?? "")) return null;
-    return url.href;
+    if (url.protocol !== "https:" || url.origin !== wecomOrigin || url.hostname !== "work.weixin.qq.com"
+      || url.host !== "work.weixin.qq.com" || url.username || url.password || url.pathname !== path || url.hash) return null;
+    return url;
   } catch { return null; }
+}
+
+/** Validate the existing activation QR route without treating it as an existing-profile grant page. */
+export function validateActivationQR(value: string | null): string | null {
+  const url = parseOfficialWeComUrl(value, activationQrPath);
+  if (!url) return null;
+  const sources = url.searchParams.getAll("source"), codes = url.searchParams.getAll("scode");
+  const keys = [...url.searchParams.keys()];
+  if (keys.length !== 2 || keys.some(key => key !== "source" && key !== "scode")
+    || sources.length !== 1 || sources[0] !== "wecom_cli_external"
+    || codes.length !== 1 || !/^[A-Za-z0-9_-]{8,256}$/.test(codes[0] ?? "")) return null;
+  return url.href;
+}
+
+/** Validate WeCom's message-capability management page and return its canonical query order. */
+export function validateExistingGrantManagementURL(value: string | null): string | null {
+  const url = parseOfficialWeComUrl(value, existingGrantManagementPath);
+  if (!url) return null;
+  const keys = [...url.searchParams.keys()];
+  if (keys.length !== existingGrantManagementQueryKeys.length
+    || keys.some(key => !existingGrantManagementQueryKeys.includes(key as typeof existingGrantManagementQueryKeys[number]))) return null;
+
+  const fields = new Map<string, string>();
+  for (const key of existingGrantManagementQueryKeys) {
+    const values = url.searchParams.getAll(key);
+    if (values.length !== 1) return null;
+    fields.set(key, values[0]!);
+  }
+  const aibotid = fields.get("aibotid") ?? "";
+  const strAibotid = fields.get("str_aibotid") ?? "";
+  const background = fields.get("pc_bar_bg") ?? "";
+  const height = fields.get("ww_vh") ?? "";
+  const width = fields.get("ww_vw") ?? "";
+  if (fields.get("type") !== "6" || fields.get("from") !== "chat" || fields.get("forceInnerBrowser") !== "1"
+    || fields.get("bar_style_type") !== "3" || fields.get("for_native") !== "true" || fields.get("hide_more_btn") !== "true"
+    || !/^\d{17}$/.test(aibotid) || !/^[A-Za-z0-9_-]{35}$/.test(strAibotid)
+    || !/^[A-Fa-f0-9]{6},[A-Fa-f0-9]{6}$/.test(background)
+    || !isValidWecomViewport(height) || !isValidWecomViewport(width)) return null;
+
+  const canonicalQuery = new URLSearchParams();
+  for (const key of existingGrantManagementQueryKeys) canonicalQuery.set(key, fields.get(key)!);
+  const canonical = new URL(`${url.origin}${url.pathname}`);
+  canonical.search = canonicalQuery.toString();
+  return canonical.href;
+}
+
+function isValidWecomViewport(value: string): boolean {
+  return /^[1-9]\d{0,3}$/.test(value) && Number(value) <= 4096;
+}
+
+/** Accept only the two fixed WeCom authorization routes; never render the raw provider URL. */
+export function safeOfficialRenewalUrl(value: string | null): string | null {
+  return validateActivationQR(value) ?? validateExistingGrantManagementURL(value);
 }
 
 /** Render the integration console using the already paired Navigator and Control session. */
@@ -457,7 +514,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
                 <span>{t("Renewal session")}: {t(activeRenewal.state)}</span>
                 {activeRenewal.expiresAt ? <span>{t("Session expires")}: {formatDate(activeRenewal.expiresAt)}</span> : <span>{t("Session expiry unknown")}</span>}
                 {activeRenewal.reasonCode ? <small>{t(activeRenewal.reasonCode)}</small> : null}
-                {activeRenewal.state === "WAITING_USER" && officialRenewalUrl ? <Button type="button" onClick={() => window.open(officialRenewalUrl, "_blank", "noopener,noreferrer")}>{t("Open official authorization page")}</Button> : null}
+                {activeRenewal.state === "WAITING_USER" && officialRenewalUrl ? <Button type="button" onClick={() => window.open(officialRenewalUrl, "_blank", "noopener,noreferrer")}>{t("Open official authorization or permission management page")}</Button> : null}
                 {activeRenewal.state === "WAITING_USER" && !officialRenewalUrl ? <small>{t("Official authorization link is unavailable.")}</small> : null}
               </div> : null}
               {renewalError ? <p className="ia-inline-error" role="alert">{renewalError}</p> : null}

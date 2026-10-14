@@ -9,6 +9,8 @@ import {
   safeOfficialRenewalUrl,
   supportsAuthorizationRenewal,
   supportsCloudObservations,
+  validateActivationQR,
+  validateExistingGrantManagementURL,
 } from "./IntegrationAlerts";
 import { followIntegrationNotifications, NotificationDeduplicator } from "./integration-notification-feed";
 import {
@@ -56,6 +58,8 @@ function page(...items: IntegrationNotification[]): NotificationPage {
   return { notifications: items, nextSequence: items.at(-1)?.sequence ?? 0 };
 }
 
+const existingGrantManagementUrl = "https://work.weixin.qq.com/ai/aiHelper/authorizationList?aibotid=12345678901234567&bar_style_type=3&for_native=true&forceInnerBrowser=1&from=chat&hide_more_btn=true&pc_bar_bg=f6f6f7%2C202021&str_aibotid=bot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&type=6&ww_vh=640&ww_vw=640";
+
 function clientFor(requestProductResponse: (path: string, init?: RequestInit) => Promise<Response>): IntegrationsClient {
   return new IntegrationsClient({ requestProductResponse } as unknown as Pick<NavigatorApi, "requestProductResponse">);
 }
@@ -83,7 +87,9 @@ describe("Client integration views", () => {
     expect(supportsAuthorizationRenewal("azure")).toBe(false);
     expect(safeOfficialRenewalUrl("http://login.example.test/authorize")).toBeNull();
     expect(safeOfficialRenewalUrl("https://user:secret@login.example.test/authorize")).toBeNull();
-    expect(safeOfficialRenewalUrl("https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abcdefgh"))
+    const activationQr = "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abcdefgh";
+    expect(validateActivationQR(activationQr)).toBe(activationQr);
+    expect(safeOfficialRenewalUrl(activationQr))
       .toBe("https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abcdefgh");
     for (const malformed of [
       "https://work.weixin.qq.com.evil.example/ai/qc/gen?source=wecom_cli_external&scode=abcdefgh",
@@ -95,6 +101,54 @@ describe("Client integration views", () => {
       "https://user@work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abcdefgh",
       "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abcdefgh#",
     ]) expect(safeOfficialRenewalUrl(malformed)).toBeNull();
+  });
+
+  it("accepts only the canonical existing-profile WeCom grant-management URL", () => {
+    const canonical = existingGrantManagementUrl;
+    const shuffled = "https://work.weixin.qq.com/ai/aiHelper/authorizationList?ww_vw=640&type=6&str_aibotid=bot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&aibotid=12345678901234567&from=chat&ww_vh=640&pc_bar_bg=f6f6f7%2C202021&hide_more_btn=true&forceInnerBrowser=1&for_native=true&bar_style_type=3";
+    expect(validateExistingGrantManagementURL(canonical)).toBe(canonical);
+    expect(validateExistingGrantManagementURL(shuffled)).toBe(canonical);
+    expect(safeOfficialRenewalUrl(canonical)).toBe(canonical);
+    expect(validateActivationQR(canonical)).toBeNull();
+
+    const malformed = [
+      canonical.replace("work.weixin.qq.com", "work.weixin.qq.com.evil.example"),
+      canonical.replace("work.weixin.qq.com/ai/aiHelper", "user@work.weixin.qq.com/ai/aiHelper"),
+      canonical.replace("work.weixin.qq.com/ai/aiHelper", "open.work.weixin.qq.com/ai/aiHelper"),
+      canonical.replace("https://work.weixin.qq.com/", "https://work.weixin.qq.com:443/"),
+      canonical.replace("/ai/aiHelper/authorizationList", "/ai/aiHelper/authorizationlist"),
+      `${canonical}#fragment`,
+      `${canonical}&redirect=https://evil.example`,
+      `${canonical}&type=6`,
+      canonical.replace("&ww_vw=640", ""),
+      canonical.replace("type=6", "type=5"),
+      canonical.replace("type=6", "type=4"),
+      canonical.replace("from=chat", "from=other"),
+      canonical.replace("forceInnerBrowser=1", "forceInnerBrowser=0"),
+      canonical.replace("bar_style_type=3", "bar_style_type=2"),
+      canonical.replace("for_native=true", "for_native=false"),
+      canonical.replace("hide_more_btn=true", "hide_more_btn=false"),
+      canonical.replace("12345678901234567", "1234567890123456"),
+      canonical.replace("bot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+      canonical.replace("f6f6f7%2C202021", "f6f6f7%2Cinvalid"),
+      canonical.replace("ww_vh=640", "ww_vh=0"),
+      canonical.replace("ww_vw=640", "ww_vw=4097"),
+    ];
+    for (const value of malformed) {
+      expect(validateExistingGrantManagementURL(value)).toBeNull();
+      expect(safeOfficialRenewalUrl(value)).toBeNull();
+    }
+  });
+
+  it("parses Exchange's existing-profile authorization URL for a later explicit user action", async () => {
+    const client = clientFor(async () => jsonResponse({
+      sessionRef: "session-management", authorizationRef: "authorization-1", state: "WAITING_USER",
+      createdAt: "2026-10-14T12:00:00Z", expiresAt: null,
+      authorizationUrl: existingGrantManagementUrl, generation: 3,
+    }, 202, { Location: "/api/v1/accounts/renewal-sessions/session-management" }));
+    const result = await client.beginRenewal("authorization-1", "renew-management-once");
+    expect(result.authorizationUrl).toBe(existingGrantManagementUrl);
+    expect(safeOfficialRenewalUrl(result.authorizationUrl)).toBe(existingGrantManagementUrl);
   });
 
   it("allows same-key retry only for WeCom's known ambiguous VERIFYING start", () => {
