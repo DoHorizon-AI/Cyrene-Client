@@ -189,7 +189,7 @@ export class IntegrationsClient {
       headers: { Accept: "application/json", "Idempotency-Key": idempotencyKey },
     });
     const payload = await this.acceptedJson(response, renewalSessionSchema);
-    this.requireLocation(response, `/api/v1/accounts/authorizations/${encodeURIComponent(authorizationRef)}/renewal-sessions/${encodeURIComponent(payload.sessionRef)}`);
+    this.requireLocation(response, `/api/v1/accounts/renewal-sessions/${encodeURIComponent(payload.sessionRef)}`);
     if (payload.authorizationRef !== authorizationRef) throw new IntegrationApiError(502, "AUTHORIZATION_SCOPE_MISMATCH");
     return {
       sessionRef: payload.sessionRef,
@@ -206,7 +206,7 @@ export class IntegrationsClient {
   /** Poll the renewal session by its Product-owned references. */
   async getRenewal(authorizationRef: string, sessionRef: string, signal?: AbortSignal): Promise<RenewalSession> {
     const result = await this.readJson(
-      `/api/v1/accounts/authorizations/${encodeURIComponent(authorizationRef)}/renewal-sessions/${encodeURIComponent(sessionRef)}`,
+      `/api/v1/accounts/renewal-sessions/${encodeURIComponent(sessionRef)}`,
       renewalSessionSchema,
       signal,
     );

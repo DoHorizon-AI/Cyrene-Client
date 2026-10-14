@@ -212,7 +212,7 @@ describe("Client integration views", () => {
         createdAt: "2026-10-14T12:00:00Z", expiresAt: null,
         authorizationUrl: "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=opaque_state_123",
         qrAttachmentRef: "/native/private/qr.png", generation: 3,
-      }, 202, { Location: "/api/v1/accounts/authorizations/authorization-1/renewal-sessions/session-1" });
+      }, 202, { Location: "/api/v1/accounts/renewal-sessions/session-1" });
     });
     const result = await client.beginRenewal("authorization-1", "renew-once");
     expect(result).not.toHaveProperty("qrAttachmentRef");
@@ -230,7 +230,7 @@ describe("Client integration views", () => {
         sessionRef: "session-2", authorizationRef: "authorization-1", state: "VERIFYING",
         createdAt: "2026-10-14T12:00:00Z", expiresAt: null, authorizationUrl: null,
         reasonCode: "provider_start_outcome_unknown", generation: 4,
-      }, 202, { Location: "/api/v1/accounts/authorizations/authorization-1/renewal-sessions/session-2" });
+      }, 202, { Location: "/api/v1/accounts/renewal-sessions/session-2" });
     });
     const first = await client.beginRenewal("authorization-1", "same-renewal-key");
     const pending: PendingRenewalRequest = {
@@ -244,12 +244,17 @@ describe("Client integration views", () => {
   });
 
   it("parses Exchange's read-only status lookup unavailable reason", async () => {
-    const client = clientFor(async () => jsonResponse({
-      sessionRef: "session-2", authorizationRef: "authorization-1", state: "VERIFYING",
-      createdAt: "2026-10-14T12:00:00Z", expiresAt: null, authorizationUrl: null,
-      reasonCode: "provider_status_lookup_unavailable", generation: 4,
-    }));
+    const paths: string[] = [];
+    const client = clientFor(async path => {
+      paths.push(path);
+      return jsonResponse({
+        sessionRef: "session-2", authorizationRef: "authorization-1", state: "VERIFYING",
+        createdAt: "2026-10-14T12:00:00Z", expiresAt: null, authorizationUrl: null,
+        reasonCode: "provider_status_lookup_unavailable", generation: 4,
+      });
+    });
     const status = await client.getRenewal("authorization-1", "session-2");
+    expect(paths).toEqual(["/api/v1/accounts/renewal-sessions/session-2"]);
     expect(renewalRetryState(status)).toBe("PROVIDER_STATUS_LOOKUP_UNAVAILABLE");
     expect(canReplayWeComRenewal("wecom", "authorization-1", {
       idempotencyKey: "same-renewal-key", sessionRef: "session-2", retryState: "PROVIDER_STATUS_LOOKUP_UNAVAILABLE",
