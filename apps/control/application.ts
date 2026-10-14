@@ -70,10 +70,19 @@ export async function readJson(req: IncomingMessage, limit = 1_048_576) {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; } catch { throw new ControlError("INVALID_JSON", "请求不是有效 JSON。"); }
 }
 
+/** Keep the browser facade stable while routing the fixed Exchange Product endpoints through Web Host's configured Exchange prefix. Callers authorize the exact facade with productPermission first. 中文：保留浏览器 facade 路径，并将固定 Exchange Product 接口映射到 Web Host 的 Exchange 前缀；调用方先通过 productPermission 校验精确路由。 */
 function navigatorUpstreamPath(requestUrl: string, workspaceId: string): string {
   const queryIndex = requestUrl.indexOf("?");
   const pathname = queryIndex < 0 ? requestUrl : requestUrl.slice(0, queryIndex);
   const query = queryIndex < 0 ? "" : requestUrl.slice(queryIndex);
+  const workId = "(?:[A-Za-z0-9_.:-]|%3[Aa])+";
+  if (pathname === "/api/v1/integrations" || pathname.startsWith("/api/v1/integrations/")) {
+    return `/api/v1/exchange${pathname}${query}`;
+  }
+  if (new RegExp(`^/api/v1/accounts/authorizations/${workId}/renewal-sessions$`).test(pathname)
+    || new RegExp(`^/api/v1/accounts/renewal-sessions/${workId}$`).test(pathname)) {
+    return `/api/v1/exchange${pathname}${query}`;
+  }
   const tasksPrefix = "/api/v1/navigator/tasks";
   if (pathname === tasksPrefix || pathname.startsWith(`${tasksPrefix}/`)) {
     return `/api/v1/tasks${pathname.slice(tasksPrefix.length)}${query}`;
@@ -83,6 +92,28 @@ function navigatorUpstreamPath(requestUrl: string, workspaceId: string): string 
     return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/work/approvals${pathname.slice(approvalsPrefix.length)}${query}`;
   }
   return requestUrl;
+}
+
+/** Return true only for the Exchange facade whose owner bearer must reach Web Host. */
+function isExchangeFacadePath(path: string): boolean {
+  const workId = "(?:[A-Za-z0-9_.:-]|%3[Aa])+";
+  return path === "/api/v1/integrations" || path.startsWith("/api/v1/integrations/")
+    || new RegExp(`^/api/v1/accounts/authorizations/${workId}/renewal-sessions$`).test(path)
+    || new RegExp(`^/api/v1/accounts/renewal-sessions/${workId}$`).test(path);
+}
+
+/** Validate only header syntax; Exchange remains the owner of bearer and workspace authorization. */
+function exchangeCredentialHeaders(req: IncomingMessage): { productAuthorization: string; workspaceId: string } {
+  const productAuthorization = req.headers["x-cyrene-product-authorization"];
+  const workspaceId = req.headers["x-cyrene-workspace-id"];
+  if (typeof productAuthorization !== "string" || productAuthorization.length > 8200
+    || !/^Bearer [A-Za-z0-9._~+/-]{1,8192}={0,}$/.test(productAuthorization)) {
+    throw new ControlError("EXCHANGE_PRODUCT_CREDENTIAL_REQUIRED", "需要个人 Cyrene Product bearer 才能连接 Exchange。", 401);
+  }
+  if (typeof workspaceId !== "string" || !/^[\x21-\x7e]{1,256}$/.test(workspaceId)) {
+    throw new ControlError("EXCHANGE_WORKSPACE_SELECTOR_REQUIRED", "需要有效的 Exchange 工作空间选择器。", 400);
+  }
+  return { productAuthorization, workspaceId };
 }
 
 export function createControlApplication(options: ControlOptions) {
@@ -326,6 +357,11 @@ export function createControlApplication(options: ControlOptions) {
           const upstreamCookies = (req.headers.cookie ?? "").split(";").filter(p => !p.trim().startsWith(`${cookieName}=`)).join(";");
           if (upstreamCookies) headers.set("cookie", upstreamCookies);
           if (path === "/api/proxy/exchange-gateway/v1/chat/completions" && typeof req.headers["x-product-authorization"] === "string") headers.set("authorization", req.headers["x-product-authorization"]);
+          if (isExchangeFacadePath(path)) {
+            const credential = exchangeCredentialHeaders(req);
+            headers.set("x-cyrene-product-authorization", credential.productAuthorization);
+            headers.set("x-cyrene-workspace-id", credential.workspaceId);
+          }
         }
         let body: Buffer | undefined;
         if (req.method !== "GET" && req.method !== "HEAD") {

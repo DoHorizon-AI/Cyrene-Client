@@ -1,19 +1,43 @@
 # Client integration alerts and cloud observations
 
-This page uses the existing paired Navigator Web Host and Control session to read
-actor-scoped Exchange projections. It does not create a Client identity store or
-copy Product state into a local database.
+This page uses the existing paired Navigator Web Host and Control session as its
+browser transport, plus an explicit personal first-party Product bearer for
+Exchange identity. Exchange verifies the bearer and scopes its projections; the
+page does not infer Exchange identity from the Control actor or copy Product
+state into a local database.
 
-此页面复用已配对的 Navigator Web Host 与 Control 会话，读取按操作者范围过滤的 Exchange 投影。它不会创建 Client 身份库，也不会把 Product 状态复制到本地数据库。
+此页面复用已配对的 Navigator Web Host 与 Control 会话作为浏览器传输，并要求显式提供个人 first-party Product bearer 作为 Exchange 身份。Exchange 校验 bearer 并过滤投影；页面不会从 Control 操作者推断 Exchange 身份，也不会把 Product 状态复制到本地数据库。
+
+## First-party Exchange access
+
+The integrations page asks for a personal Cyrene first-party Product bearer and
+an Exchange workspace selector. The bearer stays in page memory, is cleared on
+signout or scope change, and is never written to browser storage, logs, or model
+input. The workspace value is a selector only; Exchange checks it against the
+verified bearer principal. Use this bearer instead of a Studio login or MCP token.
+
+For the closed integrations and renewal routes, the browser sends
+`X-Cyrene-Product-Authorization: Bearer ...` and `X-Cyrene-Workspace-Id` alongside
+the existing same-origin Control and Web Host session material. Control first
+checks its normal session, CSRF, and `products.read` / `products.operate` scope,
+then forwards only those two dedicated headers. Navigator Web Host converts the
+bearer to upstream `Authorization` only for its explicitly configured Exchange
+target; it does not use a static or shared target credential as a fallback.
+Ordinary Control `Authorization`, cookies, and execution credentials do not
+become the Exchange principal.
+
+集成页面要求个人 Cyrene first-party Product bearer 与 Exchange 工作空间选择器。bearer 仅保存在页面内存中，退出登录或切换范围时清除，不写入浏览器存储、日志或模型输入。工作空间值仅是选择器；Exchange 会根据已验证 bearer 主体检查该值。请使用此 bearer，而不要使用 Studio 登录凭据或 MCP token。
+
+对于封闭的 integrations 与 renewal 路由，浏览器在现有同源 Control 和 Web Host 会话材料之外发送 `X-Cyrene-Product-Authorization: Bearer ...` 与 `X-Cyrene-Workspace-Id`。Control 先检查常规会话、CSRF 和 `products.read` / `products.operate` 范围，再仅转发这两个专用 header。Navigator Web Host 只会为显式配置的 Exchange 目标将 bearer 转成上游 `Authorization`；没有静态或共享目标凭据回退。普通 Control `Authorization`、cookie 和 execution credential 不会成为 Exchange 身份。
 
 ## Connection and authorization state
 
 The connection picker comes from `GET /api/v1/integrations/connections`. Exchange
-filters that list by the authenticated actor and workspace. The Client shows only
+filters that list by the verified bearer principal and selected workspace. The Client shows only
 the server-issued connection label and provider; it does not display `bindingRef`
 or `targetRef`, and it never accepts a manually entered provider target.
 
-连接选择器读取 `GET /api/v1/integrations/connections`。Exchange 按已认证操作者和工作空间过滤列表。Client 只显示服务端返回的连接名称和服务商，不展示 `bindingRef` 或 `targetRef`，也不接受手工输入的服务商目标。
+连接选择器读取 `GET /api/v1/integrations/connections`。Exchange 按已验证 bearer 主体和所选工作空间过滤列表。Client 只显示服务端返回的连接名称和服务商，不展示 `bindingRef` 或 `targetRef`，也不接受手工输入的服务商目标。
 
 `GET /api/v1/integrations/connections/{id}/authorization-health` reports login
 presence and authorization health separately. A missing expiry stays unknown. The
@@ -70,6 +94,17 @@ Each SSE notification must carry the same sequence in its event ID and body. The
 Client deduplicates by both notification ID and sequence, reloads the durable feed
 after a gap or disconnect, and acknowledges through the idempotent Product route.
 
+Control checks the existing `products.read` / `products.operate` session scope,
+then maps only the published integrations and renewal facades beneath the
+configured Navigator Web Host Exchange prefix. `X-Cyrene-Product-Authorization`
+and `X-Cyrene-Workspace-Id` carry the explicit Exchange credential context across
+that route; `Accept: text/event-stream` and
+`Last-Event-ID` remain HTTP headers end to end; the SSE response body is relayed
+without JSON/catalog invocation. The flat renewal GET
+`/api/v1/accounts/renewal-sessions/{session_id}` is the published Product route.
+
+Control 会先校验现有 `products.read` / `products.operate` 会话范围，再将已发布的 integrations 与 renewal facade 映射到配置的 Navigator Web Host Exchange 前缀下。`X-Cyrene-Product-Authorization` 与 `X-Cyrene-Workspace-Id` 会在该路由上传递显式 Exchange 凭据上下文；`Accept: text/event-stream` 与 `Last-Event-ID` 会作为 HTTP header 原样传递；SSE 响应体直接转发，不经过 JSON/catalog invocation。扁平的续期 GET `/api/v1/accounts/renewal-sessions/{session_id}` 是当前发布的 Product 路由。
+
 持久页面通知先读取 `GET /api/v1/integrations/notifications?after={sequence}`，再使用 `Last-Event-ID` 恢复 `GET /api/v1/integrations/notifications/events`。每个 SSE 通知的事件 ID 必须与正文序号一致。Client 同时按通知 ID 和序号去重，在序号有缺口或连接中断后重新读取持久通知，并通过带幂等键的 Product 路由确认通知。
 
 Browser notification permission is requested only after an explicit button click.
@@ -107,4 +142,18 @@ authorization, failure redaction, connection projections, event deduplication,
 offline recovery, and expiry display. They do not contact vendor APIs, send email,
 or prove browser notification delivery outside an open page.
 
+The opt-in `tests/integration/exchange-proxy-loopback.test.ts` starts the actual
+Navigator Web Host from `CYRENE_NAVIGATOR_ROOT` with
+`CYRENE_NAVIGATOR_PYTHON`, then relays through a live local Control HTTP server
+to a fake Exchange HTTP endpoint. This is simulated routing evidence using a
+synthetic bearer; it does not validate a real Platform identity or call an
+Exchange tenant. The test is skipped when either environment variable is absent.
+Client CI checks out Navigator at `e90288c8a4ecbcb3711d554366e7ac5227e62397`,
+installs its declared Python dependencies, and enables this test; the test rejects
+any Navigator source tree whose `HEAD` differs from that pin.
+
 单元测试使用本地 API fixture 验证权限状态、Control 操作者范围、错误脱敏、连接投影、事件去重、离线恢复和过期时间显示。测试不会访问服务商 API、发送邮件，也不能证明 Client 页面关闭时的浏览器通知投递。
+
+可选的 `tests/integration/exchange-proxy-loopback.test.ts` 在设置 `CYRENE_NAVIGATOR_ROOT` 与 `CYRENE_NAVIGATOR_PYTHON` 后启动真实 Navigator Web Host，通过运行中的本地 Control HTTP 服务转发到假 Exchange HTTP endpoint。此项是使用合成 bearer 的模拟路由证据；它不会验证真实 Platform 身份，也不会调用 Exchange 租户。缺少任一环境变量时会跳过该测试。
+
+Client CI 会检出 Navigator 固定提交 `e90288c8a4ecbcb3711d554366e7ac5227e62397`，安装其声明的 Python 依赖并启用此测试；测试会拒绝 `HEAD` 与固定提交不一致的 Navigator 源码树。

@@ -7,6 +7,7 @@ import {
   classifyAuthorizationExpiry,
   renewalRetryState,
   safeOfficialRenewalUrl,
+  shouldClearExchangeCredential,
   supportsAuthorizationRenewal,
   supportsCloudObservations,
   validateActivationQR,
@@ -17,6 +18,7 @@ import {
   IntegrationApiError,
   IntegrationsClient,
   parseIntegrationNotification,
+  type ExchangeProductCredential,
   type IntegrationNotification,
   type NotificationPage,
   type RenewalSession,
@@ -59,9 +61,15 @@ function page(...items: IntegrationNotification[]): NotificationPage {
 }
 
 const existingGrantManagementUrl = "https://work.weixin.qq.com/ai/aiHelper/authorizationList?aibotid=12345678901234567&bar_style_type=3&for_native=true&forceInnerBrowser=1&from=chat&hide_more_btn=true&pc_bar_bg=f6f6f7%2C202021&str_aibotid=bot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&type=6&ww_vh=640&ww_vw=640";
+const renewalSession1 = "00000000-0000-4000-8000-000000000001";
+const renewalSession2 = "00000000-0000-4000-8000-000000000002";
+const renewalSessionManagement = "00000000-0000-4000-8000-000000000003";
 
 function clientFor(requestProductResponse: (path: string, init?: RequestInit) => Promise<Response>): IntegrationsClient {
-  return new IntegrationsClient({ requestProductResponse } as unknown as Pick<NavigatorApi, "requestProductResponse">);
+  return new IntegrationsClient(
+    { requestProductResponse } as unknown as Pick<NavigatorApi, "requestProductResponse">,
+    () => ({ bearerToken: "synthetic-platform-bearer", workspaceId: "synthetic-workspace" }),
+  );
 }
 
 class MemoryRenewalStorage implements RenewalStoragePort {
@@ -74,6 +82,33 @@ class MemoryRenewalStorage implements RenewalStoragePort {
 }
 
 describe("Client integration views", () => {
+  it("clears only the in-memory Exchange bearer on an authentication rejection", () => {
+    expect(shouldClearExchangeCredential(new IntegrationApiError(401, "EXCHANGE_IDENTITY_INVALID"))).toBe(true);
+    expect(shouldClearExchangeCredential(new IntegrationApiError(409, "EXCHANGE_CONNECTION_REAUTHORIZATION_REQUIRED"))).toBe(false);
+    expect(shouldClearExchangeCredential(new Error("network unavailable"))).toBe(false);
+  });
+
+  it("requires an explicit first-party Exchange bearer and sends it only in the dedicated headers", async () => {
+    const requests: { path: string; headers: Headers }[] = [];
+    const api = {
+      requestProductResponse: async (path: string, init: RequestInit = {}) => {
+        requests.push({ path, headers: new Headers(init.headers) });
+        return jsonResponse([]);
+      },
+    } as unknown as Pick<NavigatorApi, "requestProductResponse">;
+    const disconnected = new IntegrationsClient(api, () => null);
+    await expect(disconnected.listConnections()).rejects.toMatchObject({ code: "EXCHANGE_CREDENTIAL_REQUIRED" });
+    expect(requests).toHaveLength(0);
+
+    const credential: ExchangeProductCredential = { bearerToken: "synthetic-platform-bearer", workspaceId: "workspace-fixture" };
+    const connected = new IntegrationsClient(api, () => credential);
+    await connected.listConnections();
+    expect(requests[0]).toMatchObject({ path: "/api/v1/integrations/connections" });
+    expect(requests[0]?.headers.get("X-Cyrene-Product-Authorization")).toBe("Bearer synthetic-platform-bearer");
+    expect(requests[0]?.headers.get("X-Cyrene-Workspace-Id")).toBe("workspace-fixture");
+    expect(requests[0]?.headers.has("Authorization")).toBe(false);
+  });
+
   it("keeps unknown expiry distinct from expired authorization and only enables approved cloud providers", () => {
     expect(classifyAuthorizationExpiry(null, Date.parse("2026-10-14T12:00:00Z"))).toBe("unknown");
     expect(classifyAuthorizationExpiry("not-a-time", 0)).toBe("unknown");
@@ -142,19 +177,19 @@ describe("Client integration views", () => {
 
   it("parses Exchange's existing-profile authorization URL for a later explicit user action", async () => {
     const client = clientFor(async () => jsonResponse({
-      sessionRef: "session-management", authorizationRef: "authorization-1", state: "WAITING_USER",
+      sessionRef: renewalSessionManagement, authorizationRef: "authorization-1", state: "WAITING_USER",
       createdAt: "2026-10-14T12:00:00Z", expiresAt: null,
       authorizationUrl: existingGrantManagementUrl, generation: 3,
-    }, 202, { Location: "/api/v1/accounts/renewal-sessions/session-management" }));
+    }, 202, { Location: `/api/v1/accounts/renewal-sessions/${renewalSessionManagement}` }));
     const result = await client.beginRenewal("authorization-1", "renew-management-once");
     expect(result.authorizationUrl).toBe(existingGrantManagementUrl);
     expect(safeOfficialRenewalUrl(result.authorizationUrl)).toBe(existingGrantManagementUrl);
   });
 
   it("allows same-key retry only for WeCom's known ambiguous VERIFYING start", () => {
-    const pending: PendingRenewalRequest = { idempotencyKey: "same-key", sessionRef: "session-1", retryState: "PROVIDER_START_OUTCOME_UNKNOWN" };
+    const pending: PendingRenewalRequest = { idempotencyKey: "same-key", sessionRef: renewalSession1, retryState: "PROVIDER_START_OUTCOME_UNKNOWN" };
     const ambiguous: RenewalSession = {
-      sessionRef: "session-1", authorizationRef: "authorization-1", state: "VERIFYING",
+      sessionRef: renewalSession1, authorizationRef: "authorization-1", state: "VERIFYING",
       createdAt: "2026-10-14T12:00:00Z", expiresAt: null, authorizationUrl: null,
       reasonCode: "provider_start_outcome_unknown", generation: 4,
     };
@@ -179,7 +214,7 @@ describe("Client integration views", () => {
     const storage = new MemoryRenewalStorage();
     const scopeA = "actor-a\u0000workspace-a\u0000session-a";
     const scopeB = "actor-a\u0000workspace-b\u0000session-b";
-    const pending: PendingRenewalRequest = { idempotencyKey: "same-key", sessionRef: "session-1", retryState: "PROVIDER_START_OUTCOME_UNKNOWN" };
+    const pending: PendingRenewalRequest = { idempotencyKey: "same-key", sessionRef: renewalSession1, retryState: "PROVIDER_START_OUTCOME_UNKNOWN" };
     expect(await savePendingRenewalRequest(storage, scopeA, "connection-1", "auth-1", pending)).toBe(true);
     expect(await loadPendingRenewalRequest(storage, scopeA, "connection-1", "auth-1")).toEqual(pending);
     expect(await loadPendingRenewalRequest(storage, scopeA, "connection-2", "auth-1")).toBeNull();
@@ -262,15 +297,16 @@ describe("Client integration views", () => {
     const client = clientFor(async (path, init) => {
       calls.push({ path, init });
       return jsonResponse({
-        sessionRef: "session-1", authorizationRef: "authorization-1", state: "WAITING_USER",
-        createdAt: "2026-10-14T12:00:00Z", expiresAt: null,
+        sessionRef: renewalSession1, authorizationRef: "authorization-1", state: "WAITING_USER",
+        createdAt: "2026-10-14T12:00:00Z", expiresAt: "2026-10-14T12:10:00Z",
         authorizationUrl: "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=opaque_state_123",
         qrAttachmentRef: "/native/private/qr.png", generation: 3,
-      }, 202, { Location: "/api/v1/accounts/renewal-sessions/session-1" });
+      }, 202, { Location: `/api/v1/accounts/renewal-sessions/${renewalSession1}` });
     });
     const result = await client.beginRenewal("authorization-1", "renew-once");
     expect(result).not.toHaveProperty("qrAttachmentRef");
     expect(result.authorizationUrl).toContain("https://work.weixin.qq.com/ai/qc/gen?");
+    expect(result).toMatchObject({ state: "WAITING_USER", createdAt: "2026-10-14T12:00:00Z", expiresAt: "2026-10-14T12:10:00Z" });
     expect(calls[0]?.path).toBe("/api/v1/accounts/authorizations/authorization-1/renewal-sessions");
     expect(new Headers(calls[0]?.init?.headers).get("Idempotency-Key")).toBe("renew-once");
     expect(calls[0]?.init?.body).toBeUndefined();
@@ -281,10 +317,10 @@ describe("Client integration views", () => {
     const client = clientFor(async (_path, init) => {
       keys.push(new Headers(init?.headers).get("Idempotency-Key"));
       return jsonResponse({
-        sessionRef: "session-2", authorizationRef: "authorization-1", state: "VERIFYING",
+        sessionRef: renewalSession2, authorizationRef: "authorization-1", state: "VERIFYING",
         createdAt: "2026-10-14T12:00:00Z", expiresAt: null, authorizationUrl: null,
         reasonCode: "provider_start_outcome_unknown", generation: 4,
-      }, 202, { Location: "/api/v1/accounts/renewal-sessions/session-2" });
+      }, 202, { Location: `/api/v1/accounts/renewal-sessions/${renewalSession2}` });
     });
     const first = await client.beginRenewal("authorization-1", "same-renewal-key");
     const pending: PendingRenewalRequest = {
@@ -302,16 +338,16 @@ describe("Client integration views", () => {
     const client = clientFor(async path => {
       paths.push(path);
       return jsonResponse({
-        sessionRef: "session-2", authorizationRef: "authorization-1", state: "VERIFYING",
+        sessionRef: renewalSession2, authorizationRef: "authorization-1", state: "VERIFYING",
         createdAt: "2026-10-14T12:00:00Z", expiresAt: null, authorizationUrl: null,
         reasonCode: "provider_status_lookup_unavailable", generation: 4,
       });
     });
-    const status = await client.getRenewal("authorization-1", "session-2");
-    expect(paths).toEqual(["/api/v1/accounts/renewal-sessions/session-2"]);
+    const status = await client.getRenewal("authorization-1", renewalSession2);
+    expect(paths).toEqual([`/api/v1/accounts/renewal-sessions/${renewalSession2}`]);
     expect(renewalRetryState(status)).toBe("PROVIDER_STATUS_LOOKUP_UNAVAILABLE");
     expect(canReplayWeComRenewal("wecom", "authorization-1", {
-      idempotencyKey: "same-renewal-key", sessionRef: "session-2", retryState: "PROVIDER_STATUS_LOOKUP_UNAVAILABLE",
+      idempotencyKey: "same-renewal-key", sessionRef: renewalSession2, retryState: "PROVIDER_STATUS_LOOKUP_UNAVAILABLE",
     }, status)).toBe(true);
   });
 

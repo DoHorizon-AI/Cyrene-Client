@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: [
       "tests/unit/**/*.test.ts",
+      "tests/integration/**/*.test.ts",
       "apps/web/src/products/**/*.test.ts",
       "apps/web/services/navigator/src/**/*.test.ts",
       "apps/web/services/catalyst/src/**/*.test.ts",

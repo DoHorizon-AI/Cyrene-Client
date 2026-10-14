@@ -41,7 +41,26 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - run: npm run check
+      - name: Check out pinned Navigator Web Host source for the Exchange loopback
+        uses: actions/checkout@v4
+        with:
+          repository: DoHorizon-AI/Cyrene-Navigator
+          ref: e90288c8a4ecbcb3711d554366e7ac5227e62397
+          path: .test-deps/navigator
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .test-deps/navigator/pyproject.toml
+      - name: Install pinned Navigator Web Host dependencies
+        working-directory: .test-deps/navigator
+        run: python -m pip install --disable-pip-version-check -e .
+      - name: Run Client tests including the pinned Exchange HTTP loopback
+        run: npm run check
+        env:
+          CYRENE_NAVIGATOR_ROOT: ${{ github.workspace }}/.test-deps/navigator
+          CYRENE_NAVIGATOR_PYTHON: python
       - name: Build the standalone Workspace Web root
         run: npm run build:workspace-web
       - name: Build Studio web and control images

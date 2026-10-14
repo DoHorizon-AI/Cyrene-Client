@@ -993,7 +993,12 @@ export class NavigatorApi {
     if (!isPublishedProductPath(path)) {
       throw new NavigatorContractError("Product requests must use a published same-origin path.");
     }
-    return this.requestResponse(path, init);
+    const pathname = path.split("?", 1)[0] ?? path;
+    const exchangePath = pathname === "/api/v1/integrations" || pathname.startsWith("/api/v1/integrations/")
+      || /^\/api\/v1\/accounts\/(?:authorizations\/[^/]+\/renewal-sessions|renewal-sessions\/[^/]+)$/.test(pathname);
+    const explicitExchangeBearer = exchangePath && new Headers(init.headers).has("X-Cyrene-Product-Authorization");
+    // An Exchange bearer rejection must not refresh, retry, or expire the separate paired Web Host session.
+    return this.requestResponse(path, init, !explicitExchangeBearer, !explicitExchangeBearer);
   }
 
   /**
@@ -1223,7 +1228,7 @@ export class NavigatorApi {
     return readResponse(response, path, parser, this.acceptSession.bind(this));
   }
 
-  private async requestResponse(path: string, init: RequestInit, retryAuth = true): Promise<Response> {
+  private async requestResponse(path: string, init: RequestInit, retryAuth = true, expireSessionOn401 = true): Promise<Response> {
     init.signal?.throwIfAborted();
     const response = await this.send(path, init);
     if (response.status === 401 && retryAuth && !path.startsWith("/api/v1/auth/")) {
@@ -1238,10 +1243,10 @@ export class NavigatorApi {
       init.signal?.throwIfAborted();
       if (authenticated) {
         await response.body?.cancel();
-        return this.requestResponse(path, init, false);
+        return this.requestResponse(path, init, false, expireSessionOn401);
       }
     }
-    if (response.status === 401 && !path.startsWith("/api/v1/auth/")) {
+    if (response.status === 401 && expireSessionOn401 && !path.startsWith("/api/v1/auth/")) {
       this.sessionExpiredHandler?.();
       this.csrfToken = null;
     }
@@ -1299,7 +1304,8 @@ function isPublishedProductPath(path: string): boolean {
   if (/^\/api\/v1\/(?:catalyst|echo)\//.test(pathname)) return true;
   const workId = `(?:[A-Za-z0-9_.:-]|%3[Aa])+`;
   return new RegExp(`^/api/v1/integrations/(?:connections(?:/${workId}/(?:authorization-health|resources|actions/refresh))?|notifications(?:/events|/${workId}/ack)?|operations/${workId})$`).test(pathname)
-    || new RegExp(`^/api/v1/accounts/authorizations/${workId}/renewal-sessions(?:/${workId})?$`).test(pathname);
+    || new RegExp(`^/api/v1/accounts/authorizations/${workId}/renewal-sessions$`).test(pathname)
+    || new RegExp(`^/api/v1/accounts/renewal-sessions/${workId}$`).test(pathname);
 }
 
 /** Keep one key for each explicit command and its retries. 中文：每次显式命令及其重试使用同一幂等键。 */
