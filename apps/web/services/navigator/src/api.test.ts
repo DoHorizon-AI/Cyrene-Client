@@ -64,6 +64,7 @@ describe("NavigatorApi", () => {
   });
 
   it("admits the fixed Exchange integration Product routes through the paired proxy", async () => {
+    const renewalSessionId = "00000000-0000-4000-8000-000000000001";
     const paths: string[] = [];
     const api = new NavigatorApi(async (input) => {
       paths.push(String(input));
@@ -75,14 +76,14 @@ describe("NavigatorApi", () => {
     });
     expect(response.ok).toBe(true);
     await api.requestProductResponse("/api/v1/accounts/authorizations/auth-1/renewal-sessions", { method: "POST" });
-    await api.requestProductResponse("/api/v1/accounts/renewal-sessions/session-1");
+    await api.requestProductResponse(`/api/v1/accounts/renewal-sessions/${renewalSessionId}`);
     expect(paths).toEqual([
       "/api/v1/integrations/notifications/events",
       "/api/v1/accounts/authorizations/auth-1/renewal-sessions",
-      "/api/v1/accounts/renewal-sessions/session-1",
+      `/api/v1/accounts/renewal-sessions/${renewalSessionId}`,
     ]);
     await expect(api.requestProductResponse("/api/v1/integrations/connections/conn-1/actions/delete")).rejects.toThrow("published same-origin path");
-    await expect(api.requestProductResponse("/api/v1/accounts/authorizations/auth-1/renewal-sessions/session-1")).rejects.toThrow("published same-origin path");
+    await expect(api.requestProductResponse(`/api/v1/accounts/authorizations/auth-1/renewal-sessions/${renewalSessionId}`)).rejects.toThrow("published same-origin path");
     await expect(api.requestProductResponse("https://exchange.example.test/api/v1/integrations/connections")).rejects.toThrow("published same-origin path");
   });
 

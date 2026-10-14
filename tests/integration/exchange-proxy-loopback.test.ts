@@ -25,6 +25,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 
 describe.skipIf(!enabled)("SIMULATED Control → Navigator Web Host → Exchange loopback", () => {
   it("relays feed, SSE, and renewal GET with only the explicit first-party bearer", async () => {
+    const renewalSessionId = "00000000-0000-4000-8000-000000000001";
     const records: { method: string; path: string; authorization?: string; workspaceId?: string; dedicatedAuthorization?: string; cookie?: string; accept?: string; lastEventId?: string }[] = [];
     const fakeExchange = createHttpServer((req, res) => {
       const record = {
@@ -54,9 +55,9 @@ describe.skipIf(!enabled)("SIMULATED Control → Navigator Web Host → Exchange
         res.end('id: 7\ndata: {"id":"notice-7","sequence":7}\n\n');
         return;
       }
-      if (record.method === "GET" && record.path === "/api/v1/accounts/renewal-sessions/session-1") {
+      if (record.method === "GET" && record.path === `/api/v1/accounts/renewal-sessions/${renewalSessionId}`) {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ sessionRef: "session-1", authorizationRef: "auth-1", state: "WAITING_USER", createdAt: "2026-10-14T12:00:00Z", expiresAt: null, authorizationUrl: null, generation: 1 }));
+        res.end(JSON.stringify({ sessionRef: renewalSessionId, authorizationRef: "auth-1", state: "WAITING_USER", createdAt: "2026-10-14T12:00:00Z", expiresAt: null, authorizationUrl: null, generation: 1 }));
         return;
       }
       res.writeHead(404, { "content-type": "application/problem+json" });
@@ -141,9 +142,9 @@ describe.skipIf(!enabled)("SIMULATED Control → Navigator Web Host → Exchange
     expect(events.status).toBe(200);
     expect(events.headers["content-type"]).toContain("text/event-stream");
     expect(events.text).toContain('id: 7\ndata: {"id":"notice-7","sequence":7}');
-    const renewal = await request(controlOrigin, "/api/v1/accounts/renewal-sessions/session-1", browserHeaders);
+    const renewal = await request(controlOrigin, `/api/v1/accounts/renewal-sessions/${renewalSessionId}`, browserHeaders);
     expect(renewal.status).toBe(200);
-    expect(JSON.parse(renewal.text)).toMatchObject({ sessionRef: "session-1", authorizationRef: "auth-1", state: "WAITING_USER" });
+    expect(JSON.parse(renewal.text)).toMatchObject({ sessionRef: renewalSessionId, authorizationRef: "auth-1", state: "WAITING_USER" });
     const deniedRenewal = await request(controlOrigin, "/api/v1/accounts/authorizations/auth-1/renewal-sessions", browserHeaders, "POST");
     expect(deniedRenewal.status).toBe(403);
 
@@ -151,7 +152,7 @@ describe.skipIf(!enabled)("SIMULATED Control → Navigator Web Host → Exchange
       ["GET", "/api/v1/integrations/connections"],
       ["GET", "/api/v1/integrations/notifications?after=4"],
       ["GET", "/api/v1/integrations/notifications/events"],
-      ["GET", "/api/v1/accounts/renewal-sessions/session-1"],
+      ["GET", `/api/v1/accounts/renewal-sessions/${renewalSessionId}`],
     ]);
     expect(records.every(record => record.authorization === "Bearer synthetic-platform-first-party-token"
       && record.workspaceId === "exchange-workspace-1" && !record.dedicatedAuthorization && !record.cookie)).toBe(true);

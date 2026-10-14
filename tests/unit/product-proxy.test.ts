@@ -6,6 +6,7 @@ import { createControlApplication } from "../../apps/control/application";
 import { admittedLoopbackTarget, directProductUpstreamPath, productPermission } from "../../tooling/product-proxy";
 
 const cleanup: (() => Promise<void>)[] = [];
+const renewalSessionId = "00000000-0000-4000-8000-000000000001";
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function fixture() {
   const received: { url: string; body: string; authorization?: string; productAuthorization?: string; workspaceId?: string; cookie?: string; accept?: string; lastEventId?: string; idempotencyKey?: string }[] = [];
@@ -13,7 +14,7 @@ async function fixture() {
     const chunks: Buffer[] = []; for await (const part of req) chunks.push(part);
     received.push({ url: req.url!, body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization, productAuthorization: req.headers["x-cyrene-product-authorization"] as string | undefined, workspaceId: req.headers["x-cyrene-workspace-id"] as string | undefined, cookie: req.headers.cookie, accept: req.headers.accept, lastEventId: req.headers["last-event-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
     if (req.url?.endsWith("renewal-sessions") && req.method === "POST") {
-      res.writeHead(202, { "content-type": "application/json", location: "/api/v1/accounts/renewal-sessions/session-1" });
+      res.writeHead(202, { "content-type": "application/json", location: `/api/v1/accounts/renewal-sessions/${renewalSessionId}` });
       res.end(JSON.stringify({ accepted: true }));
       return;
     }
@@ -95,10 +96,10 @@ it("scopes integration reads and renewal, refresh, and acknowledgement actions t
   expect((await f.request("/api/v1/integrations/notifications/notice-1/ack", { ...viewer, ...exchangeCredential }, "POST")).status).toBe(403);
   const renewal = await f.request("/api/v1/accounts/authorizations/auth-1/renewal-sessions", { ...operator, ...exchangeCredential, "idempotency-key": "renew-1" }, "POST");
   expect(renewal.status).toBe(202);
-  expect(renewal.responseHeaders.location).toBe("/api/v1/accounts/renewal-sessions/session-1");
+  expect(renewal.responseHeaders.location).toBe(`/api/v1/accounts/renewal-sessions/${renewalSessionId}`);
   expect(f.received.at(-1)?.url).toBe("/api/v1/exchange/api/v1/accounts/authorizations/auth-1/renewal-sessions");
-  expect((await f.request("/api/v1/accounts/renewal-sessions/session-1", { ...viewer, ...exchangeCredential })).status).toBe(200);
-  expect(f.received.at(-1)?.url).toBe("/api/v1/exchange/api/v1/accounts/renewal-sessions/session-1");
+  expect((await f.request(`/api/v1/accounts/renewal-sessions/${renewalSessionId}`, { ...viewer, ...exchangeCredential })).status).toBe(200);
+  expect(f.received.at(-1)?.url).toBe(`/api/v1/exchange/api/v1/accounts/renewal-sessions/${renewalSessionId}`);
   expect((await f.request("/api/v1/integrations/connections/conn-1/actions/refresh", { ...operator, ...exchangeCredential, "idempotency-key": "refresh-1" }, "POST")).status).toBe(200);
   expect((await f.request("/api/v1/integrations/notifications/notice-1/ack", { ...operator, ...exchangeCredential, "idempotency-key": "ack-1" }, "POST")).status).toBe(200);
   expect(f.received.map(entry => entry.idempotencyKey).filter(Boolean)).toEqual(["renew-1", "refresh-1", "ack-1"]);
@@ -173,8 +174,8 @@ it("allowlists Client authorization and cloud integration operations with least-
   expect(productPermission("GET", "/api/v1/integrations/connections/conn-1/authorization-health")).toBe("products.read");
   expect(productPermission("GET", "/api/v1/integrations/connections")).toBe("products.read");
   expect(productPermission("GET", "/api/v1/integrations/connections/conn-1/resources")).toBe("products.read");
-  expect(productPermission("GET", "/api/v1/accounts/renewal-sessions/session-1")).toBe("products.read");
-  expect(productPermission("GET", "/api/v1/accounts/authorizations/auth-1/renewal-sessions/session-1")).toBeNull();
+  expect(productPermission("GET", `/api/v1/accounts/renewal-sessions/${renewalSessionId}`)).toBe("products.read");
+  expect(productPermission("GET", `/api/v1/accounts/authorizations/auth-1/renewal-sessions/${renewalSessionId}`)).toBeNull();
   expect(productPermission("GET", "/api/v1/integrations/notifications/events")).toBe("products.read");
   expect(productPermission("POST", "/api/v1/accounts/authorizations/auth-1/renewal-sessions")).toBe("products.operate");
   expect(productPermission("POST", "/api/v1/integrations/connections/conn-1/actions/refresh")).toBe("products.operate");
