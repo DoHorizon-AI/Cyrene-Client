@@ -8,10 +8,15 @@ import { admittedLoopbackTarget, directProductUpstreamPath, productPermission } 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function fixture() {
-  const received: { url: string; body: string; authorization?: string; cookie?: string }[] = [];
+  const received: { url: string; body: string; authorization?: string; cookie?: string; lastEventId?: string; idempotencyKey?: string }[] = [];
   const upstream = createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const part of req) chunks.push(part);
-    received.push({ url: req.url!, body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization, cookie: req.headers.cookie });
+    received.push({ url: req.url!, body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization, cookie: req.headers.cookie, lastEventId: req.headers["last-event-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
+    if (req.url?.endsWith("renewal-sessions") && req.method === "POST") {
+      res.writeHead(202, { "content-type": "application/json", location: "/api/v1/accounts/authorizations/auth-1/renewal-sessions/session-1" });
+      res.end(JSON.stringify({ accepted: true }));
+      return;
+    }
     if (req.url?.endsWith("events/stream")) {
       res.writeHead(200, { "content-type": "text/event-stream" }); res.write("data: first\n\n");
       const timer = setTimeout(() => res.end("data: second\n\n"), 5000); res.on("close", () => clearTimeout(timer)); return;
@@ -28,9 +33,9 @@ async function fixture() {
   await new Promise<void>(resolve => app.server.listen(0, "127.0.0.1", resolve));
   cleanup.push(async () => { app.server.closeAllConnections(); await new Promise<void>(resolve => app.server.close(() => resolve())); await stores.close(); });
   const origin = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
-  const request = (path: string, headers: Record<string, string>, method = "GET", body?: string) => new Promise<{ status: number; text: string }>((resolve, reject) => {
+  const request = (path: string, headers: Record<string, string>, method = "GET", body?: string) => new Promise<{ status: number; text: string; responseHeaders: Record<string, string | string[] | undefined> }>((resolve, reject) => {
     const req = httpRequest(origin + path, { method, headers: { host: "127.0.0.1:5180", ...headers } }, res => {
-      const chunks: Buffer[] = []; res.on("data", chunk => chunks.push(chunk)); res.on("end", () => resolve({ status: res.statusCode!, text: Buffer.concat(chunks).toString() }));
+      const chunks: Buffer[] = []; res.on("data", chunk => chunks.push(chunk)); res.on("end", () => resolve({ status: res.statusCode!, text: Buffer.concat(chunks).toString(), responseHeaders: res.headers }));
     }); req.on("error", reject); req.end(body);
   });
   const login = async (role: "viewer" | "editor" | "operator") => {
@@ -58,6 +63,27 @@ it("rejects privilege and CSRF violations before forwarding, preserves raw uploa
   expect(f.received).toHaveLength(2);
   expect((await f.request("/api/v1/auth/pair", { ...viewer, "content-type": "application/json" }, "POST", '{"code":"one-time-code"}')).status).toBe(200);
   expect(f.received[2].url).toBe("/api/v1/auth/pair");
+});
+
+it("scopes integration reads and renewal, refresh, and acknowledgement actions through Control", async () => {
+  const f = await fixture(), viewer = await f.login("viewer"), operator = await f.login("operator");
+  expect((await f.request("/api/v1/integrations/connections/conn-1/authorization-health", viewer)).status).toBe(200);
+  expect((await f.request("/api/v1/integrations/connections/conn-1/resources", viewer)).status).toBe(200);
+  expect((await f.request("/api/v1/integrations/connections", viewer)).status).toBe(200);
+  expect((await f.request("/api/v1/integrations/notifications?after=12", viewer)).status).toBe(200);
+  expect((await f.request("/api/v1/integrations/notifications/events", { ...viewer, "last-event-id": "12" })).status).toBe(200);
+  expect(f.received.at(-1)).toMatchObject({ url: "/api/v1/integrations/notifications/events", lastEventId: "12" });
+
+  expect((await f.request("/api/v1/accounts/authorizations/auth-1/renewal-sessions", viewer, "POST")).status).toBe(403);
+  expect((await f.request("/api/v1/integrations/connections/conn-1/actions/refresh", viewer, "POST")).status).toBe(403);
+  expect((await f.request("/api/v1/integrations/notifications/notice-1/ack", viewer, "POST")).status).toBe(403);
+  const renewal = await f.request("/api/v1/accounts/authorizations/auth-1/renewal-sessions", { ...operator, "idempotency-key": "renew-1" }, "POST");
+  expect(renewal.status).toBe(202);
+  expect(renewal.responseHeaders.location).toBe("/api/v1/accounts/authorizations/auth-1/renewal-sessions/session-1");
+  expect((await f.request("/api/v1/integrations/connections/conn-1/actions/refresh", { ...operator, "idempotency-key": "refresh-1" }, "POST")).status).toBe(200);
+  expect((await f.request("/api/v1/integrations/notifications/notice-1/ack", { ...operator, "idempotency-key": "ack-1" }, "POST")).status).toBe(200);
+  expect(f.received.slice(-3).map(entry => entry.idempotencyKey)).toEqual(["renew-1", "refresh-1", "ack-1"]);
+  expect((await f.request("/api/v1/integrations/connections/conn-1/actions/delete", operator, "POST")).status).toBe(403);
 });
 it("forwards the first SSE event before upstream completion and closes on unsubscribe", async () => {
   const f = await fixture(), headers = await f.login("viewer");
@@ -122,6 +148,19 @@ it("allowlists the Catalyst trial collection and encoded opaque block identifier
   expect(productPermission("DELETE", "/api/v1/catalyst/api/v1/content-revisions/rev-1/training-records")).toBeNull();
   expect(productPermission("POST", "/api/v1/catalyst/api/v1/review-items/review%3A1/resolve")).toBe("products.operate");
   expect(productPermission("DELETE", "/api/v1/catalyst/api/v1/datasets/ds-1/sources")).toBeNull();
+});
+
+it("allowlists Client authorization and cloud integration operations with least-privilege scopes", () => {
+  expect(productPermission("GET", "/api/v1/integrations/connections/conn-1/authorization-health")).toBe("products.read");
+  expect(productPermission("GET", "/api/v1/integrations/connections")).toBe("products.read");
+  expect(productPermission("GET", "/api/v1/integrations/connections/conn-1/resources")).toBe("products.read");
+  expect(productPermission("GET", "/api/v1/accounts/authorizations/auth-1/renewal-sessions/session-1")).toBe("products.read");
+  expect(productPermission("GET", "/api/v1/integrations/notifications/events")).toBe("products.read");
+  expect(productPermission("POST", "/api/v1/accounts/authorizations/auth-1/renewal-sessions")).toBe("products.operate");
+  expect(productPermission("POST", "/api/v1/integrations/connections/conn-1/actions/refresh")).toBe("products.operate");
+  expect(productPermission("POST", "/api/v1/integrations/notifications/notice-1/ack")).toBe("products.operate");
+  expect(productPermission("POST", "/api/v1/integrations/connections/conn-1/actions/delete")).toBeNull();
+  expect(productPermission("POST", "/api/v1/integrations/connections/%2fother/actions/refresh")).toBeNull();
 });
 
 async function directFixture(includeEcho = true) {

@@ -984,14 +984,14 @@ export class NavigatorApi {
   }
 
   /**
-   * Send a raw response request to the published Catalyst or Echo API through
-   * the same-origin Navigator proxy. Use this for new Product contract routes
-   * and binary downloads while keeping session refresh and CSRF in one place.
-   * 中文：通过 Navigator 同源代理请求 Catalyst 或 Echo API 原始响应；新 Product 路由和二进制下载仍复用会话轮换与 CSRF 处理。
+   * Send a raw response request to a published Product route through the
+   * same-origin Navigator proxy. Use this for Product contract routes and
+   * event streams while keeping session refresh and CSRF in one place.
+   * 中文：通过 Navigator 同源代理请求已发布的 Product 路由；Product 契约路由和事件流复用同一会话轮换与 CSRF 处理。
    */
   async requestProductResponse(path: string, init: RequestInit = {}): Promise<Response> {
     if (!isPublishedProductPath(path)) {
-      throw new NavigatorContractError("Product requests must use a published Catalyst or Echo same-origin path.");
+      throw new NavigatorContractError("Product requests must use a published same-origin path.");
     }
     return this.requestResponse(path, init);
   }
@@ -1295,9 +1295,11 @@ function jsonRequest(method: string, body: unknown, idempotent: boolean | string
 function isPublishedProductPath(path: string): boolean {
   if (!path.startsWith("/") || path.startsWith("//") || path.includes("://") || path.includes("\\")) return false;
   const pathname = path.split(/[?#]/, 1)[0] ?? "";
-  if (!/^\/api\/v1\/(?:catalyst|echo)\//.test(pathname)) return false;
   if (/%(?:2f|5c|2e|25|00)/i.test(pathname) || pathname.split("/").includes("..")) return false;
-  return true;
+  if (/^\/api\/v1\/(?:catalyst|echo)\//.test(pathname)) return true;
+  const workId = `(?:[A-Za-z0-9_.:-]|%3[Aa])+`;
+  return new RegExp(`^/api/v1/integrations/(?:connections(?:/${workId}/(?:authorization-health|resources|actions/refresh))?|notifications(?:/events|/${workId}/ack)?|operations/${workId})$`).test(pathname)
+    || new RegExp(`^/api/v1/accounts/authorizations/${workId}/renewal-sessions(?:/${workId})?$`).test(pathname);
 }
 
 /** Keep one key for each explicit command and its retries. 中文：每次显式命令及其重试使用同一幂等键。 */

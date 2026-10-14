@@ -358,6 +358,8 @@ export function createControlApplication(options: ControlOptions) {
           }
         } else {
           const cookies = upstream.headers.getSetCookie(); if (cookies.length) res.setHeader("set-cookie", cookies);
+          const location = upstream.headers.get("location");
+          if (location?.startsWith("/api/v1/") && !location.startsWith("//") && !/%(?:2f|5c|2e|25|00)/i.test(location) && !location.includes("..") && !location.includes("\\")) res.setHeader("location", location);
         }
         if (upstream.headers.get("content-type")?.includes("text/event-stream")) res.setHeader("x-accel-buffering", "no");
         try { if (upstream.body) await pipe(Readable.fromWeb(upstream.body as any), res); else res.end(); }

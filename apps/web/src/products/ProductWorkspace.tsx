@@ -13,6 +13,7 @@ import { useI18n } from "../i18n";
 import { useTeamIdentity } from "../team/TeamGate";
 import { studioProductFetch } from "./transport";
 import { WorkspaceTrainingConsole } from "./WorkspaceTrainingConsole";
+import { IntegrationAlerts } from "./IntegrationAlerts";
 
 export default function ProductWorkspace({ route }: { route: RouteId }) {
   const locale = useI18n(), { actorId, workspaceId } = useTeamIdentity();
@@ -56,6 +57,7 @@ function ProductSession({ route }: { route: RouteId }) {
       case "runs": return <RunsPage api={api} />;
       case "deployments": return <DeploymentsPage api={api} />;
       case "gateway": return <GatewayPage api={api} />;
+      case "integrations": return <IntegrationAlerts api={api} canOperate={scopes.includes("products.operate")} />;
       case "chat": return <ChatPage api={api} />;
       case "assistant": return <WorkAssistantPage api={api} workspaceId={workspaceId} canOperate={scopes.includes("products.operate")} canWrite={scopes.includes("products.write")} />;
       case "settings": return session && <SettingsPage api={api} session={session} />;

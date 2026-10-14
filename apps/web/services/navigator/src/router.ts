@@ -17,6 +17,7 @@ export type RouteId =
   | "runs"
   | "deployments"
   | "gateway"
+  | "integrations"
   | "settings"
   | "chat"
   | "assistant";
@@ -80,6 +81,12 @@ export const ROUTES: readonly RouteDefinition[] = [
     label: "Gateway",
     path: "/gateway",
     description: "Routes, API keys, and client configuration",
+  },
+  {
+    id: "integrations",
+    label: "Integrations",
+    path: "/integrations",
+    description: "Authorization health, notifications, and cloud observations",
   },
   {
     id: "chat",
