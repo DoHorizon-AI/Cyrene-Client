@@ -43,6 +43,15 @@ explicit retry with the same key only for WeCom states Exchange marks safe for
 durable replay. The Client never automatically replays and never replaces an
 unresolved key with a new one.
 
+Before opening the returned URL, the Client validates one of two fixed WeCom
+routes: the activation QR page (`/ai/qc/gen`) or the existing-profile grant
+management page (`/ai/aiHelper/authorizationList`). The management URL must have
+the exact message-capability query contract and is labeled as authorization or
+permission management, not as a first-login QR. The Client does not log in,
+reinitialize a profile, or display the raw URL.
+
+在打开服务端返回的地址之前，Client 会严格校验两种固定企业微信路由之一：激活二维码页面（`/ai/qc/gen`）或现有配置的授权管理页面（`/ai/aiHelper/authorizationList`）。管理页必须符合精确的消息能力查询参数契约，界面将其标注为授权或权限管理，不会称作首次登录二维码。Client 不会执行登录、重新初始化配置或显示原始地址。
+
 Renewal is exposed only for WeCom connections with a non-null authorization
 reference returned by health. Cloud binding references are not renewable user
 authorization references.
