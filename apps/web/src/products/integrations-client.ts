@@ -56,7 +56,10 @@ const renewalSessionSchema = z.object({
   expiresAt: nullableTimeSchema,
   authorizationUrl: z.string().url().nullable(),
   qrAttachmentRef: z.string().max(256).nullable().optional(),
-  reasonCode: z.enum(["provider_start_pending", "provider_start_outcome_unknown", "provider_binding_unavailable", "provider_status_unavailable"]).nullable().optional(),
+  reasonCode: z.enum([
+    "provider_start_pending", "provider_start_outcome_unknown", "provider_binding_unavailable",
+    "provider_status_lookup_unavailable", "provider_status_unavailable",
+  ]).nullable().optional(),
   generation: z.number().int().nonnegative(),
 });
 
@@ -90,7 +93,7 @@ const cloudQueryResultSchema = z.object({
 const notificationSchema = z.object({
   id: productIdSchema,
   sequence: z.number().int().nonnegative(),
-  connectionId: productIdSchema,
+  connectionId: productIdSchema.nullable(),
   kind: z.enum([
     "authorization.expiring", "authorization.required", "connection.unavailable",
     "cloud.resource.changed", "delivery.failed",

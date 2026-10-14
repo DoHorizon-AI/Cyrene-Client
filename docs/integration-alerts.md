@@ -35,7 +35,23 @@ separate tab; the raw URL, QR attachment reference, credentials, and native path
 are not rendered. Exchange remains responsible for validating the operator and
 the configured binding.
 
+The Client keeps a pending idempotency key in browser `sessionStorage`, under a
+hashed scope derived from the paired actor/session, workspace, Product connection,
+and verified authorization reference. It clears that scope on signout or scope
+change. After a provider start has an ambiguous outcome, the UI can offer an
+explicit retry with the same key only for WeCom states Exchange marks safe for
+durable replay. The Client never automatically replays and never replaces an
+unresolved key with a new one.
+
+Renewal is exposed only for WeCom connections with a non-null authorization
+reference returned by health. Cloud binding references are not renewable user
+authorization references.
+
 具备操作权限的用户可通过 Product 管理的续期会话路由启动续期。Client 要求服务端返回已接受状态和同源 Product `Location`，随后轮询该续期会话。用户主动点击后，Client 会在新标签页打开 HTTPS 授权地址；页面不会显示原始 URL、二维码附件引用、凭据或本机路径。操作者与已配置绑定的校验仍由 Exchange 负责。
+
+Client 会将待处理幂等键保存到浏览器 `sessionStorage`，使用配对操作者/会话、工作空间、Product 连接和已验证授权引用的哈希范围隔离；退出登录或切换范围时清除此范围。服务商启动结果不明确时，仅当 Exchange 对企业微信状态确认支持持久重放，页面才允许用户主动使用同一幂等键重试。Client 不会自动重放，也不会用新键替换未解决的请求。
+
+续期操作仅对健康状态返回了非空授权引用的企业微信连接开放。云绑定引用不是可续期的用户授权引用。
 
 ## Notifications
 

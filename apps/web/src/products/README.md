@@ -18,12 +18,13 @@ Exchange, or the owning Product; this directory contains presentation state only
 | `integrations-client.ts` | Validated Exchange integration API / 已校验的 Exchange 集成 API |
 | `integration-notification-feed.ts` | Durable sequence recovery and SSE deduplication / 持久序号恢复与 SSE 去重 |
 | `integration-notification-permission.ts` | Explicit browser notification permission / 显式浏览器通知权限 |
+| `integration-renewal-storage.ts` | Session-scoped same-key renewal recovery handle / 会话范围内的同键续期恢复句柄 |
 | `integrations.test.ts` | API, permission, view-state, and feed tests / API、权限、展示状态与通知流测试 |
 
 Suggested reading order: `transport.ts` → `ProductWorkspace.tsx` →
 `integrations-client.ts` → `integration-notification-feed.ts` →
-`IntegrationAlerts.tsx` → `integrations.test.ts`.
+`integration-renewal-storage.ts` → `IntegrationAlerts.tsx` → `integrations.test.ts`.
 
 建议阅读顺序：`transport.ts` → `ProductWorkspace.tsx` →
 `integrations-client.ts` → `integration-notification-feed.ts` →
-`IntegrationAlerts.tsx` → `integrations.test.ts`。
+`integration-renewal-storage.ts` → `IntegrationAlerts.tsx` → `integrations.test.ts`。
