@@ -997,8 +997,8 @@ export class NavigatorApi {
     const exchangePath = pathname === "/api/v1/integrations" || pathname.startsWith("/api/v1/integrations/")
       || /^\/api\/v1\/accounts\/(?:authorizations\/[^/]+\/renewal-sessions|renewal-sessions\/[^/]+)$/.test(pathname);
     const explicitExchangeBearer = exchangePath && new Headers(init.headers).has("X-Cyrene-Product-Authorization");
-    // Refresh a stale Web Host session if needed, but don't label Exchange's 401 as that session expiring.
-    return this.requestResponse(path, init, true, !explicitExchangeBearer);
+    // An Exchange bearer rejection must not refresh, retry, or expire the separate paired Web Host session.
+    return this.requestResponse(path, init, !explicitExchangeBearer, !explicitExchangeBearer);
   }
 
   /**

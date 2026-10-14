@@ -9,7 +9,7 @@
 // │  · 只显示服务端投影字段，不呈现目标、绑定、身份或原始属性 JSON             │
 // └─────────────────────────────────────────────────────────────────────┘
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { NavigatorApi } from "../../services/navigator/src/api";
 import { Button, formatDate, PageHeader, Panel, StateBlock, StatusPill } from "../../services/navigator/src/components";
 import { useI18n } from "../../services/navigator/src/i18n";
@@ -183,6 +183,11 @@ export function safeOfficialRenewalUrl(value: string | null): string | null {
   return validateActivationQR(value) ?? validateExistingGrantManagementURL(value);
 }
 
+/** Clear only the in-memory Exchange bearer after an authentication rejection. */
+export function shouldClearExchangeCredential(error: unknown): boolean {
+  return error instanceof IntegrationApiError && error.status === 401;
+}
+
 /** Render the integration console using the already paired Navigator and Control session. */
 export function IntegrationAlerts({ api, canOperate, sessionScope }: IntegrationAlertsProps) {
   const { t } = useI18n();
@@ -199,6 +204,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
   const [selectedId, setSelectedId] = useState("");
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [connectionError, setConnectionError] = useState("");
+  const [credentialError, setCredentialError] = useState("");
   const [reloadConnections, setReloadConnections] = useState(0);
   const [health, setHealth] = useState<AuthorizationHealth | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
@@ -215,12 +221,22 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
   const [notifications, setNotifications] = useState<IntegrationNotification[]>([]);
   const [feedError, setFeedError] = useState("");
 
-  const invalidateExchangeCredential = () => {
+  const invalidateExchangeCredential = useCallback(() => {
     setExchangeCredential(null);
     setConnections([]); setSelectedId(""); setNotifications([]);
     setHealth(null); setResources(null); setRefreshOperation(null); setRenewal(null); setPendingRenewal(null);
-    setConnectionError(""); setHealthError(""); setResourcesError(""); setRenewalError(""); setFeedError("");
-  };
+    setConnectionError(""); setCredentialError(""); setHealthError(""); setResourcesError(""); setRenewalError(""); setFeedError("");
+  }, []);
+
+  const handleExchangeFailure = useCallback((error: unknown): string => {
+    const message = safeFailure(error, t);
+    if (shouldClearExchangeCredential(error)) {
+      setBearerInput("");
+      invalidateExchangeCredential();
+      setCredentialError(t("Exchange rejected this credential or workspace selector. Enter the first-party bearer again to continue."));
+    }
+    return message;
+  }, [invalidateExchangeCredential, t]);
 
   const connectExchange = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -228,6 +244,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
     if (!token || !selectedWorkspace) return;
     setExchangeCredential({ bearerToken: token, workspaceId: selectedWorkspace });
     setBearerInput("");
+    setCredentialError("");
     setConnections([]); setSelectedId(""); setNotifications([]);
     setReloadConnections(value => value + 1);
   };
@@ -252,6 +269,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
     setExchangeCredential(null);
     setConnections([]); setSelectedId(""); setNotifications([]);
     setHealth(null); setResources(null); setRefreshOperation(null); setRenewal(null); setPendingRenewal(null);
+    setCredentialError("");
   }, [sessionScope]);
 
   useEffect(() => {
@@ -283,10 +301,10 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       setConnections(next);
       setSelectedId(current => current && next.some(connection => connection.id === current) ? current : next[0]?.id ?? "");
     }, error => {
-      if (!controller.signal.aborted) setConnectionError(safeFailure(error, t));
+      if (!controller.signal.aborted) setConnectionError(handleExchangeFailure(error));
     }).finally(() => { if (!controller.signal.aborted) setLoadingConnections(false); });
     return () => controller.abort();
-  }, [client, exchangeCredential, reloadConnections, t]);
+  }, [client, exchangeCredential, handleExchangeFailure, reloadConnections, t]);
 
   useEffect(() => {
     if (!exchangeCredential || !selectedConnection) {
@@ -329,10 +347,10 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
             setPendingRenewal(null);
           }
         } catch (error) {
-          if (!controller.signal.aborted) setRenewalError(safeFailure(error, t));
+          if (!controller.signal.aborted) setRenewalError(handleExchangeFailure(error));
         }
       } catch (error) {
-        if (!controller.signal.aborted) setHealthError(safeFailure(error, t));
+        if (!controller.signal.aborted) setHealthError(handleExchangeFailure(error));
       } finally {
         if (!controller.signal.aborted) { setHealthLoading(false); setPendingRenewalLoading(false); }
       }
@@ -341,11 +359,11 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       void client.getResources(selectedConnection.id, controller.signal).then(value => {
         if (!controller.signal.aborted) setResources(value);
       }, error => {
-        if (!controller.signal.aborted) setResourcesError(safeFailure(error, t));
+        if (!controller.signal.aborted) setResourcesError(handleExchangeFailure(error));
       }).finally(() => { if (!controller.signal.aborted) setResourcesLoading(false); });
     }
     return () => controller.abort();
-  }, [client, exchangeCredential, selectedConnection, renewalScope, t]);
+  }, [client, exchangeCredential, handleExchangeFailure, selectedConnection, renewalScope, t]);
 
   useEffect(() => {
     if (!exchangeCredential) { setNotifications([]); setFeedError(""); return; }
@@ -354,7 +372,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       api: client,
       signal: controller.signal,
       onSnapshot: () => setFeedError(""),
-      onError: error => setFeedError(safeFailure(error, t)),
+      onError: error => setFeedError(handleExchangeFailure(error)),
       onNotification: (notification, hint) => {
         setNotifications(current => mergeNotification(current, notification));
         if (hint.showBrowserNotification) {
@@ -365,7 +383,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       },
     });
     return () => controller.abort();
-  }, [client, exchangeCredential, t]);
+  }, [client, exchangeCredential, handleExchangeFailure, t]);
 
   useEffect(() => {
     if (!exchangeCredential || !renewal || isRenewalTerminal(renewal.state) || !selectedConnection) return;
@@ -398,14 +416,14 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
         if (active && !isRenewalTerminal(updated.state)) timer = window.setTimeout(() => void poll(), 2000);
       } catch (error) {
         if (active && !controller.signal.aborted) {
-          setRenewalError(safeFailure(error, t));
+          setRenewalError(handleExchangeFailure(error));
           timer = window.setTimeout(() => void poll(), 4000);
         }
       }
     };
     timer = window.setTimeout(() => void poll(), 1500);
     return () => { active = false; controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
-  }, [client, exchangeCredential, renewal?.sessionRef, renewal?.state, renewal?.reasonCode, selectedConnection, activeHealth?.authorizationRef, pendingRenewal, renewalScope, t]);
+  }, [client, exchangeCredential, handleExchangeFailure, renewal?.sessionRef, renewal?.state, renewal?.reasonCode, selectedConnection, activeHealth?.authorizationRef, pendingRenewal, renewalScope, t]);
 
   const requestPermission = async () => {
     try {
@@ -421,7 +439,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
     if (!exchangeCredential || !selectedConnection || !supportsCloudObservations(selectedConnection.provider)) return;
     setResourcesLoading(true); setResourcesError("");
     try { setResources(await client.getResources(selectedConnection.id)); }
-    catch (error) { setResourcesError(safeFailure(error, t)); }
+    catch (error) { setResourcesError(handleExchangeFailure(error)); }
     finally { setResourcesLoading(false); }
   };
 
@@ -432,7 +450,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       const operation = await client.refreshResources(selectedConnection.id, newIntegrationIdempotencyKey());
       setRefreshOperation({ state: operation.state, updatedAt: operation.updatedAt });
       await readObservations();
-    } catch (error) { setResourcesError(safeFailure(error, t)); }
+    } catch (error) { setResourcesError(handleExchangeFailure(error)); }
     finally { setActionBusy(false); }
   };
 
@@ -470,7 +488,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
         await clearPendingRenewalRequest(storage, renewalScope, selectedConnection.id, health.authorizationRef);
       }
     } catch (error) {
-      setRenewalError(safeFailure(error, t));
+      setRenewalError(handleExchangeFailure(error));
       if (isAmbiguousRenewalFailure(error)) {
         await savePendingRenewalRequest(storage, renewalScope, selectedConnection.id, health.authorizationRef, requestHandle);
       } else {
@@ -485,7 +503,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
     try {
       const updated = await client.acknowledge(notification.id, newIntegrationIdempotencyKey());
       setNotifications(current => mergeNotification(current, updated));
-    } catch (error) { setFeedError(safeFailure(error, t)); }
+    } catch (error) { setFeedError(handleExchangeFailure(error)); }
   };
 
   const officialRenewalUrl = safeOfficialRenewalUrl(activeRenewal?.authorizationUrl ?? null);
@@ -511,13 +529,14 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       <form className="ia-exchange-credential" onSubmit={connectExchange}>
         <label className="field">
           <span className="field__label">{t("Personal Cyrene first-party Product bearer")}</span>
-          <input type="password" autoComplete="off" spellCheck={false} value={bearerInput} onChange={event => { setBearerInput(event.target.value); if (exchangeCredential) invalidateExchangeCredential(); }} />
+          <input type="password" autoComplete="off" spellCheck={false} value={bearerInput} onChange={event => { setBearerInput(event.target.value); setCredentialError(""); if (exchangeCredential) invalidateExchangeCredential(); }} />
         </label>
         <label className="field">
           <span className="field__label">{t("Exchange workspace selector")}</span>
           <input autoComplete="off" spellCheck={false} value={workspaceSelector} onChange={event => {
             const value = event.target.value;
             setWorkspaceSelector(value);
+            setCredentialError("");
             if (exchangeCredential && value.trim() !== exchangeCredential.workspaceId) invalidateExchangeCredential();
           }} />
         </label>
@@ -526,6 +545,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
           {exchangeCredential ? <Button type="button" onClick={() => { setBearerInput(""); invalidateExchangeCredential(); }}>{t("Disconnect Exchange")}</Button> : null}
         </div>
       </form>
+      {credentialError ? <p className="ia-inline-error" role="alert">{credentialError}</p> : null}
       <p className="ia-scope-note">{t("Use a personal first-party Product bearer, not a Studio login or MCP token. The credential stays in page memory and is sent only to the approved Exchange routes. Exchange verifies the bearer; the workspace value is a selector, not an identity claim.")}</p>
       {!exchangeCredential ? <p className="ia-scope-note">{t("Exchange data is not requested until you connect with both values.")}</p> : null}
     </Panel>

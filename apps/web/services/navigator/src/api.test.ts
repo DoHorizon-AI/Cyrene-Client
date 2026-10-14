@@ -104,11 +104,7 @@ describe("NavigatorApi", () => {
       headers: { "X-Cyrene-Product-Authorization": "Bearer synthetic-platform-token" },
     });
     expect(result.status).toBe(401);
-    expect(paths).toEqual([
-      "/api/v1/integrations/connections",
-      "/api/v1/auth/session/refresh",
-      "/api/v1/integrations/connections",
-    ]);
+    expect(paths).toEqual(["/api/v1/integrations/connections"]);
     expect(expired).toBe(false);
   });
 

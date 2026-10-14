@@ -7,6 +7,7 @@ import {
   classifyAuthorizationExpiry,
   renewalRetryState,
   safeOfficialRenewalUrl,
+  shouldClearExchangeCredential,
   supportsAuthorizationRenewal,
   supportsCloudObservations,
   validateActivationQR,
@@ -81,6 +82,12 @@ class MemoryRenewalStorage implements RenewalStoragePort {
 }
 
 describe("Client integration views", () => {
+  it("clears only the in-memory Exchange bearer on an authentication rejection", () => {
+    expect(shouldClearExchangeCredential(new IntegrationApiError(401, "EXCHANGE_IDENTITY_INVALID"))).toBe(true);
+    expect(shouldClearExchangeCredential(new IntegrationApiError(409, "EXCHANGE_CONNECTION_REAUTHORIZATION_REQUIRED"))).toBe(false);
+    expect(shouldClearExchangeCredential(new Error("network unavailable"))).toBe(false);
+  });
+
   it("requires an explicit first-party Exchange bearer and sends it only in the dedicated headers", async () => {
     const requests: { path: string; headers: Headers }[] = [];
     const api = {
@@ -291,7 +298,7 @@ describe("Client integration views", () => {
       calls.push({ path, init });
       return jsonResponse({
         sessionRef: renewalSession1, authorizationRef: "authorization-1", state: "WAITING_USER",
-        createdAt: "2026-10-14T12:00:00Z", expiresAt: null,
+        createdAt: "2026-10-14T12:00:00Z", expiresAt: "2026-10-14T12:10:00Z",
         authorizationUrl: "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=opaque_state_123",
         qrAttachmentRef: "/native/private/qr.png", generation: 3,
       }, 202, { Location: `/api/v1/accounts/renewal-sessions/${renewalSession1}` });
@@ -299,6 +306,7 @@ describe("Client integration views", () => {
     const result = await client.beginRenewal("authorization-1", "renew-once");
     expect(result).not.toHaveProperty("qrAttachmentRef");
     expect(result.authorizationUrl).toContain("https://work.weixin.qq.com/ai/qc/gen?");
+    expect(result).toMatchObject({ state: "WAITING_USER", createdAt: "2026-10-14T12:00:00Z", expiresAt: "2026-10-14T12:10:00Z" });
     expect(calls[0]?.path).toBe("/api/v1/accounts/authorizations/authorization-1/renewal-sessions");
     expect(new Headers(calls[0]?.init?.headers).get("Idempotency-Key")).toBe("renew-once");
     expect(calls[0]?.init?.body).toBeUndefined();
