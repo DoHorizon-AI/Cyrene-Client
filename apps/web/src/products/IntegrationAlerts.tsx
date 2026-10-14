@@ -9,7 +9,7 @@
 // │  · 只显示服务端投影字段，不呈现目标、绑定、身份或原始属性 JSON             │
 // └─────────────────────────────────────────────────────────────────────┘
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { NavigatorApi } from "../../services/navigator/src/api";
 import { Button, formatDate, PageHeader, Panel, StateBlock, StatusPill } from "../../services/navigator/src/components";
 import { useI18n } from "../../services/navigator/src/i18n";
@@ -26,6 +26,7 @@ import {
   IntegrationApiError,
   IntegrationsClient,
   newIntegrationIdempotencyKey,
+  type ExchangeProductCredential,
   type AuthorizationHealth,
   type CloudQueryResult,
   type ConnectionSummary,
@@ -185,7 +186,11 @@ export function safeOfficialRenewalUrl(value: string | null): string | null {
 /** Render the integration console using the already paired Navigator and Control session. */
 export function IntegrationAlerts({ api, canOperate, sessionScope }: IntegrationAlertsProps) {
   const { t } = useI18n();
-  const client = useMemo(() => new IntegrationsClient(api), [api]);
+  const [exchangeCredential, setExchangeCredential] = useState<ExchangeProductCredential | null>(null);
+  const [bearerInput, setBearerInput] = useState("");
+  const [workspaceSelector, setWorkspaceSelector] = useState("");
+  const renewalScope = `${sessionScope}\u0000${workspaceSelector.trim()}`;
+  const client = useMemo(() => new IntegrationsClient(api, () => exchangeCredential), [api, exchangeCredential]);
   const browserPort = useRef<BrowserNotificationPort | null>(getBrowserNotificationPort());
   const renewalCleanupTimers = useRef(new Map<string, number>());
   const permissionRef = useRef<BrowserNotificationPermission>(readBrowserNotificationPermission(browserPort.current));
@@ -210,6 +215,23 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
   const [notifications, setNotifications] = useState<IntegrationNotification[]>([]);
   const [feedError, setFeedError] = useState("");
 
+  const invalidateExchangeCredential = () => {
+    setExchangeCredential(null);
+    setConnections([]); setSelectedId(""); setNotifications([]);
+    setHealth(null); setResources(null); setRefreshOperation(null); setRenewal(null); setPendingRenewal(null);
+    setConnectionError(""); setHealthError(""); setResourcesError(""); setRenewalError(""); setFeedError("");
+  };
+
+  const connectExchange = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const token = bearerInput.trim(), selectedWorkspace = workspaceSelector.trim();
+    if (!token || !selectedWorkspace) return;
+    setExchangeCredential({ bearerToken: token, workspaceId: selectedWorkspace });
+    setBearerInput("");
+    setConnections([]); setSelectedId(""); setNotifications([]);
+    setReloadConnections(value => value + 1);
+  };
+
   const selectedConnection = connections.find(connection => connection.id === selectedId) ?? null;
   const activeHealth = selectedConnection && health?.connectionId === selectedConnection.id ? health : null;
   const activeResources = selectedConnection && resources?.connectionId === selectedConnection.id ? resources : null;
@@ -225,23 +247,35 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
   }, []);
 
   useEffect(() => {
-    const existing = renewalCleanupTimers.current.get(sessionScope);
-    if (existing !== undefined) {
-      window.clearTimeout(existing);
-      renewalCleanupTimers.current.delete(sessionScope);
-    }
-    return () => {
-      const timer = window.setTimeout(() => {
-        if (renewalCleanupTimers.current.get(sessionScope) !== timer) return;
-        renewalCleanupTimers.current.delete(sessionScope);
-        const storage = browserRenewalStorage();
-        if (storage) void clearPendingRenewalScope(storage, sessionScope);
-      }, 0);
-      renewalCleanupTimers.current.set(sessionScope, timer);
-    };
+    setWorkspaceSelector("");
+    setBearerInput("");
+    setExchangeCredential(null);
+    setConnections([]); setSelectedId(""); setNotifications([]);
+    setHealth(null); setResources(null); setRefreshOperation(null); setRenewal(null); setPendingRenewal(null);
   }, [sessionScope]);
 
   useEffect(() => {
+    const existing = renewalCleanupTimers.current.get(renewalScope);
+    if (existing !== undefined) {
+      window.clearTimeout(existing);
+      renewalCleanupTimers.current.delete(renewalScope);
+    }
+    return () => {
+      const timer = window.setTimeout(() => {
+        if (renewalCleanupTimers.current.get(renewalScope) !== timer) return;
+        renewalCleanupTimers.current.delete(renewalScope);
+        const storage = browserRenewalStorage();
+        if (storage) void clearPendingRenewalScope(storage, renewalScope);
+      }, 0);
+      renewalCleanupTimers.current.set(renewalScope, timer);
+    };
+  }, [renewalScope]);
+
+  useEffect(() => {
+    if (!exchangeCredential) {
+      setConnections([]); setSelectedId(""); setConnectionError(""); setLoadingConnections(false);
+      return;
+    }
     const controller = new AbortController();
     setLoadingConnections(true);
     setConnectionError("");
@@ -252,10 +286,10 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       if (!controller.signal.aborted) setConnectionError(safeFailure(error, t));
     }).finally(() => { if (!controller.signal.aborted) setLoadingConnections(false); });
     return () => controller.abort();
-  }, [client, reloadConnections, t]);
+  }, [client, exchangeCredential, reloadConnections, t]);
 
   useEffect(() => {
-    if (!selectedConnection) {
+    if (!exchangeCredential || !selectedConnection) {
       setHealth(null); setResources(null); setRefreshOperation(null); setRenewal(null);
       setPendingRenewal(null); setPendingRenewalLoading(false);
       setHealthError(""); setResourcesError(""); setHealthLoading(false); setResourcesLoading(false);
@@ -276,7 +310,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
         if (!renewalSupported || !value.authorizationRef) return;
         const storage = browserRenewalStorage();
         if (!storage) return;
-        const pending = await loadPendingRenewalRequest(storage, sessionScope, selectedConnection.id, value.authorizationRef);
+        const pending = await loadPendingRenewalRequest(storage, renewalScope, selectedConnection.id, value.authorizationRef);
         if (controller.signal.aborted) return;
         if (!pending) return;
         setPendingRenewal(pending);
@@ -289,9 +323,9 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
           if (retryState) {
             const updated = { ...pending, retryState };
             setPendingRenewal(updated);
-            await savePendingRenewalRequest(storage, sessionScope, selectedConnection.id, value.authorizationRef, updated);
+            await savePendingRenewalRequest(storage, renewalScope, selectedConnection.id, value.authorizationRef, updated);
           } else {
-            await clearPendingRenewalRequest(storage, sessionScope, selectedConnection.id, value.authorizationRef);
+            await clearPendingRenewalRequest(storage, renewalScope, selectedConnection.id, value.authorizationRef);
             setPendingRenewal(null);
           }
         } catch (error) {
@@ -311,9 +345,10 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       }).finally(() => { if (!controller.signal.aborted) setResourcesLoading(false); });
     }
     return () => controller.abort();
-  }, [client, selectedConnection, t]);
+  }, [client, exchangeCredential, selectedConnection, renewalScope, t]);
 
   useEffect(() => {
+    if (!exchangeCredential) { setNotifications([]); setFeedError(""); return; }
     const controller = new AbortController();
     void followIntegrationNotifications({
       api: client,
@@ -330,10 +365,10 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       },
     });
     return () => controller.abort();
-  }, [client, t]);
+  }, [client, exchangeCredential, t]);
 
   useEffect(() => {
-    if (!renewal || isRenewalTerminal(renewal.state) || !selectedConnection) return;
+    if (!exchangeCredential || !renewal || isRenewalTerminal(renewal.state) || !selectedConnection) return;
     const controller = new AbortController();
     let active = true;
     let timer: number | undefined;
@@ -349,10 +384,10 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
             if (pendingRenewal.retryState !== retryState || pendingRenewal.sessionRef !== updated.sessionRef) {
               const next = { ...pendingRenewal, sessionRef: updated.sessionRef, retryState };
               setPendingRenewal(next);
-              if (storage) await savePendingRenewalRequest(storage, sessionScope, selectedConnection.id, activeHealth.authorizationRef, next);
+              if (storage) await savePendingRenewalRequest(storage, renewalScope, selectedConnection.id, activeHealth.authorizationRef, next);
             }
           } else {
-            if (storage) await clearPendingRenewalRequest(storage, sessionScope, selectedConnection.id, activeHealth.authorizationRef);
+            if (storage) await clearPendingRenewalRequest(storage, renewalScope, selectedConnection.id, activeHealth.authorizationRef);
             setPendingRenewal(null);
           }
         }
@@ -370,7 +405,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
     };
     timer = window.setTimeout(() => void poll(), 1500);
     return () => { active = false; controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
-  }, [client, renewal?.sessionRef, renewal?.state, renewal?.reasonCode, selectedConnection, activeHealth?.authorizationRef, pendingRenewal, sessionScope, t]);
+  }, [client, exchangeCredential, renewal?.sessionRef, renewal?.state, renewal?.reasonCode, selectedConnection, activeHealth?.authorizationRef, pendingRenewal, renewalScope, t]);
 
   const requestPermission = async () => {
     try {
@@ -383,7 +418,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
   };
 
   const readObservations = async () => {
-    if (!selectedConnection || !supportsCloudObservations(selectedConnection.provider)) return;
+    if (!exchangeCredential || !selectedConnection || !supportsCloudObservations(selectedConnection.provider)) return;
     setResourcesLoading(true); setResourcesError("");
     try { setResources(await client.getResources(selectedConnection.id)); }
     catch (error) { setResourcesError(safeFailure(error, t)); }
@@ -391,7 +426,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
   };
 
   const refreshObservations = async () => {
-    if (!selectedConnection || !canOperate || !supportsCloudObservations(selectedConnection.provider) || actionBusy) return;
+    if (!exchangeCredential || !selectedConnection || !canOperate || !supportsCloudObservations(selectedConnection.provider) || actionBusy) return;
     setActionBusy(true); setResourcesError("");
     try {
       const operation = await client.refreshResources(selectedConnection.id, newIntegrationIdempotencyKey());
@@ -402,7 +437,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
   };
 
   const startRenewal = async (retrySameKey: boolean) => {
-    if (!selectedConnection || !supportsAuthorizationRenewal(selectedConnection.provider)
+    if (!exchangeCredential || !selectedConnection || !supportsAuthorizationRenewal(selectedConnection.provider)
       || !health?.authorizationRef || health.connectionId !== selectedConnection.id || !canOperate
       || actionBusy || pendingRenewalLoading) return;
     if (retrySameKey && !canReplayWeComRenewal(selectedConnection.provider, health.authorizationRef, pendingRenewal, activeRenewal)) return;
@@ -415,7 +450,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
     const requestHandle: PendingRenewalRequest = { idempotencyKey: requestKey, sessionRef: null, retryState: "REQUEST_OUTCOME_UNKNOWN" };
     setPendingRenewal(requestHandle);
     setRenewal(null);
-    const stored = await savePendingRenewalRequest(storage, sessionScope, selectedConnection.id, health.authorizationRef, requestHandle);
+    const stored = await savePendingRenewalRequest(storage, renewalScope, selectedConnection.id, health.authorizationRef, requestHandle);
     if (!stored) {
       setPendingRenewal(null);
       setRenewalError(t("Browser session storage is unavailable; renewal cannot start safely."));
@@ -429,24 +464,24 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       if (retryState) {
         const unresolved = { idempotencyKey: requestKey, sessionRef: session.sessionRef, retryState };
         setPendingRenewal(unresolved);
-        await savePendingRenewalRequest(storage, sessionScope, selectedConnection.id, health.authorizationRef, unresolved);
+        await savePendingRenewalRequest(storage, renewalScope, selectedConnection.id, health.authorizationRef, unresolved);
       } else {
         setPendingRenewal(null);
-        await clearPendingRenewalRequest(storage, sessionScope, selectedConnection.id, health.authorizationRef);
+        await clearPendingRenewalRequest(storage, renewalScope, selectedConnection.id, health.authorizationRef);
       }
     } catch (error) {
       setRenewalError(safeFailure(error, t));
       if (isAmbiguousRenewalFailure(error)) {
-        await savePendingRenewalRequest(storage, sessionScope, selectedConnection.id, health.authorizationRef, requestHandle);
+        await savePendingRenewalRequest(storage, renewalScope, selectedConnection.id, health.authorizationRef, requestHandle);
       } else {
         setPendingRenewal(null);
-        await clearPendingRenewalRequest(storage, sessionScope, selectedConnection.id, health.authorizationRef);
+        await clearPendingRenewalRequest(storage, renewalScope, selectedConnection.id, health.authorizationRef);
       }
     } finally { setActionBusy(false); }
   };
 
   const acknowledge = async (notification: IntegrationNotification) => {
-    if (!canOperate) return;
+    if (!exchangeCredential || !canOperate) return;
     try {
       const updated = await client.acknowledge(notification.id, newIntegrationIdempotencyKey());
       setNotifications(current => mergeNotification(current, updated));
@@ -469,8 +504,33 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
       eyebrow="Exchange / Integrations"
       title="Authorization and cloud observations"
       description="Review authorization health, renew supported WeCom connections, and read configured cloud observations."
-      action={<Button onClick={() => setReloadConnections(value => value + 1)} disabled={loadingConnections}>{loadingConnections ? t("Reading...") : t("Refresh connections")}</Button>}
+      action={<Button onClick={() => setReloadConnections(value => value + 1)} disabled={!exchangeCredential || loadingConnections}>{loadingConnections ? t("Reading...") : t("Refresh connections")}</Button>}
     />
+
+    <Panel title="Exchange access" meta={<StatusPill value={exchangeCredential ? t("Provided for this tab") : t("Not configured")} tone={exchangeCredential ? "info" : "muted"} />}>
+      <form className="ia-exchange-credential" onSubmit={connectExchange}>
+        <label className="field">
+          <span className="field__label">{t("Personal Cyrene first-party Product bearer")}</span>
+          <input type="password" autoComplete="off" spellCheck={false} value={bearerInput} onChange={event => { setBearerInput(event.target.value); if (exchangeCredential) invalidateExchangeCredential(); }} />
+        </label>
+        <label className="field">
+          <span className="field__label">{t("Exchange workspace selector")}</span>
+          <input autoComplete="off" spellCheck={false} value={workspaceSelector} onChange={event => {
+            const value = event.target.value;
+            setWorkspaceSelector(value);
+            if (exchangeCredential && value.trim() !== exchangeCredential.workspaceId) invalidateExchangeCredential();
+          }} />
+        </label>
+        <div className="ia-actions">
+          <Button type="submit" tone="primary" disabled={!bearerInput.trim() || !workspaceSelector.trim()}>{t(exchangeCredential ? "Replace Exchange credential" : "Connect Exchange")}</Button>
+          {exchangeCredential ? <Button type="button" onClick={() => { setBearerInput(""); invalidateExchangeCredential(); }}>{t("Disconnect Exchange")}</Button> : null}
+        </div>
+      </form>
+      <p className="ia-scope-note">{t("Use a personal first-party Product bearer, not a Studio login or MCP token. The credential stays in page memory and is sent only to the approved Exchange routes. Exchange verifies the bearer; the workspace value is a selector, not an identity claim.")}</p>
+      {!exchangeCredential ? <p className="ia-scope-note">{t("Exchange data is not requested until you connect with both values.")}</p> : null}
+    </Panel>
+
+    {exchangeCredential ? <>
 
     <Panel title="Configured connection" meta={selectedConnection ? <StatusPill value={selectedConnection.provider} tone="info" /> : undefined}>
       {loadingConnections && !connections.length ? <StateBlock kind="loading" title="Reading configured connections" detail="Exchange filters this list to the paired actor and workspace." />
@@ -483,7 +543,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
                   {connections.map(connection => <option key={connection.id} value={connection.id}>{connection.displayName} · {connection.provider}</option>)}
                 </select>
               </label>
-              <p className="ia-scope-note">{t("This list and each detail request are scoped by the paired server session.")}</p>
+              <p className="ia-scope-note">{t("Exchange filters this list and its details for the supplied bearer and workspace selector.")}</p>
             </div>}
     </Panel>
 
@@ -584,6 +644,7 @@ export function IntegrationAlerts({ api, canOperate, sessionScope }: Integration
           </article>)}
         </div>}
     </Panel>
+    </> : <StateBlock kind="empty" title="Connect Exchange to view integrations" detail="Exchange requests require an explicit personal first-party bearer and workspace selector." />}
   </div>;
 }
 

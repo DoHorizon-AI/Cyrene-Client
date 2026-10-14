@@ -74,9 +74,41 @@ describe("NavigatorApi", () => {
       headers: { Accept: "text/event-stream", "Last-Event-ID": "7" },
     });
     expect(response.ok).toBe(true);
-    expect(paths).toEqual(["/api/v1/integrations/notifications/events"]);
+    await api.requestProductResponse("/api/v1/accounts/authorizations/auth-1/renewal-sessions", { method: "POST" });
+    await api.requestProductResponse("/api/v1/accounts/renewal-sessions/session-1");
+    expect(paths).toEqual([
+      "/api/v1/integrations/notifications/events",
+      "/api/v1/accounts/authorizations/auth-1/renewal-sessions",
+      "/api/v1/accounts/renewal-sessions/session-1",
+    ]);
     await expect(api.requestProductResponse("/api/v1/integrations/connections/conn-1/actions/delete")).rejects.toThrow("published same-origin path");
+    await expect(api.requestProductResponse("/api/v1/accounts/authorizations/auth-1/renewal-sessions/session-1")).rejects.toThrow("published same-origin path");
     await expect(api.requestProductResponse("https://exchange.example.test/api/v1/integrations/connections")).rejects.toThrow("published same-origin path");
+  });
+
+  it("keeps an Exchange bearer rejection separate from the paired Web Host session", async () => {
+    const paths: string[] = [];
+    let expired = false;
+    const api = new NavigatorApi(async input => {
+      const path = String(input);
+      paths.push(path);
+      if (path === "/api/v1/auth/session/refresh") return response({
+        authenticated: true, state: "AUTHENTICATED", sessionId: "session-1",
+        expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "new", refreshed: true,
+      });
+      return response({ code: "EXCHANGE_IDENTITY_INVALID" }, 401);
+    });
+    api.setSessionExpiredHandler(() => { expired = true; });
+    const result = await api.requestProductResponse("/api/v1/integrations/connections", {
+      headers: { "X-Cyrene-Product-Authorization": "Bearer synthetic-platform-token" },
+    });
+    expect(result.status).toBe(401);
+    expect(paths).toEqual([
+      "/api/v1/integrations/connections",
+      "/api/v1/auth/session/refresh",
+      "/api/v1/integrations/connections",
+    ]);
+    expect(expired).toBe(false);
   });
 
   it("refreshes once after an expired access session and retries the Product read", async () => {

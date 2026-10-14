@@ -104,7 +104,7 @@ export function productPermission(method: string, path: string): string | null {
     ["GET", "integrations/connections", "read"],
     ["GET", `integrations/connections/${workId}/(authorization-health|resources)`, "read"],
     ["POST", `accounts/authorizations/${workId}/renewal-sessions`, "operate"],
-    ["GET", `accounts/authorizations/${workId}/renewal-sessions/${workId}`, "read"],
+    ["GET", `accounts/renewal-sessions/${workId}`, "read"],
     ["POST", `integrations/connections/${workId}/actions/refresh`, "operate"],
     ["GET", "integrations/notifications(?:/events)?", "read"],
     ["POST", `integrations/notifications/${workId}/ack`, "operate"],

@@ -17,6 +17,7 @@ import {
   IntegrationApiError,
   IntegrationsClient,
   parseIntegrationNotification,
+  type ExchangeProductCredential,
   type IntegrationNotification,
   type NotificationPage,
   type RenewalSession,
@@ -61,7 +62,10 @@ function page(...items: IntegrationNotification[]): NotificationPage {
 const existingGrantManagementUrl = "https://work.weixin.qq.com/ai/aiHelper/authorizationList?aibotid=12345678901234567&bar_style_type=3&for_native=true&forceInnerBrowser=1&from=chat&hide_more_btn=true&pc_bar_bg=f6f6f7%2C202021&str_aibotid=bot_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&type=6&ww_vh=640&ww_vw=640";
 
 function clientFor(requestProductResponse: (path: string, init?: RequestInit) => Promise<Response>): IntegrationsClient {
-  return new IntegrationsClient({ requestProductResponse } as unknown as Pick<NavigatorApi, "requestProductResponse">);
+  return new IntegrationsClient(
+    { requestProductResponse } as unknown as Pick<NavigatorApi, "requestProductResponse">,
+    () => ({ bearerToken: "synthetic-platform-bearer", workspaceId: "synthetic-workspace" }),
+  );
 }
 
 class MemoryRenewalStorage implements RenewalStoragePort {
@@ -74,6 +78,27 @@ class MemoryRenewalStorage implements RenewalStoragePort {
 }
 
 describe("Client integration views", () => {
+  it("requires an explicit first-party Exchange bearer and sends it only in the dedicated headers", async () => {
+    const requests: { path: string; headers: Headers }[] = [];
+    const api = {
+      requestProductResponse: async (path: string, init: RequestInit = {}) => {
+        requests.push({ path, headers: new Headers(init.headers) });
+        return jsonResponse([]);
+      },
+    } as unknown as Pick<NavigatorApi, "requestProductResponse">;
+    const disconnected = new IntegrationsClient(api, () => null);
+    await expect(disconnected.listConnections()).rejects.toMatchObject({ code: "EXCHANGE_CREDENTIAL_REQUIRED" });
+    expect(requests).toHaveLength(0);
+
+    const credential: ExchangeProductCredential = { bearerToken: "synthetic-platform-bearer", workspaceId: "workspace-fixture" };
+    const connected = new IntegrationsClient(api, () => credential);
+    await connected.listConnections();
+    expect(requests[0]).toMatchObject({ path: "/api/v1/integrations/connections" });
+    expect(requests[0]?.headers.get("X-Cyrene-Product-Authorization")).toBe("Bearer synthetic-platform-bearer");
+    expect(requests[0]?.headers.get("X-Cyrene-Workspace-Id")).toBe("workspace-fixture");
+    expect(requests[0]?.headers.has("Authorization")).toBe(false);
+  });
+
   it("keeps unknown expiry distinct from expired authorization and only enables approved cloud providers", () => {
     expect(classifyAuthorizationExpiry(null, Date.parse("2026-10-14T12:00:00Z"))).toBe("unknown");
     expect(classifyAuthorizationExpiry("not-a-time", 0)).toBe("unknown");

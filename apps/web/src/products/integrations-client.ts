@@ -146,6 +146,12 @@ export type NotificationPage = z.infer<typeof notificationPageSchema>;
 /** Accepted asynchronous Product resource refresh. */
 export type RefreshOperation = z.infer<typeof refreshOperationSchema>;
 
+/** User-supplied Exchange principal material kept only by the current page session. */
+export interface ExchangeProductCredential {
+  bearerToken: string;
+  workspaceId: string;
+}
+
 /** A sanitized integration request failure that never includes arbitrary upstream response text. */
 export class IntegrationApiError extends Error {
   constructor(public readonly status: number, public readonly code: string) {
@@ -160,9 +166,12 @@ export function parseIntegrationNotification(value: unknown): IntegrationNotific
   return parsed.success ? parsed.data : null;
 }
 
-/** Safe, actor-scoped facade over the existing paired Navigator API client. */
+/** Safe Exchange-bearer-scoped facade over the paired Navigator transport. */
 export class IntegrationsClient {
-  constructor(private readonly api: Pick<NavigatorApi, "requestProductResponse">) {}
+  constructor(
+    private readonly api: Pick<NavigatorApi, "requestProductResponse">,
+    private readonly credential: () => ExchangeProductCredential | null,
+  ) {}
 
   /** Read only the server-filtered connection labels; private refs are discarded before UI state. */
   async listConnections(signal?: AbortSignal): Promise<ConnectionSummary[]> {
@@ -184,7 +193,7 @@ export class IntegrationsClient {
   /** Start an explicitly requested renewal and require the Product-owned status Location. */
   async beginRenewal(authorizationRef: string, idempotencyKey: string): Promise<RenewalSession> {
     const path = `/api/v1/accounts/authorizations/${encodeURIComponent(authorizationRef)}/renewal-sessions`;
-    const response = await this.api.requestProductResponse(path, {
+    const response = await this.requestProductResponse(path, {
       method: "POST",
       headers: { Accept: "application/json", "Idempotency-Key": idempotencyKey },
     });
@@ -245,7 +254,7 @@ export class IntegrationsClient {
 
   /** Queue a durable read-only refresh with an idempotency key; no arbitrary provider or target is accepted. */
   async refreshResources(connectionId: string, idempotencyKey: string): Promise<RefreshOperation> {
-    const response = await this.api.requestProductResponse(
+    const response = await this.requestProductResponse(
       `/api/v1/integrations/connections/${encodeURIComponent(connectionId)}/actions/refresh`,
       { method: "POST", headers: { Accept: "application/json", "Idempotency-Key": idempotencyKey } },
     );
@@ -263,7 +272,7 @@ export class IntegrationsClient {
 
   /** Acknowledge a notification once through Exchange's idempotent actor-bound operation. */
   async acknowledge(notificationId: string, idempotencyKey: string): Promise<IntegrationNotification> {
-    const response = await this.api.requestProductResponse(
+    const response = await this.requestProductResponse(
       `/api/v1/integrations/notifications/${encodeURIComponent(notificationId)}/ack`,
       { method: "POST", headers: { Accept: "application/json", "Idempotency-Key": idempotencyKey } },
     );
@@ -273,7 +282,7 @@ export class IntegrationsClient {
   /** Open an authenticated resumable SSE stream using the same sequence cursor as the feed. */
   async openNotificationEvents(after: number, signal: AbortSignal): Promise<Response> {
     if (!Number.isSafeInteger(after) || after < 0) throw new IntegrationApiError(0, "INVALID_SEQUENCE");
-    const response = await this.api.requestProductResponse("/api/v1/integrations/notifications/events", {
+    const response = await this.requestProductResponse("/api/v1/integrations/notifications/events", {
       method: "GET",
       signal,
       headers: { Accept: "text/event-stream", "Last-Event-ID": String(after) },
@@ -287,8 +296,25 @@ export class IntegrationsClient {
   }
 
   private async readJson<T extends z.ZodTypeAny>(path: string, schema: T, signal?: AbortSignal): Promise<z.infer<T>> {
-    const response = await this.api.requestProductResponse(path, { method: "GET", signal, headers: { Accept: "application/json" } });
+    const response = await this.requestProductResponse(path, { method: "GET", signal, headers: { Accept: "application/json" } });
     return this.parseJson(response, schema);
+  }
+
+  /** Attach only the explicit first-party Exchange bearer and workspace selector. */
+  private requestProductResponse(path: string, init: RequestInit = {}): Promise<Response> {
+    const credential = this.credential();
+    if (!credential) throw new IntegrationApiError(401, "EXCHANGE_CREDENTIAL_REQUIRED");
+    const token = credential.bearerToken.trim();
+    const workspaceId = credential.workspaceId.trim();
+    if (!/^[A-Za-z0-9._~+/-]{1,8192}={0,}$/.test(token)
+      || !/^[\x21-\x7e]{1,256}$/.test(workspaceId)) {
+      throw new IntegrationApiError(0, "INVALID_EXCHANGE_CREDENTIAL");
+    }
+    const headers = new Headers(init.headers);
+    headers.delete("Authorization");
+    headers.set("X-Cyrene-Product-Authorization", `Bearer ${token}`);
+    headers.set("X-Cyrene-Workspace-Id", workspaceId);
+    return this.api.requestProductResponse(path, { ...init, headers });
   }
 
   private async acceptedJson<T extends z.ZodTypeAny>(response: Response, schema: T): Promise<z.infer<T>> {

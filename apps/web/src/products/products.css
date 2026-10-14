@@ -2179,6 +2179,19 @@
   gap: var(--dh-space-4);
 }
 
+.product-workspace .ia-exchange-credential {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  align-items: end;
+  gap: var(--dh-space-4);
+  max-width: 960px;
+}
+
+.product-workspace .ia-exchange-credential .ia-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+}
+
 .product-workspace .ia-scope-note,
 .product-workspace .ia-delivery-note,
 .product-workspace .ia-inline-error,
@@ -2384,6 +2397,14 @@
 
   .product-workspace .ia-capability {
     grid-template-columns: 1fr auto;
+  }
+
+  .product-workspace .ia-exchange-credential {
+    grid-template-columns: 1fr;
+  }
+
+  .product-workspace .ia-exchange-credential .ia-actions {
+    grid-column: auto;
   }
 
   .product-workspace .ia-notification {

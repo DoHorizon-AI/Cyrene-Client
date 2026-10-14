@@ -60,7 +60,7 @@ function ProductSession({ route }: { route: RouteId }) {
       case "integrations": return <IntegrationAlerts
         api={api}
         canOperate={scopes.includes("products.operate")}
-        sessionScope={[actorId, workspaceId, session?.sessionId ?? ""].join("\u0000")}
+        sessionScope={[actorId, workspaceId, scopes.join(","), session?.sessionId ?? ""].join("\u0000")}
       />;
       case "chat": return <ChatPage api={api} />;
       case "assistant": return <WorkAssistantPage api={api} workspaceId={workspaceId} canOperate={scopes.includes("products.operate")} canWrite={scopes.includes("products.write")} />;
