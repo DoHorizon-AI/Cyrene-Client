@@ -48,7 +48,7 @@ jobs:
           ref: e90288c8a4ecbcb3711d554366e7ac5227e62397
           path: .test-deps/navigator
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
