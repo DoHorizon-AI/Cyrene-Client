@@ -63,6 +63,22 @@ describe("NavigatorApi", () => {
     await expect(html.openTrainingRunEvents("run-1", 0, signal)).rejects.toMatchObject({ name: "NavigatorContractError" });
   });
 
+  it("admits the fixed Exchange integration Product routes through the paired proxy", async () => {
+    const paths: string[] = [];
+    const api = new NavigatorApi(async (input) => {
+      paths.push(String(input));
+      return new Response("id: 7\ndata: {}\n\n", { headers: { "Content-Type": "text/event-stream" } });
+    });
+    const response = await api.requestProductResponse("/api/v1/integrations/notifications/events", {
+      method: "GET",
+      headers: { Accept: "text/event-stream", "Last-Event-ID": "7" },
+    });
+    expect(response.ok).toBe(true);
+    expect(paths).toEqual(["/api/v1/integrations/notifications/events"]);
+    await expect(api.requestProductResponse("/api/v1/integrations/connections/conn-1/actions/delete")).rejects.toThrow("published same-origin path");
+    await expect(api.requestProductResponse("https://exchange.example.test/api/v1/integrations/connections")).rejects.toThrow("published same-origin path");
+  });
+
   it("refreshes once after an expired access session and retries the Product read", async () => {
     const calls: Array<{ path: string; init: RequestInit }> = [];
     let modelRead = 0;
