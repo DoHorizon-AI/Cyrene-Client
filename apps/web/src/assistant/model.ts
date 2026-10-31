@@ -23,7 +23,7 @@ export function taskWorkflow(task: NavigatorTaskRecord): { pipelineId: string; n
 }
 
 export function isActiveTask(task: NavigatorTaskRecord): boolean {
-  return ["queued", "running", "waiting_approval", "waiting_input"].includes(task.status);
+  return ["queued", "running", "waiting_approval", "waiting_input", "awaiting_user_authorization"].includes(task.status);
 }
 
 export function mergeTaskRecords(previous: NavigatorTaskRecord[], incoming: NavigatorTaskRecord[]): NavigatorTaskRecord[] {

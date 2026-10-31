@@ -3,15 +3,13 @@ import { useAssistantMessages } from "./messages";
 
 interface ApprovalsProps {
   approvals: WorkApproval[];
+  approvalRetries: Record<string, "approved" | "rejected">;
   inputs: WorkInput[];
   answers: Record<string, string>;
   workflow: { name: string; pipelineId: string } | null;
   samePipeline: boolean;
   disabled: boolean;
-  onDecide(
-    approval: WorkApproval,
-    decision: "approved" | "rejected",
-  ): void;
+  onDecide(approval: WorkApproval, decision: "approved" | "rejected"): void;
   onAnswer(input: WorkInput): void;
   onAnswerChange(id: string, value: string): void;
 }
@@ -20,42 +18,45 @@ export function Approvals(props: ApprovalsProps) {
   const m = useAssistantMessages();
   return (
     <>
-      {props.approvals.map((approval) => (
-        <article key={approval.id} className="assistant-message approval">
-          <strong>
-            {m("approvalRequired")}: {approval.summary}
-          </strong>
-          {props.workflow && (
-            <p>
-              {m("originatingPipeline")}: {props.workflow.name}{" "}
-              <code>{props.workflow.pipelineId}</code>
-            </p>
-          )}
-          {!props.samePipeline && (
-            <p role="status">
-              {m("theCanvasChangedThisApprovalStillBelongsToThe")}
-            </p>
-          )}
-          <details>
-            <summary>{m("operationDetails")}</summary>
-            <pre>{JSON.stringify(approval.details, null, 2)}</pre>
-          </details>
-          <div className="assistant-actions">
-            <button
-              disabled={props.disabled}
-              onClick={() => props.onDecide(approval, "approved")}
-            >
-              {m("allowOnce")}
-            </button>
-            <button
-              disabled={props.disabled}
-              onClick={() => props.onDecide(approval, "rejected")}
-            >
-              {m("decline")}
-            </button>
-          </div>
-        </article>
-      ))}
+      {props.approvals.map((approval) => {
+        const retry = props.approvalRetries[approval.id];
+        return (
+          <article key={approval.id} className="assistant-message approval">
+            <strong>
+              {m("approvalRequired")}: {approval.summary}
+            </strong>
+            {props.workflow && (
+              <p>
+                {m("originatingPipeline")}: {props.workflow.name} {" "}
+                <code>{props.workflow.pipelineId}</code>
+              </p>
+            )}
+            {!props.samePipeline && (
+              <p role="status">
+                {m("theCanvasChangedThisApprovalStillBelongsToThe")}
+              </p>
+            )}
+            <details>
+              <summary>{m("operationDetails")}</summary>
+              <pre>{JSON.stringify(approval.details, null, 2)}</pre>
+            </details>
+            <div className="assistant-actions">
+              <button
+                disabled={props.disabled || (!!retry && retry !== "approved")}
+                onClick={() => props.onDecide(approval, "approved")}
+              >
+                {retry === "approved" ? m("retryApproval") : m("allowOnce")}
+              </button>
+              <button
+                disabled={props.disabled || (!!retry && retry !== "rejected")}
+                onClick={() => props.onDecide(approval, "rejected")}
+              >
+                {retry === "rejected" ? m("retryRejection") : m("decline")}
+              </button>
+            </div>
+          </article>
+        );
+      })}
       {props.inputs.map((input) => (
         <article key={input.id} className="assistant-message approval">
           <strong>{input.summary}</strong>

@@ -15,6 +15,7 @@ interface TaskMessagesProps {
   task: NavigatorTaskRecord;
   events: NavigatorTaskEvent[];
   approvals: WorkApproval[];
+  approvalRetries: Record<string, "approved" | "rejected">;
   inputs: WorkInput[];
   answers: Record<string, string>;
   pipelineId: string;
@@ -106,6 +107,7 @@ export function TaskMessages(props: TaskMessagesProps) {
       ))}
       <Approvals
         approvals={props.approvals.filter((item) => item.taskId === task.id)}
+        approvalRetries={props.approvalRetries}
         inputs={props.inputs.filter((item) => item.taskId === task.id)}
         answers={props.answers}
         workflow={workflow}

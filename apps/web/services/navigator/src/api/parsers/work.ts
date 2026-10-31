@@ -1,6 +1,8 @@
 import type { WorkApproval, WorkInput, MemoryFact, WorkNotification, WorkAttachment, WorkConnector, QqConnectorHealth, QqLoginChallenge, QqLoginState } from "../types";
+import type { WorkSchemas } from "../../generated/contracts";
 import { NavigatorContractError } from "../errors";
 import { requireRecord, requireArray, requireString, requireNumber, requireBoolean, readString, readBoolean, readNullableString, isRecord } from "./validation";
+import { parseTaskRecord } from "./assistant";
 
 export function parseApprovalList(value: unknown): WorkApproval[] {
   // The Work API publishes list[ApprovalRecord]. Accept the old fixture
@@ -24,6 +26,22 @@ export function parseApproval(value: unknown): WorkApproval {
     summary: requireString(record, "summary", "approval"),
     details: isRecord(record.details) ? record.details : {},
     status,
+  };
+}
+
+export function parseApprovalReceipt(value: unknown): WorkSchemas["ApprovalReceipt"] {
+  const record = requireRecord(value, "approval receipt");
+  const approvalRecord = requireRecord(record.approval, "approval receipt approval");
+  const approval = parseApproval(approvalRecord);
+  return {
+    ...record,
+    approval: {
+      ...approvalRecord,
+      ...approval,
+      createdAt: requireNumber(approvalRecord, "createdAt", "approval receipt approval"),
+    } as WorkSchemas["ApprovalRecord"],
+    duplicate: requireBoolean(record, "duplicate", "approval receipt"),
+    task: parseTaskRecord(record.task),
   };
 }
 

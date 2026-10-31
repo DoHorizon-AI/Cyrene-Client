@@ -16,9 +16,19 @@ import "./work-assistant.css";
 
 const MAX_ATTACHMENT_BYTES = 10_000_000;
 const TERMINAL_TASK_STATES = new Set(["completed", "failed", "aborted"]);
+const SETTLED_TASK_STATES = new Set([...TERMINAL_TASK_STATES, "waiting_approval", "waiting_input", "awaiting_user_authorization"]);
+const PAUSED_TASK_STATES = new Set(["waiting_approval", "waiting_input", "awaiting_user_authorization"]);
 const TERMINAL_LOGIN_STATES = new Set(["authorized", "expired", "failed"]);
 
 type QqChallengeView = Omit<QqLoginChallenge, "qrPayload">;
+type PendingTaskSubmission = { taskId: string; prompt: string; sessionId?: string };
+type ApprovalDecision = "approved" | "rejected";
+type ApprovalRequest = { workspaceId: string; approvalId: string; decision: ApprovalDecision; messageId: string };
+type UncertainApproval = { approval: WorkApproval; decision: ApprovalDecision };
+
+function approvalScopeKey(workspaceId: string, approvalId: string): string {
+  return JSON.stringify([workspaceId, approvalId]);
+}
 
 /**
  * Render owner-backed assistant resources through the existing paired session.
@@ -34,7 +44,10 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const [selectedTaskId, setSelectedTaskId] = useState(""), [taskDetail, setTaskDetail] = useState<NavigatorTaskRecord | null>(null), [detailError, setDetailError] = useState("");
   const [taskEvents, setTaskEvents] = useState<NavigatorTaskEvent[]>([]), [streamError, setStreamError] = useState("");
   const [prompt, setPrompt] = useState(""), [sessionId, setSessionId] = useState(""), [taskBusy, setTaskBusy] = useState(false);
+  const [pendingTask, setPendingTask] = useState<PendingTaskSubmission | null>(null);
   const [approvals, setApprovals] = useState<WorkApproval[]>([]), [approvalsError, setApprovalsError] = useState(""), [approvalBusy, setApprovalBusy] = useState("");
+  const [approvalRetries, setApprovalRetries] = useState<Record<string, ApprovalDecision>>({});
+  const [uncertainApprovals, setUncertainApprovals] = useState<Record<string, UncertainApproval>>({});
   const [pendingInputs, setPendingInputs] = useState<WorkInput[]>([]), [inputsError, setInputsError] = useState(""), [inputAnswers, setInputAnswers] = useState<Record<string, string>>({}), [inputBusy, setInputBusy] = useState("");
   const [memoryFacts, setMemoryFacts] = useState<MemoryFact[]>([]), [memoryError, setMemoryError] = useState(""), [memoryQuery, setMemoryQuery] = useState(""), [memoryDraft, setMemoryDraft] = useState(""), [memoryKey, setMemoryKey] = useState(""), [memoryBusy, setMemoryBusy] = useState(false);
   const [notifications, setNotifications] = useState<WorkNotification[]>([]), [notificationsError, setNotificationsError] = useState("");
@@ -43,9 +56,34 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const [challenge, setChallenge] = useState<QqChallengeView | null>(null), [qrImage, setQrImage] = useState(""), [qrBusy, setQrBusy] = useState(false);
   const [attachments, setAttachments] = useState<WorkAttachment[]>([]), [attachmentBusy, setAttachmentBusy] = useState(false), [attachmentError, setAttachmentError] = useState("");
   const inputMessageIdsRef = useRef(new Map<string, { answer: string; messageId: string }>());
+  const approvalRequestsRef = useRef(new Map<string, ApprovalRequest>());
+  const uncertainApprovalScopesRef = useRef(new Set<string>());
   const effectiveWorkspaceId = workspaceId;
   const workspaceKnown = !!hostWorkspaceId;
   const workspaceAligned = workspaceKnown && !!workspaceId && hostWorkspaceId === workspaceId;
+  const workspaceScope = useRef({ selected: workspaceId, host: hostWorkspaceId });
+  workspaceScope.current = { selected: workspaceId, host: hostWorkspaceId };
+  const isCurrentWorkspace = useCallback((expectedWorkspaceId: string) => {
+    const current = workspaceScope.current;
+    return !!expectedWorkspaceId && current.selected === expectedWorkspaceId && current.host === expectedWorkspaceId;
+  }, []);
+  const reconcileApprovalSnapshot = useCallback((requestedWorkspaceId: string, items: WorkApproval[]) => {
+    const pendingIds = new Set(items.map(item => item.id));
+    for (const [key, request] of approvalRequestsRef.current) {
+      if (request.workspaceId === requestedWorkspaceId && !pendingIds.has(request.approvalId)
+        && !uncertainApprovalScopesRef.current.has(approvalScopeKey(requestedWorkspaceId, request.approvalId))) {
+        approvalRequestsRef.current.delete(key);
+      }
+    }
+    setApprovalRetries(previous => {
+      const next = { ...previous };
+      for (const approvalId of Object.keys(next)) {
+        if (!pendingIds.has(approvalId) && !uncertainApprovalScopesRef.current.has(approvalScopeKey(requestedWorkspaceId, approvalId))) delete next[approvalId];
+      }
+      return next;
+    });
+    setApprovals(items);
+  }, []);
   const mayOperate = canOperate && workspaceAligned;
   const mayWrite = canWrite && workspaceAligned;
 
@@ -63,9 +101,26 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
 
   const refreshAll = useCallback(async () => {
     setLoading(true); setPageError("");
+    if (!workspaceAligned) {
+      setTasks([]); setSelectedTaskId(""); setTaskDetail(null); setTaskEvents([]);
+      setTasksError(""); setDetailError(""); setStreamError("");
+    }
+    const requestedWorkspaceId = workspaceId;
+    const taskHistory = workspaceAligned
+      ? api.getAssistantTasks().then(page => {
+        if (!isCurrentWorkspace(requestedWorkspaceId)) return false;
+        const items = page.items.filter(item => item.workspaceId === requestedWorkspaceId);
+        setTasks(items); setTasksError("");
+        setSelectedTaskId(current => items.some(item => item.id === current) ? current : items[0]?.id ?? "");
+        return true;
+      }).catch(error => {
+        if (isCurrentWorkspace(requestedWorkspaceId)) setTasksError(errorText(error));
+        return false;
+      })
+      : Promise.resolve(false);
     const results = await Promise.all([
-      api.getAssistantTasks().then(page => { setTasks(page.items); setTasksError(""); setSelectedTaskId(current => current || page.items[0]?.id || ""); return true; }).catch(error => { setTasksError(errorText(error)); return false; }),
-      api.getWorkApprovals(effectiveWorkspaceId).then(items => { setApprovals(items); setApprovalsError(""); return true; }).catch(error => { setApprovalsError(errorText(error)); return false; }),
+      taskHistory,
+      api.getWorkApprovals(effectiveWorkspaceId).then(items => { reconcileApprovalSnapshot(effectiveWorkspaceId, items); setApprovalsError(""); return true; }).catch(error => { setApprovalsError(errorText(error)); return false; }),
       api.getWorkInputs(effectiveWorkspaceId).then(items => { setPendingInputs(items); setInputsError(""); return true; }).catch(error => { setInputsError(errorText(error)); return false; }),
       api.getMemoryFacts(effectiveWorkspaceId).then(items => { setMemoryFacts(items); setMemoryError(""); return true; }).catch(error => { setMemoryError(errorText(error)); return false; }),
       api.getWorkNotifications(effectiveWorkspaceId).then(items => { setNotifications(items); setNotificationsError(""); return true; }).catch(error => { setNotificationsError(errorText(error)); return false; }),
@@ -77,39 +132,64 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
     ]);
     if (!results.some(Boolean)) setPageError(t("All work services could not be read."));
     setLoading(false);
-  }, [api, effectiveWorkspaceId, t]);
+  }, [api, effectiveWorkspaceId, workspaceAligned, workspaceId, isCurrentWorkspace, reconcileApprovalSnapshot, t]);
 
   useEffect(() => { void refreshAll(); }, [refreshAll]);
 
   useEffect(() => {
-    if (!selectedTaskId) { setTaskDetail(null); return; }
+    if (!workspaceAligned || !selectedTaskId) { setTaskDetail(null); return; }
+    const requestedWorkspaceId = workspaceId;
     const controller = new AbortController();
-    setTaskDetail(current => current?.id === selectedTaskId ? current : null);
+    setTaskDetail(current => current?.id === selectedTaskId && current.workspaceId === requestedWorkspaceId ? current : null);
     setDetailError(""); setTaskEvents([]); setStreamError("");
     void api.getAssistantTask(selectedTaskId, controller.signal).then(value => {
-      if (!controller.signal.aborted) setTaskDetail(value);
-    }, error => { if (!controller.signal.aborted) setDetailError(errorText(error)); });
+      if (controller.signal.aborted || !isCurrentWorkspace(requestedWorkspaceId)) return;
+      if (value.workspaceId !== requestedWorkspaceId) {
+        setTaskDetail(null); setSelectedTaskId("");
+        setDetailError(t("Navigator returned a task outside the selected workspace."));
+        return;
+      }
+      setTaskDetail(value);
+    }, error => { if (!controller.signal.aborted && isCurrentWorkspace(requestedWorkspaceId)) setDetailError(errorText(error)); });
     return () => controller.abort();
-  }, [api, selectedTaskId]);
+  }, [api, selectedTaskId, workspaceAligned, workspaceId, hostWorkspaceId, isCurrentWorkspace, t]);
 
   useTaskStream({
-    api, taskId: selectedTaskId, scopeKey: workspaceId,
-    terminal: taskDetail?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetail.status),
+    api, taskId: workspaceAligned && (tasks.some(task => task.id === selectedTaskId && task.workspaceId === workspaceId)
+      || (taskDetail?.id === selectedTaskId && taskDetail.workspaceId === workspaceId)) ? selectedTaskId : "", scopeKey: workspaceId,
+    terminal: taskDetail?.id === selectedTaskId && taskDetail.workspaceId === workspaceId && SETTLED_TASK_STATES.has(taskDetail.status),
+    replayTerminal: taskDetail?.id === selectedTaskId && taskDetail.workspaceId === workspaceId && PAUSED_TASK_STATES.has(taskDetail.status),
     onEvent: event => setTaskEvents(previous => previous.some(item => item.sequence === event.sequence) ? previous : [...previous.slice(-99), event]),
     onTask: value => {
+      if (!isCurrentWorkspace(workspaceId) || value.workspaceId !== workspaceId) return;
       setTaskDetail(current => current?.id === value.id && current.sequence > value.sequence ? current : value);
       setTasks(current => current.map(task => task.id === value.id && task.sequence <= value.sequence ? value : task));
     },
     onRefresh: async signal => {
       const [nextApprovals, nextInputs] = await Promise.allSettled([api.getWorkApprovals(effectiveWorkspaceId), api.getWorkInputs(effectiveWorkspaceId)]);
       if (signal.aborted) return;
-      if (nextApprovals.status === "fulfilled") { setApprovals(nextApprovals.value); setApprovalsError(""); }
+      if (nextApprovals.status === "fulfilled") { reconcileApprovalSnapshot(effectiveWorkspaceId, nextApprovals.value); setApprovalsError(""); }
       else setApprovalsError(errorText(nextApprovals.reason));
       if (nextInputs.status === "fulfilled") { setPendingInputs(nextInputs.value); setInputsError(""); }
       else setInputsError(errorText(nextInputs.reason));
     },
     onError: (error, source) => source === "stream" ? setStreamError(errorText(error)) : setDetailError(errorText(error)),
   });
+
+  useEffect(() => {
+    if (!workspaceAligned || !taskDetail || !PAUSED_TASK_STATES.has(taskDetail.status)) return;
+    const taskId = taskDetail.id, requestedWorkspaceId = workspaceId;
+    let active = true;
+    const timer = setInterval(() => {
+      void api.getAssistantTask(taskId).then(value => {
+        if (!active || !isCurrentWorkspace(requestedWorkspaceId)) return;
+        if (value.id !== taskId || value.workspaceId !== requestedWorkspaceId) return;
+        setTaskDetail(current => typeof current?.sequence === "number" && current.sequence > value.sequence ? current : value);
+        setTasks(current => current.map(task => task.id === value.id && task.sequence <= value.sequence ? value : task));
+      }, error => { if (active && isCurrentWorkspace(requestedWorkspaceId)) setDetailError(errorText(error)); });
+    }, 15_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [api, workspaceAligned, workspaceId, hostWorkspaceId, taskDetail?.id, taskDetail?.status, isCurrentWorkspace]);
 
   useEffect(() => {
     if (!bindingId) { setQqHealth(null); return; }
@@ -146,21 +226,69 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
     return () => { active = false; clearInterval(timer); };
   }, [api, effectiveWorkspaceId, bindingId, challenge?.loginId, challenge?.state, challenge?.expiresAtUtc]);
 
-  const createTask = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!prompt.trim() || taskBusy || !mayOperate) return;
+  const submitTask = async () => {
+    if (taskBusy || !mayOperate) return;
+    const request = pendingTask ?? {
+      taskId: makeIdempotencyKey(),
+      prompt: prompt.trim(),
+      ...(sessionId.trim() ? { sessionId: sessionId.trim() } : {}),
+    };
+    if (!request.prompt.trim()) return;
+    const isRetry = !!pendingTask;
+    const requestedWorkspaceId = workspaceId;
+    setPendingTask(request);
     setTaskBusy(true); setTasksError("");
     try {
-      const created = await api.createAssistantTask({ prompt: prompt.trim(), ...(sessionId.trim() ? { sessionId: sessionId.trim() } : {}) });
-      setPrompt(""); setSelectedTaskId(created.id); setTaskDetail(created); setTaskEvents([]);
+      let created: NavigatorTaskRecord | null = null;
+      if (isRetry) {
+        try {
+          created = await api.getAssistantTask(request.taskId);
+          if (created.id !== request.taskId) throw new Error(t("Navigator returned a different task than requested."));
+        } catch (error) {
+          if (!(error instanceof NavigatorHttpError) || error.status !== 404) throw error;
+        }
+      }
+      if (!created) {
+        created = await api.createAssistantTask({
+          prompt: request.prompt,
+          ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+          taskId: request.taskId,
+        });
+      }
+      if (!isCurrentWorkspace(requestedWorkspaceId)) return;
+      if (created.workspaceId !== requestedWorkspaceId) throw new Error(t("Navigator returned a task outside the selected workspace."));
+      setPendingTask(null);
+      setPrompt(current => current === request.prompt ? "" : current);
+      setSelectedTaskId(created.id); setTaskDetail(created); setTaskEvents([]);
       await reloadTasks();
-    } catch (error) { setTasksError(errorText(error)); }
+    } catch (error) {
+      if (isCurrentWorkspace(requestedWorkspaceId)) {
+        if (error instanceof NavigatorHttpError && error.status < 500 && ![408, 429].includes(error.status)) setPendingTask(null);
+        setTasksError(errorText(error));
+      }
+    }
     finally { setTaskBusy(false); }
   };
 
+  const createTask = (event: FormEvent) => {
+    event.preventDefault();
+    void submitTask();
+  };
+
   const reloadTasks = async () => {
-    try { const page = await api.getAssistantTasks(); setTasks(page.items); setTasksError(""); }
-    catch (error) { setTasksError(errorText(error)); }
+    if (!workspaceAligned) {
+      setTasks([]); setSelectedTaskId(""); setTaskDetail(null); setTaskEvents([]); setTasksError("");
+      return;
+    }
+    const requestedWorkspaceId = workspaceId;
+    try {
+      const page = await api.getAssistantTasks();
+      if (!isCurrentWorkspace(requestedWorkspaceId)) return;
+      const items = page.items.filter(item => item.workspaceId === requestedWorkspaceId);
+      setTasks(items); setTasksError("");
+      setSelectedTaskId(current => items.some(item => item.id === current) ? current : items[0]?.id ?? "");
+    }
+    catch (error) { if (isCurrentWorkspace(requestedWorkspaceId)) setTasksError(errorText(error)); }
   };
 
   const cancelTask = async () => {
@@ -174,20 +302,92 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
     finally { setTaskBusy(false); }
   };
 
-  const resolveApproval = async (approvalId: string, decision: "approved" | "rejected") => {
+  const resolveApproval = async (approval: WorkApproval, decision: ApprovalDecision) => {
     if (!mayOperate || approvalBusy) return;
+    const approvalId = approval.id;
+    if (approvalRetries[approvalId] && approvalRetries[approvalId] !== decision) return;
+    const requestKey = JSON.stringify([effectiveWorkspaceId, approvalId, decision]);
+    const scopeKey = approvalScopeKey(effectiveWorkspaceId, approvalId);
+    const messageId = approvalRequestsRef.current.get(requestKey)?.messageId ?? makeIdempotencyKey();
+    approvalRequestsRef.current.set(requestKey, { workspaceId: effectiveWorkspaceId, approvalId, decision, messageId });
+    const clearUncertainFlag = () => {
+      uncertainApprovalScopesRef.current.delete(scopeKey);
+      setUncertainApprovals(previous => { const next = { ...previous }; delete next[approvalId]; return next; });
+    };
+    const clearApprovalRequest = () => {
+      clearUncertainFlag();
+      for (const [key, request] of approvalRequestsRef.current) {
+        if (request.workspaceId === effectiveWorkspaceId && request.approvalId === approvalId) approvalRequestsRef.current.delete(key);
+      }
+      setApprovalRetries(previous => { const next = { ...previous }; delete next[approvalId]; return next; });
+    };
+    const resolveTaskAfterApproval = async () => {
+      await reloadTasks();
+      try {
+        const current = await api.getAssistantTask(approval.taskId);
+        if (isCurrentWorkspace(effectiveWorkspaceId) && current.workspaceId === effectiveWorkspaceId) setTaskDetail(current);
+      } catch (error) { if (isCurrentWorkspace(effectiveWorkspaceId)) setDetailError(errorText(error)); }
+    };
+    const requireMatchingReceipt = (receipt: Awaited<ReturnType<NavigatorApi["resolveWorkApproval"]>>) => {
+      if (receipt.approval.id !== approvalId || receipt.approval.status !== decision) {
+        throw new Error(t("Navigator did not confirm the requested approval decision."));
+      }
+    };
     setApprovalBusy(approvalId);
     try {
-      await api.resolveWorkApproval(effectiveWorkspaceId, approvalId, decision);
+      const receipt = await api.resolveWorkApproval(effectiveWorkspaceId, approvalId, decision, messageId);
+      requireMatchingReceipt(receipt);
+      clearUncertainFlag();
+      setApprovalRetries(previous => ({ ...previous, [approvalId]: decision }));
       setApprovals(items => items.filter(item => item.id !== approvalId)); setApprovalsError("");
-      await reloadTasks();
-    } catch (error) { setApprovalsError(errorText(error)); }
+      await resolveTaskAfterApproval();
+    } catch (error) {
+      const ambiguous = !(error instanceof NavigatorHttpError)
+        || error.status >= 500
+        || [408, 409, 429].includes(error.status);
+      if (!ambiguous) {
+        clearApprovalRequest();
+        setApprovalsError(errorText(error));
+      } else {
+        uncertainApprovalScopesRef.current.add(scopeKey);
+        setApprovalRetries(previous => ({ ...previous, [approvalId]: decision }));
+        setUncertainApprovals(previous => ({ ...previous, [approvalId]: { approval, decision } }));
+        let current: WorkApproval[];
+        try {
+          current = await api.getWorkApprovals(effectiveWorkspaceId);
+        } catch (reconciliationError) {
+          setApprovalsError(`${t("The approval response is uncertain and current approval state could not be read.")} ${errorText(reconciliationError)}`);
+          return;
+        }
+        setApprovals(current);
+        if (current.some(item => item.id === approvalId)) {
+          reconcileApprovalSnapshot(effectiveWorkspaceId, current);
+          setApprovalsError(t("The approval response was not confirmed. Retrying will reuse the same request ID."));
+          return;
+        }
+        try {
+          const receipt = await api.resolveWorkApproval(effectiveWorkspaceId, approvalId, decision, messageId);
+          requireMatchingReceipt(receipt);
+          clearUncertainFlag();
+          setApprovalRetries(previous => ({ ...previous, [approvalId]: decision }));
+          setApprovals(current);
+          setApprovalsError("");
+          await resolveTaskAfterApproval();
+          return;
+        } catch (reconciliationError) {
+          setUncertainApprovals(previous => ({ ...previous, [approvalId]: { approval, decision } }));
+          setApprovalRetries(previous => ({ ...previous, [approvalId]: decision }));
+          setApprovalsError(`${t("The approval is no longer pending, but the requested decision is still unconfirmed. Retry the same request.")} ${errorText(reconciliationError)}`);
+        }
+      }
+    }
     finally { setApprovalBusy(""); }
   };
 
   const answerWorkInput = async (inputId: string) => {
     const answer = inputAnswers[inputId]?.trim();
     if (!answer || !mayOperate || inputBusy) return;
+    const taskId = pendingInputs.find(item => item.id === inputId)?.taskId;
     const previousRequest = inputMessageIdsRef.current.get(inputId);
     const messageId = previousRequest?.answer === answer ? previousRequest.messageId : makeIdempotencyKey();
     inputMessageIdsRef.current.set(inputId, { answer, messageId });
@@ -198,6 +398,11 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
       setInputAnswers(current => { const next = { ...current }; delete next[inputId]; return next; });
       inputMessageIdsRef.current.delete(inputId);
       await reloadTasks();
+      try {
+        if (!taskId) return;
+        const task = await api.getAssistantTask(taskId);
+        if (isCurrentWorkspace(effectiveWorkspaceId) && task.workspaceId === effectiveWorkspaceId) setTaskDetail(task);
+      } catch (error) { if (isCurrentWorkspace(effectiveWorkspaceId)) setDetailError(errorText(error)); }
     } catch (error) {
       setInputsError(errorText(error));
       void api.getWorkInputs(effectiveWorkspaceId).then(setPendingInputs, () => undefined);
@@ -277,7 +482,10 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
     catch (error) { setQqHealth(null); setQqError(errorText(error)); }
   };
 
-  const taskActive = !!taskDetail && !TERMINAL_TASK_STATES.has(taskDetail.status);
+  const visibleTasks = workspaceAligned ? tasks.filter(task => task.workspaceId === workspaceId) : [];
+  const visibleTaskDetail = workspaceAligned && taskDetail?.workspaceId === workspaceId ? taskDetail : null;
+  const visibleDetailError = workspaceAligned ? detailError : "";
+  const taskActive = !!visibleTaskDetail && !TERMINAL_TASK_STATES.has(visibleTaskDetail.status);
   return <div className="page-container work-assistant">
     <PageHeader eyebrow={t("WORK ASSISTANT")} title={t("Work assistant")} description={t("Tasks run beside the paired Navigator host; workspace data stays with its owner.")} action={<Button onClick={() => void refreshAll()} disabled={loading}>{loading ? t("Refreshing...") : t("Refresh all")}</Button>} />
     {!workspaceKnown && <p role={workspaceError ? "alert" : "status"} className="work-assistant__notice">{workspaceLoading ? t("Verifying Navigator workspace identity...") : workspaceError || t("Navigator did not report a workspace identity.")} <Button disabled={workspaceLoading} onClick={() => void reloadWorkspace()}>{t("Retry workspace connection")}</Button></p>}
@@ -288,37 +496,52 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
     <div className="work-assistant__grid">
       <Panel title={t("Create a task")} meta={<span>{t("Task state is owned by Navigator")}</span>}>
         <form className="work-assistant__form" onSubmit={event => void createTask(event)}>
-          <label>{t("Prompt")}<textarea value={prompt} maxLength={100000} rows={4} onChange={event => setPrompt(event.target.value)} placeholder={t("Describe the work to perform on this Navigator host.")} /></label>
-          <label>{t("Continue an agent session (optional)")}<input value={sessionId} maxLength={512} onChange={event => setSessionId(event.target.value)} placeholder={t("Leave blank to start a new agent session")} /></label>
-          <div className="work-assistant__actions"><Button tone="primary" disabled={taskBusy || !mayOperate || !prompt.trim()}>{taskBusy ? t("Submitting...") : t("Create task")}</Button><span>{t("A task remains active on its host after this page closes.")}</span></div>
+          <label>{t("Prompt")}<textarea value={prompt} maxLength={100000} rows={4} disabled={taskBusy || !!pendingTask} onChange={event => setPrompt(event.target.value)} placeholder={t("Describe the work to perform on this Navigator host.")} /></label>
+          <label>{t("Continue an agent session (optional)")}<input value={sessionId} maxLength={512} disabled={taskBusy || !!pendingTask} onChange={event => setSessionId(event.target.value)} placeholder={t("Leave blank to start a new agent session")} /></label>
+          <div className="work-assistant__actions"><Button tone="primary" disabled={taskBusy || !mayOperate || (pendingTask ? false : !prompt.trim())}>{taskBusy ? t("Submitting...") : pendingTask ? t("Retry same task") : t("Create task")}</Button><span>{t("A task remains active on its host after this page closes.")}</span></div>
         </form>
-        {tasksError && <StateBlock kind="error" title={t("Tasks unavailable")} detail={tasksError} action={<Button onClick={() => void reloadTasks()}>{t("Try again")}</Button>} />}
+        {workspaceAligned && tasksError && <StateBlock kind="error" title={t("Tasks unavailable")} detail={tasksError} action={<Button onClick={() => pendingTask ? void submitTask() : void reloadTasks()}>{pendingTask ? t("Retry same task") : t("Try again")}</Button>} />}
       </Panel>
 
-      <Panel title={t("Assistant tasks")} meta={<Button onClick={() => void reloadTasks()}>{t("Refresh tasks")}</Button>}>
-        {tasksError ? <p className="work-assistant__muted">{t("The task list did not load.")}</p> : tasks.length ? <ul className="work-assistant__task-list">
-          {tasks.map(task => <li key={task.id}><button className={task.id === selectedTaskId ? "is-selected" : ""} onClick={() => setSelectedTaskId(task.id)}>
+      <Panel title={t("Assistant tasks")} meta={<Button disabled={!workspaceAligned} onClick={() => void reloadTasks()}>{t("Refresh tasks")}</Button>}>
+        {!workspaceAligned ? <StateBlock kind="empty" title={t("Task history hidden")} detail={t("Task history is hidden until the selected workspace is verified with Navigator.")} /> : tasksError ? <p className="work-assistant__muted">{t("The task list did not load.")}</p> : visibleTasks.length ? <ul className="work-assistant__task-list">
+          {visibleTasks.map(task => <li key={task.id}><button className={task.id === selectedTaskId ? "is-selected" : ""} onClick={() => setSelectedTaskId(task.id)}>
             <span><strong>{task.title || task.prompt.slice(0, 80)}</strong><small>{task.id} · {formatTime(task.createdAt)}</small></span><StatusPill value={task.status} />
           </button></li>)}
         </ul> : <StateBlock kind="empty" title={t("No tasks yet")} detail={t("New tasks appear here after Navigator accepts them.")} />}
       </Panel>
 
-      <Panel title={t("Task detail")} meta={taskDetail ? <StatusPill value={taskDetail.status} /> : undefined} className="work-assistant__detail">
-        {detailError ? <StateBlock kind="error" title={t("Task could not be read")} detail={detailError} action={<Button onClick={() => void api.getAssistantTask(selectedTaskId).then(setTaskDetail, error => setDetailError(errorText(error)))}>{t("Try again")}</Button>} /> : taskDetail ? <>
-          <dl className="work-assistant__facts"><dt>{t("Task ID")}</dt><dd>{taskDetail.id}</dd><dt>{t("Agent session")}</dt><dd>{taskDetail.sessionId}</dd><dt>{t("Created")}</dt><dd>{formatTime(taskDetail.createdAt)}</dd></dl>
-          <h3>{t("Prompt")}</h3><pre className="work-assistant__text">{taskDetail.prompt}</pre>
-          {taskDetail.output ? <><h3>{t("Output")}</h3><pre className="work-assistant__text">{taskDetail.output}</pre></> : null}
-          {taskDetail.error ? <><h3>{t("Error")}</h3><pre className="work-assistant__text work-assistant__text--error">{taskDetail.error}</pre></> : null}
-          {taskDetail.reasoning ? <details><summary>{t("Reasoning")}</summary><pre className="work-assistant__text">{taskDetail.reasoning}</pre></details> : null}
+      <Panel title={t("Task detail")} meta={visibleTaskDetail ? <StatusPill value={visibleTaskDetail.status} /> : undefined} className="work-assistant__detail">
+        {visibleDetailError ? <StateBlock kind="error" title={t("Task could not be read")} detail={visibleDetailError} action={<Button onClick={() => {
+          const requestedWorkspaceId = workspaceId;
+          void api.getAssistantTask(selectedTaskId).then(value => {
+            if (!isCurrentWorkspace(requestedWorkspaceId)) return;
+            if (value.workspaceId === requestedWorkspaceId) setTaskDetail(value);
+            else setDetailError(t("Navigator returned a task outside the selected workspace."));
+          }, error => { if (isCurrentWorkspace(requestedWorkspaceId)) setDetailError(errorText(error)); });
+        }}>{t("Try again")}</Button>} /> : visibleTaskDetail ? <>
+          <dl className="work-assistant__facts"><dt>{t("Task ID")}</dt><dd>{visibleTaskDetail.id}</dd><dt>{t("Agent session")}</dt><dd>{visibleTaskDetail.sessionId}</dd><dt>{t("Created")}</dt><dd>{formatTime(visibleTaskDetail.createdAt)}</dd></dl>
+          <h3>{t("Prompt")}</h3><pre className="work-assistant__text">{visibleTaskDetail.prompt}</pre>
+          {visibleTaskDetail.output ? <><h3>{t("Output")}</h3><pre className="work-assistant__text">{visibleTaskDetail.output}</pre></> : null}
+          {visibleTaskDetail.error ? <><h3>{t("Error")}</h3><pre className="work-assistant__text work-assistant__text--error">{visibleTaskDetail.error}</pre></> : null}
+          {visibleTaskDetail.reasoning ? <details><summary>{t("Reasoning")}</summary><pre className="work-assistant__text">{visibleTaskDetail.reasoning}</pre></details> : null}
           {taskActive && <div className="work-assistant__actions"><Button tone="danger" disabled={!mayOperate || taskBusy} onClick={() => void cancelTask()}>{taskBusy ? t("Working...") : t("Request cancellation")}</Button><span>{t("Cancellation is a request; the server reports the final state.")}</span></div>}
           <div className="work-assistant__event-list"><h3>{t("Live task events")}</h3>{streamError && <p role="status">{t("Event stream status")}: {streamError}</p>}{taskEvents.length ? taskEvents.map(item => <p key={item.sequence}><code>#{item.sequence}</code> {assistantEventLabel(item)}</p>) : <p className="work-assistant__muted">{t("No task events received yet.")}</p>}</div>
         </> : <StateBlock kind="empty" title={t("Select a task")} detail={t("Task details and sequenced events are read from Navigator.")} />}
       </Panel>
 
       <Panel title={t("Approvals")} meta={<span>{approvals.length}</span>}>
-        {approvalsError ? <StateBlock kind="error" title={t("Approvals unavailable")} detail={approvalsError} /> : approvals.length ? <ul className="work-assistant__rows">
-          {approvals.map(approval => <li key={approval.id}><div><strong>{approval.summary}</strong><small>{approval.kind} · {approval.id} · {t("Task")} {approval.taskId}</small>{Object.keys(approval.details).length > 0 && <details><summary>{t("Approval details")}</summary><pre className="work-assistant__text">{compactJson(approval.details)}</pre></details>}</div><div className="work-assistant__actions"><Button disabled={!mayOperate || approvalBusy === approval.id} onClick={() => void resolveApproval(approval.id, "approved")}>{t("Approve")}</Button><Button tone="danger" disabled={!mayOperate || approvalBusy === approval.id} onClick={() => void resolveApproval(approval.id, "rejected")}>{t("Reject")}</Button></div></li>)}
-        </ul> : <StateBlock kind="empty" title={t("No pending approvals")} detail={t("The workspace has not reported any pending decision.")} />}
+        {approvalsError && <p role="alert" className="work-assistant__notice work-assistant__notice--error">{approvalsError}</p>}
+        {Object.values(uncertainApprovals).filter(item => !approvals.some(approval => approval.id === item.approval.id)).map(({ approval, decision }) => <div key={approval.id} role="alert" className="work-assistant__notice work-assistant__notice--error">
+          <span>{t("The approval is no longer pending, but the requested decision is still unconfirmed. Retry the same request.")}</span>
+          <Button disabled={!mayOperate || approvalBusy === approval.id} onClick={() => void resolveApproval(approval, decision)}>{decision === "approved" ? t("Retry approval") : t("Retry rejection")}</Button>
+        </div>)}
+        {approvals.length ? <ul className="work-assistant__rows">
+          {approvals.map(approval => {
+            const retry = approvalRetries[approval.id];
+            return <li key={approval.id}><div><strong>{approval.summary}</strong><small>{approval.kind} · {approval.id} · {t("Task")} {approval.taskId}</small>{Object.keys(approval.details).length > 0 && <details><summary>{t("Approval details")}</summary><pre className="work-assistant__text">{compactJson(approval.details)}</pre></details>}</div><div className="work-assistant__actions"><Button disabled={!mayOperate || approvalBusy === approval.id || (!!retry && retry !== "approved")} onClick={() => void resolveApproval(approval, "approved")}>{retry === "approved" ? t("Retry approval") : t("Approve")}</Button><Button tone="danger" disabled={!mayOperate || approvalBusy === approval.id || (!!retry && retry !== "rejected")} onClick={() => void resolveApproval(approval, "rejected")}>{retry === "rejected" ? t("Retry rejection") : t("Reject")}</Button></div></li>;
+          })}
+        </ul> : !Object.keys(uncertainApprovals).length && <StateBlock kind="empty" title={t("No pending approvals")} detail={t("The workspace has not reported any pending decision.")} />}
       </Panel>
 
       <Panel title={t("Waiting for your input")} meta={<span>{pendingInputs.length}</span>}>

@@ -3,7 +3,7 @@ import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SqliteStoreFactory } from "../../tooling/sqlite-store";
 import { createControlApplication } from "../../apps/control/application";
-import { admittedLoopbackTarget, directProductUpstreamPath, navigatorProxyPolicy, productPermission } from "../../tooling/product-proxy";
+import { admittedLoopbackTarget, directProductUpstreamPath, navigatorProxyPolicy, navigatorProxyUpstreamPath, productPermission } from "../../tooling/product-proxy";
 
 const cleanup: (() => Promise<void>)[] = [];
 const renewalSessionId = "00000000-0000-4000-8000-000000000001";
@@ -197,6 +197,20 @@ it("binds Navigator task proxy permissions to the pinned executor input and deni
   expect(navigatorProxyPolicy("PUT", "/api/v1/navigator/assistant/providers/personal")).toBeUndefined();
   expect(productPermission("PATCH", "/api/v1/workspaces/local/work/tasks/task-1")).toBeNull();
   expect(productPermission("POST", "/api/v1/workspaces/local/work/tasks/task-1/events")).toBeNull();
+});
+
+it("admits pinned task IDs with dots and encoded colons for detail, events and cancel", () => {
+  for (const taskId of ["task.source-1", "task%3Asource-1"]) {
+    expect(navigatorProxyPolicy("GET", `/api/v1/navigator/tasks/${taskId}`)?.permission).toBe("products.read");
+    expect(navigatorProxyPolicy("GET", `/api/v1/navigator/tasks/${taskId}/events`)?.permission).toBe("products.read");
+    expect(navigatorProxyPolicy("POST", `/api/v1/navigator/tasks/${taskId}/cancel`)?.permission).toBe("products.operate");
+    expect(navigatorProxyUpstreamPath(`/api/v1/navigator/tasks/${taskId}/events?after=12`, "local", navigatorProxyPolicy("GET", `/api/v1/navigator/tasks/${taskId}/events`)))
+      .toBe(`/api/v1/tasks/${taskId}/events?after=12`);
+  }
+  for (const unsafeTaskId of ["task%2Fother", "task%5Cother", "../other", "task..other"]) {
+    expect(navigatorProxyPolicy("GET", `/api/v1/navigator/tasks/${unsafeTaskId}`)).toBeUndefined();
+    expect(navigatorProxyPolicy("POST", `/api/v1/navigator/tasks/${unsafeTaskId}/cancel`)).toBeUndefined();
+  }
 });
 
 async function directFixture(includeEcho = true) {

@@ -227,6 +227,30 @@ const messages = {
     "zh-CN": "重试原请求",
     "en-US": "Retry request",
   },
+  retryApproval: {
+    "zh-CN": "重试批准",
+    "en-US": "Retry approval",
+  },
+  retryRejection: {
+    "zh-CN": "重试拒绝",
+    "en-US": "Retry rejection",
+  },
+  navigatorDidNotConfirmRequestedApprovalDecision: {
+    "zh-CN": "Navigator 未确认所请求的审批决定。",
+    "en-US": "Navigator did not confirm the requested approval decision.",
+  },
+  approvalResponseAndCurrentStateAreUncertain: {
+    "zh-CN": "审批响应和当前状态均不确定。",
+    "en-US": "The approval response is uncertain and current approval state could not be read.",
+  },
+  approvalResponseWasNotConfirmedRetryUsesSameRequestId: {
+    "zh-CN": "审批响应尚未确认。重试会继续使用同一请求 ID。",
+    "en-US": "The approval response was not confirmed. Retrying will reuse the same request ID.",
+  },
+  approvalNoLongerPendingButDecisionIsUnconfirmed: {
+    "zh-CN": "该审批已不再待处理，但所请求的决定仍未确认。请使用同一请求重试。",
+    "en-US": "The approval is no longer pending, but the requested decision is still unconfirmed. Retry the same request.",
+  },
   message: {
     "zh-CN": "消息",
     "en-US": "Message",

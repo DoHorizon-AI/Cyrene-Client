@@ -1,5 +1,6 @@
 const id = "[A-Za-z0-9_-]+";
 const workId = "(?:[A-Za-z0-9_.:-]|%3[Aa])+";
+const taskId = "[A-Za-z0-9](?:[A-Za-z0-9_.:-]|%3[Aa]){0,199}";
 const defaultBodyLimit = 1_048_576;
 
 export interface ProxyBodyViolation { code: string; message: string; status: number }
@@ -61,8 +62,8 @@ export const navigatorProxyPolicies: readonly NavigatorProxyPolicy[] = [
   policy("GET", "navigator/harness/workspaces/([^/]+)/sessions", null, { workspace: "path" }),
   policy("GET", "navigator/tasks", "read", { workspace: "host", upstream: "tasks" }),
   policy("POST", "navigator/tasks", "operate", { workspace: "host", upstream: "tasks", validateBody: taskBodyViolation }),
-  policy("GET", `navigator/tasks/${id}(?:/events)?`, "read", { workspace: "host", upstream: "tasks" }),
-  policy("POST", `navigator/tasks/${id}/cancel`, "operate", { workspace: "host", upstream: "tasks" }),
+  policy("GET", `navigator/tasks/${taskId}(?:/events)?`, "read", { workspace: "host", upstream: "tasks" }),
+  policy("POST", `navigator/tasks/${taskId}/cancel`, "operate", { workspace: "host", upstream: "tasks" }),
   policy("GET", "navigator/approvals", "read", { workspace: "host", upstream: "approvals" }),
   policy("POST", `navigator/approvals/${id}/resolve`, "operate", { workspace: "host", upstream: "approvals" }),
   policy("GET", `workspaces/(${workId})/work/approvals(?:/${workId})?`, "read", { workspace: "path" }),

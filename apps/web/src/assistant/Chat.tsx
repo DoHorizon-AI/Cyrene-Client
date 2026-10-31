@@ -39,10 +39,18 @@ import { ProviderSettings } from "./ProviderSettings";
 import { parseLegacyHistory, type LegacyChat } from "./legacy-history";
 
 const McpPanel = lazy(() => import("../mcp/McpPanel"));
+const SETTLED_TASK_STATES = new Set([
+  "completed", "failed", "aborted", "waiting_approval", "waiting_input", "awaiting_user_authorization",
+]);
 type Submission = {
   requestId: string;
   input: Parameters<NavigatorApi["createAssistantTask"]>[0];
 };
+type ApprovalDecision = "approved" | "rejected";
+type ApprovalRequest = { workspaceId: string; approvalId: string; decision: ApprovalDecision; messageId: string };
+type UncertainApproval = { approval: WorkApproval; decision: ApprovalDecision };
+
+const approvalScopeKey = (workspaceId: string, approvalId: string) => JSON.stringify([workspaceId, approvalId]);
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -87,6 +95,8 @@ export default function Chat(props: AssistantWindowProps) {
   const [approvals, setApprovals] = useState<WorkApproval[]>([]),
     [inputs, setInputs] = useState<WorkInput[]>([]),
     [answers, setAnswers] = useState<Record<string, string>>({});
+  const [approvalRetries, setApprovalRetries] = useState<Record<string, ApprovalDecision>>({});
+  const [uncertainApprovals, setUncertainApprovals] = useState<Record<string, UncertainApproval>>({});
   const [taskEvents, setTaskEvents] = useState<
     Record<string, NavigatorTaskEvent[]>
   >({});
@@ -100,24 +110,33 @@ export default function Chat(props: AssistantWindowProps) {
   const inputRequests = useRef(
     new Map<string, { answer: string; messageId: string }>(),
   );
+  const approvalRequests = useRef(new Map<string, ApprovalRequest>());
+  const uncertainApprovalScopes = useRef(new Set<string>());
   const historyExtended = useRef(false);
   const restoredTargets = useRef(new Set<string>());
   const legacyInput = useRef<HTMLInputElement>(null);
   selected.current = sessionId;
-  const effectiveWorkspace = hostWorkspace || workspaceId;
+  const effectiveWorkspace = workspaceId;
   const aligned =
     !!hostWorkspace &&
     !!workspaceId &&
     hostWorkspace === workspaceId;
+  const workspaceScope = useRef({ selected: workspaceId, host: hostWorkspace });
+  workspaceScope.current = { selected: workspaceId, host: hostWorkspace };
+  const isCurrentWorkspace = useCallback((expectedWorkspaceId: string) => {
+    const current = workspaceScope.current;
+    return !!expectedWorkspaceId && current.selected === expectedWorkspaceId && current.host === expectedWorkspaceId;
+  }, []);
   const mayOperate =
     !!auth?.authenticated && aligned && scopes.includes("products.operate");
   const mayConfigure = scopes.includes("products.admin");
   const sessions = useMemo(
-    () =>
-      chatSessions(
-        tasks.filter((task) => task.workspaceId === effectiveWorkspace),
-      ),
-    [tasks, effectiveWorkspace],
+    () => aligned
+      ? chatSessions(
+        tasks.filter((task) => task.workspaceId === workspaceId),
+      )
+      : [],
+    [aligned, tasks, workspaceId],
   );
   const turns =
     sessions.find((session) => session.id === sessionId)?.turns ?? [];
@@ -151,11 +170,46 @@ export default function Chat(props: AssistantWindowProps) {
   };
 
   const reloadTasks = useCallback(async () => {
+    if (!aligned || !workspaceId) {
+      setTasks([]);
+      setNextCursor(null);
+      historyExtended.current = false;
+      restoredTargets.current.clear();
+      return;
+    }
+    const requestedWorkspaceId = workspaceId;
     const page = await api.getAssistantTasks();
-    if (!mounted.current) return;
-    setTasks((previous) => mergeTaskRecords(previous, page.items));
+    if (!mounted.current || !isCurrentWorkspace(requestedWorkspaceId)) return;
+    const items = page.items.filter((task) => task.workspaceId === requestedWorkspaceId);
+    setTasks((previous) =>
+      mergeTaskRecords(
+        previous.filter((task) => task.workspaceId === requestedWorkspaceId),
+        items,
+      ),
+    );
     if (!historyExtended.current) setNextCursor(page.nextCursor);
-  }, [api]);
+  }, [api, aligned, workspaceId, isCurrentWorkspace]);
+
+  const reconcileApprovalSnapshot = useCallback((
+    requestedWorkspaceId: string,
+    items: WorkApproval[],
+  ) => {
+    const pendingIds = new Set(items.map((item) => item.id));
+    for (const [key, request] of approvalRequests.current) {
+      if (request.workspaceId === requestedWorkspaceId && !pendingIds.has(request.approvalId)
+        && !uncertainApprovalScopes.current.has(approvalScopeKey(requestedWorkspaceId, request.approvalId))) {
+        approvalRequests.current.delete(key);
+      }
+    }
+    setApprovalRetries((previous) => {
+      const next = { ...previous };
+      for (const approvalId of Object.keys(next)) {
+        if (!pendingIds.has(approvalId) && !uncertainApprovalScopes.current.has(approvalScopeKey(requestedWorkspaceId, approvalId))) delete next[approvalId];
+      }
+      return next;
+    });
+    setApprovals(items);
+  }, []);
 
   const reloadApprovals = useCallback(
     async (signal?: AbortSignal) => {
@@ -164,10 +218,10 @@ export default function Chat(props: AssistantWindowProps) {
         api.getWorkInputs(effectiveWorkspace),
       ]);
       if (!mounted.current || signal?.aborted) return;
-      if (results[0].status === "fulfilled") setApprovals(results[0].value);
+      if (results[0].status === "fulfilled") reconcileApprovalSnapshot(effectiveWorkspace, results[0].value);
       if (results[1].status === "fulfilled") setInputs(results[1].value);
     },
-    [api, effectiveWorkspace],
+    [api, effectiveWorkspace, reconcileApprovalSnapshot],
   );
 
   const reloadHostWorkspace = useCallback(async () => {
@@ -187,19 +241,17 @@ export default function Chat(props: AssistantWindowProps) {
   }, [api, locale]);
 
   useEffect(() => {
-    if (!auth?.authenticated) return;
-    void reloadTasks().catch(fail);
-    void reloadHostWorkspace();
-  }, [
-    api,
-    auth?.authenticated,
-    reloadTasks,
-    reloadHostWorkspace,
-  ]);
+    if (auth?.authenticated) void reloadHostWorkspace();
+  }, [auth?.authenticated, reloadHostWorkspace]);
+
+  useEffect(() => {
+    if (auth?.authenticated) void reloadTasks().catch(fail);
+  }, [auth?.authenticated, reloadTasks]);
 
   useEffect(() => {
     if (
       !auth?.authenticated ||
+      !aligned ||
       !sessionId ||
       turns.length ||
       !nextCursor ||
@@ -220,14 +272,15 @@ export default function Chat(props: AssistantWindowProps) {
         ) {
           const page = await api.getAssistantTasks(cursor);
           if (!active) return;
-          setTasks((previous) => mergeTaskRecords(previous, page.items));
+          const items = page.items.filter((task) => task.workspaceId === workspaceId);
+          setTasks((previous) => mergeTaskRecords(previous, items));
           historyExtended.current = true;
           cursor = page.nextCursor;
           if (
             page.items.some(
               (task) =>
                 task.sessionId === target &&
-                task.workspaceId === effectiveWorkspace,
+                task.workspaceId === workspaceId,
             )
           )
             break;
@@ -250,10 +303,12 @@ export default function Chat(props: AssistantWindowProps) {
     !turns.length,
     nextCursor,
     effectiveWorkspace,
+    aligned,
+    workspaceId,
   ]);
 
   useEffect(() => {
-    if (!auth?.authenticated || !props.visible) return;
+    if (!auth?.authenticated || !props.visible || !aligned) return;
     let active = true,
       inFlight = false,
       failures = 0;
@@ -266,7 +321,7 @@ export default function Chat(props: AssistantWindowProps) {
       let delay = activeTask || pending ? 3000 : 15_000;
       try {
         await reloadTasks();
-        if (activeTask) await reloadApprovals();
+        if (activeTask && aligned) await reloadApprovals();
         failures = 0;
       } catch (reason) {
         delay = Math.min(60_000, 2000 * 2 ** Math.min(failures++, 5));
@@ -291,6 +346,7 @@ export default function Chat(props: AssistantWindowProps) {
   }, [
     auth?.authenticated,
     props.visible,
+    aligned,
     activeTask?.id,
     pending?.requestId,
     reloadTasks,
@@ -299,10 +355,10 @@ export default function Chat(props: AssistantWindowProps) {
 
   useTaskStream({
     api,
-    taskId: observedTask?.id,
+    taskId: aligned ? observedTask?.id : undefined,
     scopeKey: selectionKey,
-    enabled: props.visible && !!auth?.authenticated,
-    terminal: !!observedTask && !isActiveTask(observedTask),
+    enabled: props.visible && !!auth?.authenticated && aligned,
+    terminal: !!observedTask && SETTLED_TASK_STATES.has(observedTask.status),
     replayTerminal: true,
     onEvent: (event, taskId) =>
       setTaskEvents((previous) => ({
@@ -314,8 +370,10 @@ export default function Chat(props: AssistantWindowProps) {
           event,
         ],
       })),
-    onTask: (task) =>
-      setTasks((previous) => mergeTaskRecords(previous, [task])),
+    onTask: (task) => {
+      if (!isCurrentWorkspace(workspaceId) || task.workspaceId !== workspaceId) return;
+      setTasks((previous) => mergeTaskRecords(previous, [task]));
+    },
     onRefresh: reloadApprovals,
     onError: fail,
   });
@@ -413,18 +471,83 @@ export default function Chat(props: AssistantWindowProps) {
 
   const decide = (
     approval: WorkApproval,
-    decision: "approved" | "rejected",
+    decision: ApprovalDecision,
   ) =>
     void act(async () => {
       // Approval identity comes from its owning task, never from the open graph.
-      if (!mayOperate || !selectedTaskIds.has(approval.taskId)) return;
-      await api.resolveWorkApproval(
-        effectiveWorkspace,
-        approval.id,
-        decision,
-      );
-      await reloadApprovals();
-      await reloadTasks();
+      const isUncertainRetry = uncertainApprovals[approval.id]?.approval.taskId === approval.taskId;
+      if (!mayOperate || (!selectedTaskIds.has(approval.taskId) && !isUncertainRetry)) return;
+      if (approvalRetries[approval.id] && approvalRetries[approval.id] !== decision) return;
+      const requestKey = JSON.stringify([effectiveWorkspace, approval.id, decision]);
+      const scopeKey = approvalScopeKey(effectiveWorkspace, approval.id);
+      const messageId = approvalRequests.current.get(requestKey)?.messageId ?? makeIdempotencyKey();
+      approvalRequests.current.set(requestKey, { workspaceId: effectiveWorkspace, approvalId: approval.id, decision, messageId });
+      const clearUncertainFlag = () => {
+        uncertainApprovalScopes.current.delete(scopeKey);
+        setUncertainApprovals(previous => { const next = { ...previous }; delete next[approval.id]; return next; });
+      };
+      const clearApprovalRequest = () => {
+        clearUncertainFlag();
+        for (const [key, request] of approvalRequests.current) {
+          if (request.workspaceId === effectiveWorkspace && request.approvalId === approval.id) approvalRequests.current.delete(key);
+        }
+        setApprovalRetries(previous => { const next = { ...previous }; delete next[approval.id]; return next; });
+      };
+      const requireMatchingReceipt = (receipt: Awaited<ReturnType<NavigatorApi["resolveWorkApproval"]>>) => {
+        if (receipt.approval.id !== approval.id || receipt.approval.status !== decision) {
+          throw new Error(m("navigatorDidNotConfirmRequestedApprovalDecision"));
+        }
+      };
+      try {
+        const receipt = await api.resolveWorkApproval(effectiveWorkspace, approval.id, decision, messageId);
+        requireMatchingReceipt(receipt);
+        clearUncertainFlag();
+        setApprovalRetries(previous => ({ ...previous, [approval.id]: decision }));
+        await reloadApprovals();
+        await reloadTasks();
+      } catch (reason) {
+        const ambiguous = !(reason instanceof NavigatorHttpError)
+          || reason.status >= 500
+          || [408, 409, 429].includes(reason.status);
+        if (!ambiguous) {
+          clearApprovalRequest();
+          throw reason;
+        }
+        uncertainApprovalScopes.current.add(scopeKey);
+        setApprovalRetries(previous => ({ ...previous, [approval.id]: decision }));
+        setUncertainApprovals(previous => ({ ...previous, [approval.id]: { approval, decision } }));
+        let current: WorkApproval[];
+        try {
+          current = await api.getWorkApprovals(effectiveWorkspace);
+        } catch (reconciliationError) {
+          uncertainApprovalScopes.current.add(scopeKey);
+          setUncertainApprovals(previous => ({ ...previous, [approval.id]: { approval, decision } }));
+          setApprovalRetries(previous => ({ ...previous, [approval.id]: decision }));
+          setError(`${m("approvalResponseAndCurrentStateAreUncertain")} ${message(reconciliationError)}`);
+          return;
+        }
+        setApprovals(current);
+        if (current.some(item => item.id === approval.id)) {
+          reconcileApprovalSnapshot(effectiveWorkspace, current);
+          setError(m("approvalResponseWasNotConfirmedRetryUsesSameRequestId"));
+          return;
+        }
+        try {
+          const receipt = await api.resolveWorkApproval(effectiveWorkspace, approval.id, decision, messageId);
+          requireMatchingReceipt(receipt);
+          clearUncertainFlag();
+          setApprovals(current);
+          setApprovalRetries(previous => ({ ...previous, [approval.id]: decision }));
+          setError("");
+          await reloadApprovals();
+          await reloadTasks();
+          return;
+        } catch (reconciliationError) {
+          setUncertainApprovals(previous => ({ ...previous, [approval.id]: { approval, decision } }));
+          setApprovalRetries(previous => ({ ...previous, [approval.id]: decision }));
+          setError(`${m("approvalNoLongerPendingButDecisionIsUnconfirmed")} ${message(reconciliationError)}`);
+        }
+      }
     });
   const answer = (input: WorkInput) =>
     void act(async () => {
@@ -495,6 +618,14 @@ export default function Chat(props: AssistantWindowProps) {
           </button>
         </div>
       )}
+      {Object.values(uncertainApprovals).filter(({ approval }) => view !== "chat" || !selectedTaskIds.has(approval.taskId)).map(({ approval, decision }) => (
+        <div className="assistant-error" role="status" key={approval.id}>
+          {m("approvalNoLongerPendingButDecisionIsUnconfirmed")}
+          <button disabled={!mayOperate || busy} onClick={() => decide(approval, decision)}>
+            {decision === "approved" ? m("retryApproval") : m("retryRejection")}
+          </button>
+        </div>
+      ))}
       {mcpVisited && (
         <div className="assistant-aux" hidden={view !== "mcp"}>
           <Suspense fallback={<p>MCP…</p>}>
@@ -563,28 +694,34 @@ export default function Chat(props: AssistantWindowProps) {
           {view === "history" && (
             <History
               sessions={sessions}
-              selectionDisabled={busy || uploading || !!pending}
+              selectionDisabled={busy || uploading || !!pending || !aligned}
               busy={busy}
-              hasEarlier={!!nextCursor}
+              hasEarlier={aligned && !!nextCursor}
               hasLegacy={legacyChats.length > 0}
               onSelect={selectSession}
               onReadLegacy={() => legacyInput.current?.click()}
               onViewLegacy={() => setView("legacy")}
               onLoadEarlier={() =>
                 void act(async () => {
+                  if (!aligned) return;
+                  const requestedWorkspaceId = workspaceId;
                   const page = await api.getAssistantTasks(
                     nextCursor ?? undefined,
                   );
+                  if (!isCurrentWorkspace(requestedWorkspaceId)) return;
                   historyExtended.current = true;
                   setTasks((previous) =>
-                    mergeTaskRecords(previous, page.items),
+                    mergeTaskRecords(
+                      previous.filter((task) => task.workspaceId === requestedWorkspaceId),
+                      page.items.filter((task) => task.workspaceId === requestedWorkspaceId),
+                    ),
                   );
                   setNextCursor(page.nextCursor);
                 })
               }
             />
           )}
-          {view === "legacy" && (
+          {view === "legacy" && aligned && (
             <LegacyHistory
               chats={legacyChats}
               selectedId={legacyId}
@@ -634,6 +771,7 @@ export default function Chat(props: AssistantWindowProps) {
                   answers={answers}
                   pipelineId={props.document.id}
                   workspaceId={effectiveWorkspace}
+                  approvalRetries={approvalRetries}
                   disabled={busy || !mayOperate}
                   onOpenWorkflow={(id) =>
                     void props.onOpenWorkflow(id).catch(fail)

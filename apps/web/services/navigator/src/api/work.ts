@@ -3,7 +3,7 @@ import type { WorkSchemas } from "../generated/contracts";
 import type { JsonRecord, WorkApproval, WorkInput, MemoryFact, WorkNotification, WorkAttachment, WorkConnector, QqConnectorHealth, QqLoginChallenge, QqLoginState } from "./types";
 import { NavigatorContractError } from "./errors";
 import { parseResource } from "./parsers/validation";
-import { parseApprovalList, parseWorkInputList, parseMemoryFacts, parseMemoryFact, parseNotificationList, parseAttachment, parseConnectorList, parseQqHealth, parseQqLoginChallenge, parseQqLoginState } from "./parsers/work";
+import { parseApprovalList, parseApprovalReceipt, parseWorkInputList, parseMemoryFacts, parseMemoryFact, parseNotificationList, parseAttachment, parseConnectorList, parseQqHealth, parseQqLoginChallenge, parseQqLoginState } from "./parsers/work";
 import { jsonRequest, makeIdempotencyKey, workId, workPath, toHttpError } from "./requests";
 
 export class WorkApi {
@@ -16,11 +16,11 @@ export class WorkApi {
   }
 
   /** Resolve an approval exactly once through its owning work service. 中文：通过所属工作服务一次性完成审批。 */
-  async resolveWorkApproval(workspaceId: string, approvalId: string, decision: WorkSchemas["ApprovalResolve"]["decision"]): Promise<JsonRecord> {
+  async resolveWorkApproval(workspaceId: string, approvalId: string, decision: WorkSchemas["ApprovalResolve"]["decision"], messageId = makeIdempotencyKey()): Promise<WorkSchemas["ApprovalReceipt"]> {
     return this.transport.requestJson(
       workPath(workspaceId, `approvals/${workId(approvalId)}/resolve`),
-      jsonRequest("POST", { decision, messageId: makeIdempotencyKey() }, true),
-      parseResource,
+      jsonRequest("POST", { decision, messageId }, messageId),
+      parseApprovalReceipt,
     );
   }
 

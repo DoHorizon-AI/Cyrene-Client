@@ -84,3 +84,35 @@ test("the same task ID in a new scope starts at zero and cannot receive the old 
   expect(cursors).toEqual([{ scope: "scope-a", after: 0 }, { scope: "scope-b", after: 0 }]);
   await expect(page.getByRole("alert")).toBeEmpty();
 });
+
+test("paused task streams replay once, settle at approval, and reopen after the task resumes", async ({ page }) => {
+  const entry = `/@fs/${resolve("tests/fixtures/task-stream.tsx").replaceAll("\\", "/")}`;
+  let taskStatus: "waiting_approval" | "running" = "waiting_approval";
+  let eventReads = 0;
+  await page.route("**/src/main.tsx", route => route.fulfill({ contentType: "text/javascript", body: `import ${JSON.stringify(entry)};` }));
+  await page.route("**/api/fixture/task-stream/resume", route => {
+    taskStatus = "running";
+    return route.fulfill({ status: 204, body: "" });
+  });
+  await page.route("**/api/v1/navigator/tasks/**", route => {
+    const url = new URL(route.request().url()), id = url.pathname.split("/")[5];
+    if (url.pathname.endsWith("/events")) {
+      eventReads++;
+      return route.fulfill({ contentType: "text/event-stream", body: `id: ${eventReads}\nevent: status\ndata: {"type":"status","status":"${taskStatus}"}\n\n` });
+    }
+    return route.fulfill({ json: { id, workspaceId: "local", sessionId: "session-a", prompt: "Task A", status: taskStatus, createdAt: 1,
+      startedAt: 1, endedAt: null, output: "", reasoning: "", error: null, durationMs: 0, sequence: eventReads + 1, metadata: {} } });
+  });
+
+  await page.goto("/?paused-resume");
+  await expect(page.getByLabel("Task observations", { exact: true })).toContainText("waiting_approval");
+  await expect(page.getByLabel("Task events", { exact: true })).toContainText('"task-a":[1]');
+  expect(eventReads).toBe(1);
+  await page.clock.install();
+  await page.clock.fastForward(5_000);
+  expect(eventReads).toBe(1);
+
+  await page.getByRole("button", { name: "Resume task", exact: true }).click();
+  await expect(page.getByLabel("Task observations", { exact: true })).toContainText("running");
+  await expect.poll(() => eventReads).toBe(2);
+});

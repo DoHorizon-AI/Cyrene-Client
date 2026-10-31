@@ -602,7 +602,14 @@ describe("NavigatorApi", () => {
       const path = String(input), method = init?.method ?? "GET";
       calls.push({ path, method, body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined, headers: new Headers(init?.headers) });
       if (path.endsWith("/approvals?status=pending&limit=100")) return response({ items: [] });
-      if (path.endsWith("/approvals/approval-1/resolve")) return response({ id: "approval-1", status: "approved" });
+      if (path.endsWith("/approvals/approval-1/resolve")) {
+        const body = JSON.parse(String(init?.body)) as { decision: "approved" | "rejected" };
+        return response({
+          approval: { id: "approval-1", taskId: "task-1", kind: "tool", summary: "Review tool", details: {}, status: body.decision, createdAt: 1 },
+          duplicate: false,
+          task: { id: "task-1", workspaceId: "workspace-1", sessionId: "session-1", prompt: "Review", status: "waiting_approval", createdAt: 1, startedAt: 1, endedAt: null, output: "", reasoning: "", error: null, durationMs: 0, sequence: 1, metadata: {} },
+        });
+      }
       if (path.endsWith("/inputs?status=pending&limit=100")) return response({ items: [{ id: "input-1", taskId: "task-1", summary: "Choose a deployment region", details: { options: ["east", "west"] }, status: "pending", createdAt: 1, answeredAt: null, answeredBy: null, answer: null, messageId: "input-request-1" }] });
       if (path.endsWith("/inputs/input-1/resolve")) return response({ input: { id: "input-1", taskId: "task-1", status: "answered" }, task: { id: "task-1" }, duplicate: false });
       if (path.endsWith("/memory/facts?includeStale=true&limit=100")) return response({ items: [] });
@@ -624,7 +631,7 @@ describe("NavigatorApi", () => {
     });
 
     await api.getWorkApprovals("workspace-1");
-    await api.resolveWorkApproval("workspace-1", "approval-1", "approved");
+    await api.resolveWorkApproval("workspace-1", "approval-1", "approved", "approval-message-1");
     const inputs = await api.getWorkInputs("workspace-1");
     await api.resolveWorkInput("workspace-1", "input-1", "east", "input-message-1");
     await api.getMemoryFacts("workspace-1");
@@ -665,6 +672,8 @@ describe("NavigatorApi", () => {
     ]);
     expect(calls[3]?.body).toMatchObject({ answer: { text: "east" }, messageId: "input-message-1" });
     expect(calls[3]?.headers.get("Idempotency-Key")).toBe("input-message-1");
+    expect(calls[1]?.body).toMatchObject({ decision: "approved", messageId: "approval-message-1" });
+    expect(calls[1]?.headers.get("Idempotency-Key")).toBe("approval-message-1");
     expect(calls[10]?.body).toEqual({});
     expect(calls[11]?.body).toEqual({ loginId: "login-1" });
     expect(calls.every(call => call.headers.get("Authorization") === null)).toBe(true);
