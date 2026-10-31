@@ -13,9 +13,19 @@ import { useTeamIdentity } from "../team/TeamGate";
 import { useNavigatorSession } from "../services/NavigatorSessionProvider";
 import { WorkspaceTrainingConsole } from "./WorkspaceTrainingConsole";
 import { IntegrationAlerts } from "./IntegrationAlerts";
+import { InstallerPage } from "../../services/installer/src/InstallerPage";
 
 export default function ProductWorkspace({ route }: { route: RouteId }) {
   const locale = useI18n(), { actorId, workspaceId } = useTeamIdentity();
+  if (route === "installer") {
+    return (
+      <ControlledLocaleProvider locale={locale.locale} setLocale={locale.setLocale}>
+        <div className="product-workspace" onKeyDown={event => event.stopPropagation()} style={{ height: "100%", overflow: "hidden" }}>
+          <InstallerPage />
+        </div>
+      </ControlledLocaleProvider>
+    );
+  }
   const workspaceTraining = import.meta.env.VITE_WORKSPACE_BFF_ENABLED === "true" && (route === "training" || route === "runs");
   return <ControlledLocaleProvider locale={locale.locale} setLocale={locale.setLocale}>{workspaceTraining
     ? <WorkspaceTrainingConsole key={actorId} route={route} />
@@ -52,6 +62,7 @@ function ProductSession({ route }: { route: RouteId }) {
       case "chat": return <ChatPage api={api} />;
       case "assistant": return <WorkAssistantPage api={api} workspaceId={workspaceId} canOperate={scopes.includes("products.operate")} canWrite={scopes.includes("products.write")} />;
       case "settings": return session && <SettingsPage api={api} session={session} />;
+      case "installer": return <InstallerPage />;
       default: return <OverviewPage api={api} />;
     }
   };

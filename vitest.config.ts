@@ -9,6 +9,7 @@ export default defineConfig({
       "apps/web/services/navigator/src/**/*.test.ts",
       "apps/web/services/catalyst/src/**/*.test.ts",
       "apps/web/services/echo/src/**/*.test.ts",
+      "apps/web/services/installer/src/**/*.test.ts",
     ],
   },
 });
