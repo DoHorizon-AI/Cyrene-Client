@@ -36,9 +36,9 @@ The accepted direction consolidates user-facing service modules in Client while 
 
 ### Cyrene-Navigator — harness and session authority / Harness 与会话权威
 
-Cyrene-Navigator remains responsible for its `harness/` DeepSeek Harness adapter, `native/crates/cyrene-native-host/` Rust process host, and `src/` Python Web Host and session persistence. Its UI remains small and focused on harness configuration and agent-run logs. Client may present broader service operations, but it does not take ownership of Navigator's harness execution or durable session state.
+Cyrene-Navigator remains responsible for its `harness/` DeepSeek Harness adapter, `native/crates/cyrene-native-host/` Rust process host, and `src/` Python Web Host and session persistence. Navigator is a headless service: its chat, configuration, and operations UI belongs in Client. Client uses Navigator's existing executor tasks, Work API, and canonical session events rather than owning another execution loop or durable session store. See [Navigator assistant integration](navigator-assistant-integration.md) for the local integration contract.
 
-Cyrene-Navigator 继续负责 `harness/` 中的 DeepSeek Harness 适配层、`native/crates/cyrene-native-host/` Rust 进程宿主，以及 `src/` 中的 Python Web Host 和 session 持久化。该仓库的 UI 保持小而聚焦，只服务于 harness 配置和 Agent run 日志。Client 可以提供更广泛的服务运维界面，但不接管 Navigator 的 harness 执行或持久会话状态。
+Cyrene-Navigator 继续负责 `harness/` 中的 DeepSeek Harness 适配层、`native/crates/cyrene-native-host/` Rust 进程宿主，以及 `src/` 中的 Python Web Host 和 session 持久化。Navigator 是无界面的服务；聊天、配置和运维界面归 Client。Client 复用 Navigator 既有 executor 任务、Work API 和权威 session 事件，不另建执行循环或持久会话库。本机集成契约见 [Navigator 助手整合](navigator-assistant-integration.md)。
 
 ### Cyrene-Plugins-Official — capabilities and provenance / 能力与来源记录
 

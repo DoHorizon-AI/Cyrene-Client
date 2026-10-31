@@ -6,7 +6,8 @@ import { makeIdempotencyKey, type JsonRecord } from "../../services/navigator/sr
 import { RunsPage } from "../../services/navigator/src/pages";
 import { pushRunRoute, type RouteId } from "../../services/navigator/src/router";
 import { useI18n } from "../i18n";
-import { WorkspaceBffClient, type WorkspaceSummary } from "../services/workspace-bff-client";
+import { type WorkspaceSummary } from "../services/workspace-bff-client";
+import { useNavigatorSession } from "../services/NavigatorSessionProvider";
 import { WorkspaceTrainingClient } from "./workspace-training-api";
 
 /** Discovery never treats a local server registration as a trusted execution target.
@@ -15,7 +16,7 @@ import { WorkspaceTrainingClient } from "./workspace-training-api";
 export function WorkspaceTrainingConsole({ route }: { route: RouteId }) {
   const { locale } = useI18n();
   const tx = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
-  const bff = useMemo(() => new WorkspaceBffClient(), []);
+  const { workspaceBff: bff } = useNavigatorSession();
   const [workspaces, setWorkspaces] = useState<readonly WorkspaceSummary[]>([]);
   const [workspaceId, setWorkspaceId] = useState(() => new URLSearchParams(window.location.search).get("workspaceId") ?? "");
   const [revision, setRevision] = useState(0);
@@ -31,7 +32,7 @@ export function WorkspaceTrainingConsole({ route }: { route: RouteId }) {
     }, (reason: unknown) => {
       if (!controller.signal.aborted) { setError(reason instanceof Error ? reason.message : String(reason)); setLoading(false); }
     });
-    return () => { controller.abort(); bff.reset(); };
+    return () => { controller.abort(); };
   }, [bff, revision]);
   useEffect(() => {
     const navigate = () => {

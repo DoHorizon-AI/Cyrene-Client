@@ -9,6 +9,8 @@ import { createControlApplication } from "../../apps/control/application";
 import { SqliteStoreFactory } from "../../tooling/sqlite-store";
 import { LocalDiagnosticAdapter, diagnosticDatabase, emptyDiagnosticDatabase } from "../../packages/local-diagnostics/adapter";
 import { diagnosticPipeline } from "../../packages/local-diagnostics/definition";
+import { createNode } from "../../packages/pipeline-model";
+import { catalog } from "../../packages/pipeline-model/catalog";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -22,7 +24,7 @@ async function fixture(readOnly = false) {
   await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/studio-mcp`), { requestInit: { headers: { authorization: "Bearer test-api-token" } } }));
   cleanup.push(() => client.close());
   const call = async (name: string, args: Record<string, unknown>) => {
-    const result = await client.callTool({ name, arguments: args });
+    const result = await client.callTool({ name: name.replaceAll(".", "_"), arguments: args });
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true); return result.structuredContent as any;
   };
   return { app, stores, origin, client, call };
@@ -30,7 +32,7 @@ async function fixture(readOnly = false) {
 
 it("handshakes over HTTP, discovers context/prompts and runs a workflow through actual MCP commands", async () => {
   const f = await fixture();
-  expect((await f.client.listTools()).tools.map(t => t.name)).toEqual(expect.arrayContaining(["pipelines.create", "pipelines.layout", "runs.start", "monitoring.snapshot", "servers.list"]));
+  expect((await f.client.listTools()).tools.map(t => t.name)).toEqual(expect.arrayContaining(["pipelines_create", "pipelines_layout", "runs_start", "monitoring_snapshot", "servers_list"]));
   const context = await f.client.readResource({ uri: "cyrene://context" });
   expect(JSON.stringify(context)).toContain("local-mcp"); expect(JSON.stringify(context)).not.toContain("test-api-token");
   expect((await f.client.listPrompts()).prompts[0].name).toBe("workflow-assistant");
@@ -50,19 +52,57 @@ it("handshakes over HTTP, discovers context/prompts and runs a workflow through 
   await f.call("runs.stop", { workspaceId: "local", runId: run.id, expectedRevision: observed.run.revision, idempotencyKey: "stop-check" });
   await f.app.runs.tick();
   expect((await f.call("runs.get", { workspaceId: "local", runId: run.id })).state).toBe("stopped");
-  expect((await f.client.callTool({ name: "monitoring.snapshot", arguments: { workspaceId: "other" } })).isError).toBe(true);
+  expect((await f.client.callTool({ name: "monitoring_snapshot", arguments: { workspaceId: "other" } })).isError).toBe(true);
 });
 
 it("rejects missing credentials, cross-origin and CSRF before protocol calls, and filters writes in read-only mode", async () => {
   const f = await fixture(true);
   expect((await f.client.listTools()).tools.every(t => t.annotations?.readOnlyHint)).toBe(true);
-  const result = await f.client.callTool({ name: "pipelines.create", arguments: { workspaceId: "local", document: diagnosticPipeline("forbidden"), idempotencyKey: "forbidden" } });
+  const result = await f.client.callTool({ name: "pipelines_create", arguments: { workspaceId: "local", document: diagnosticPipeline("forbidden"), idempotencyKey: "forbidden" } });
   expect(result.isError).toBe(true);
   for (const headers of [{}, { authorization: "Bearer wrong" }, { authorization: "Bearer test-api-token", origin: "https://evil.invalid" }]) {
     const response = await fetch(`${f.origin}/studio-mcp`, { method: "POST", headers: { "content-type": "application/json", ...headers } as Record<string, string>, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
     expect([401, 403]).toContain(response.status);
   }
   expect((await f.call("pipelines.list", { workspaceId: "local" })).items).toHaveLength(0);
+});
+
+it("edits a saved test draft's node config and connection through MCP", async () => {
+  const f = await fixture();
+  const doc = { schemaVersion: "cyrene.pipeline.v2" as const, id: "assistant-mcp-edit-fixture", name: "Assistant MCP edit fixture",
+    nodes: [createNode("dataset", "dataset"), createNode("training", "training")], edges: [],
+    presentation: { nodes: { dataset: { x: 80, y: 80 }, training: { x: 360, y: 80 } } } };
+  const created = await f.call("pipelines.create", { workspaceId: "local", document: doc, idempotencyKey: "assistant-create" });
+  const changed = await f.call("pipelines.patch", { workspaceId: "local", pipelineId: doc.id,
+    expectedGraphRevision: created.record.graphRevision, expectedLayoutRevision: created.record.layoutRevision,
+    idempotencyKey: "assistant-patch", edits: [
+      { op: "update_node", nodeId: "dataset", config: { datasetRef: "demo://datasets/assistant-test" } },
+      { op: "connect", edge: { id: "dataset-to-training", from: { node: "dataset", port: "dataset" }, to: { node: "training", port: "dataset" } } },
+    ] });
+  expect(changed.record.graphRevision).toBeGreaterThan(created.record.graphRevision);
+  const saved = await f.call("pipelines.get", { workspaceId: "local", pipelineId: doc.id });
+  expect(saved.document.nodes[0].config.datasetRef).toBe("demo://datasets/assistant-test");
+  expect(saved.document.edges).toEqual([{ id: "dataset-to-training", from: { node: "dataset", port: "dataset" }, to: { node: "training", port: "dataset" } }]);
+});
+
+it("MCP adds the same catalog nodes as the visual editor and shares configuration validation", async () => {
+  const f = await fixture();
+  const types = (await f.call("nodes.list_types", { workspaceId: "local" })).items.filter((item: any) => item.active);
+  expect(types.map((d: any) => `${d.type}@${d.version}`).sort()).toEqual(catalog.map(d => `${d.type}@${d.version}`).sort());
+  const document = { schemaVersion: "cyrene.pipeline.v2", id: "shared-nodes", name: "Shared nodes", nodes: [], edges: [], presentation: { nodes: {} } };
+  const created = await f.call("pipelines.create", { workspaceId: "local", document, idempotencyKey: "shared-create" });
+  const nodes = types.map((d: any) => ({ id: `node-${d.type}`, type: d.type, typeVersion: d.version, label: d.title, config: d.defaults,
+    ...(d.packageRef ? { packageRef: d.packageRef, portSnapshot: { inputs: d.inputs, outputs: d.outputs } } : {}) }));
+  await f.call("pipelines.patch", { workspaceId: "local", pipelineId: document.id,
+    expectedGraphRevision: created.record.graphRevision, expectedLayoutRevision: created.record.layoutRevision,
+    idempotencyKey: "shared-add", edits: nodes.map((node: any, index: number) => ({ op: "add_node", node, position: { x: index * 320, y: 80 } })) });
+  const saved = await f.call("pipelines.get", { workspaceId: "local", pipelineId: document.id });
+  expect(saved.document.nodes).toEqual(types.map((d: any) => createNode(d.type, `node-${d.type}`)));
+  const invalid = await f.client.callTool({ name: "pipelines_patch", arguments: { workspaceId: "local", pipelineId: document.id,
+    expectedGraphRevision: saved.graphRevision, expectedLayoutRevision: saved.layoutRevision, idempotencyKey: "shared-invalid",
+    edits: [{ op: "update_node", nodeId: "node-compute", config: { count: 0 } }] } });
+  expect(invalid.isError).toBe(true);
+  expect(await f.call("pipelines.get", { workspaceId: "local", pipelineId: document.id })).toEqual(saved);
 });
 
 it("resumes persisted diagnostic computation without recreating attempts and reports intentional failure honestly", async () => {
@@ -96,10 +136,10 @@ it("rechecks team credentials for every MCP request and token owners can revoke 
   await app.ready; await app.team.bootstrap("owner", "long-test-owner-password");
   const session = await app.team.login("owner", "long-test-owner-password");
   const { actor } = await app.team.authenticate(session.token, "browser");
-  const issued = await app.team.issueApiToken(actor, ["pipelines.read"]);
-  const listed = await app.team.listApiTokens(actor);
+  const issued = await app.team.issueApiToken({ actor, kind: "browser" }, ["pipelines.read"]);
+  const listed = await app.team.listApiTokens({ actor, kind: "browser" });
   expect(listed).toHaveLength(1); expect(JSON.stringify(listed)).not.toContain(issued.token); expect(JSON.stringify(listed)).not.toContain(issued.csrf);
-  expect(await app.team.revokeApiToken(listed[0].id, { ...actor, id: "another-user" })).toEqual({ revoked: false });
+  expect(await app.team.revokeApiToken(listed[0].id, { actor: { ...actor, id: "another-user" }, kind: "browser" })).toEqual({ revoked: false });
   await new Promise<void>(resolve => app.server.listen(0, "127.0.0.1", resolve));
   cleanup.push(async () => { app.server.closeAllConnections(); await new Promise<void>(resolve => app.server.close(() => resolve())); await stores.close(); });
   const origin = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -107,7 +147,7 @@ it("rechecks team credentials for every MCP request and token owners can revoke 
   await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/studio-mcp`), { requestInit: { headers: { authorization: `Bearer ${issued.token}` } } }));
   cleanup.push(() => client.close());
   expect((await client.listTools()).tools.every(tool => tool.annotations?.readOnlyHint)).toBe(true);
-  await app.team.revokeApiToken(listed[0].id, actor);
+  await app.team.revokeApiToken(listed[0].id, { actor, kind: "browser" });
   await expect(client.listTools()).rejects.toThrow();
-  expect(await app.team.listApiTokens(actor)).toEqual([]);
+  expect(await app.team.listApiTokens({ actor, kind: "browser" })).toEqual([]);
 });

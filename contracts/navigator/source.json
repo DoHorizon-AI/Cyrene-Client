@@ -1,0 +1,8 @@
+{
+  "navigatorRepository": "https://github.com/DoHorizon-AI/Cyrene-Navigator.git",
+  "developmentRef": "refs/remotes/origin/develop",
+  "commit": "2eea41df68099012aa093b1f40d22445a4396abf",
+  "sourcePath": "contracts/product/v1/work.openapi.json",
+  "snapshotPath": "work.openapi.json",
+  "sha256": "00bfe12b2b99617b3367af62de770ab5212bdb16ba841d8ced55aa00d996f4c0"
+}

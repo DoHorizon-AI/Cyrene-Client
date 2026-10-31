@@ -10,6 +10,7 @@ Cyrene Client 文档索引与设计说明 / Documentation index and architecture
 | [`node-settings.md`](node-settings.md) | Node configuration, Web Host connection, and service mapping / 节点配置与服务连接说明 |
 | [`integration-alerts.md`](integration-alerts.md) | Actor-scoped authorization alerts, opt-in browser notifications, renewal, and cloud observation boundaries / 按操作者范围过滤的授权通知、显式浏览器通知、续期与云观测边界 |
 | [`pipeline-editing-mcp.md`](pipeline-editing-mcp.md) | Pipeline editing stdio MCP tool protocol / 本机 stdio MCP 流水线编辑工具规范 |
+| [`navigator-assistant-integration.md`](navigator-assistant-integration.md) | Unified Navigator execution and dockable chat / Navigator 统一执行入口与可停靠对话界面 |
 | [`logging-and-errors.md`](logging-and-errors.md) | Cross-repository logging, error codes, and diagnostics specification / 跨仓日志、错误码与诊断规范 (草案 v0.1) |
 | [`client-architecture.md`](client-architecture.md) | Accepted unified client architecture, repository boundaries, native strategy, and implementation roadmap / 已接受的统一客户端架构、仓库边界、原生策略与实施路线 |
 | [`ui-module-layout.md`](ui-module-layout.md) | Platform and six-service UI module layout, independent build boundaries, and installer download contract / 平台与六服务 UI 模块目录、独立构建边界和安装器下载契约 |

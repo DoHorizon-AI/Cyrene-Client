@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalJson, createNativeControlArchive, createNativeControlReleaseDocuments, sha256 } from "../../tooling/release/native-control-component";
+import { canonicalJson, createNativeControlArchive, createNativeControlReleaseDocuments, inspectNativeControlRoot, sha256 } from "../../tooling/release/native-control-component";
 
 const directories: string[] = [];
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
@@ -107,5 +107,13 @@ describe("immutable native Control release builder", () => {
       artifactSizeBytes: 1,
       files: { "bin/cyrene-studio-control": `sha256:${"0".repeat(64)}` },
     })).toThrow("channel differs from its source branch");
+  });
+
+  it("rejects serialized native and slash-normalized checkout paths before packaging", async () => {
+    const fixture = await bundleFixture();
+    for (const path of [process.cwd(), process.cwd().replaceAll("\\", "/")]) {
+      await writeFile(join(fixture.bundle, "lib", "studio-control.mjs"), `const checkout=${JSON.stringify(path)};`);
+      await expect(inspectNativeControlRoot(fixture.bundle)).rejects.toThrow("checkout-path");
+    }
   });
 });

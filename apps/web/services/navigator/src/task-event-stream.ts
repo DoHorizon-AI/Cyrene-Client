@@ -8,18 +8,22 @@ import { NavigatorContractError, type JsonRecord, type NavigatorTaskEvent } from
 
 const MAX_FRAME_CHARACTERS = 1_048_576;
 const SAFE_TASK_EVENT_TYPES = new Set([
-  "task.aborted",
-  "task.cancel_requested",
-  "task.completed",
-  "task.created",
-  "task.failed",
-  "task.output",
-  "task.reasoning",
-  "task.status_changed",
-  "task.waiting_approval",
-  "task.waiting_input",
+  "status",
+  "text-delta",
+  "reasoning-delta",
+  "tool-call",
+  "tool-result",
+  "subagent-progress",
+  "subagent-assistant-delta",
+  "subagent-blocked",
+  "model-route",
+  "model-usage",
+  "permission",
+  "authorization-required",
+  "finish",
+  "error",
 ]);
-const SAFE_TASK_STATUSES = new Set(["queued", "running", "completed", "failed", "aborted", "waiting_approval", "waiting_input"]);
+const SAFE_TASK_STATUSES = new Set(["queued", "running", "completed", "failed", "aborted", "waiting_approval", "waiting_input", "awaiting_user_authorization"]);
 
 /**
  * Consume complete, sequenced SSE frames and ignore replayed event IDs.

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { pipeline as pipe } from "node:stream/promises";
-import { admittedLoopbackTarget, directProductId, directProductUpstreamPath, productPermission, type DirectProductId } from "../../tooling/product-proxy";
+import { admittedLoopbackTarget, directProductId, directProductUpstreamPath, navigatorPolicyWorkspace, navigatorProxyPolicy, navigatorProxyUpstreamPath, productBodyLimit, productPermission, type DirectProductId } from "../../tooling/product-proxy";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { StoreFactory } from "../../packages/control-storage";
@@ -25,7 +25,6 @@ import { monitoringCommands } from "../../packages/monitoring/contracts";
 import { streamRun } from "./run-stream";
 import { createMcpServer } from "../mcp/server";
 import { serveMcp } from "../mcp/http";
-import { assistantTurn, type AssistantProvider } from "./assistant";
 import { LocalDiagnosticAdapter, diagnosticDatabase, emptyDiagnosticDatabase } from "../../packages/local-diagnostics/adapter";
 import { createUpdateControl } from "./update-control";
 import { createUpdateHelper } from "./update-helper";
@@ -51,7 +50,6 @@ export interface ControlOptions {
   buildAdapter?: BuildAdapter;
   localDiagnostics?: boolean;
   mcpReadOnly?: boolean;
-  assistantProvider?: AssistantProvider;
   updateHelper?: (request: UpdateHelperRequest) => Promise<UpdateHelperResult>;
   workloadPlanHelper?: (request: WorkloadPlanHelperRequest) => Promise<WorkloadPlanResult>;
 }
@@ -137,7 +135,7 @@ export function createControlApplication(options: ControlOptions) {
   const workspaceId = options.workspaceId ?? "local";
   const localToken = randomBytes(32).toString("hex");
   const pipelineStore = options.stores.state("pipelines", pipelineDatabase, emptyPipelineDatabase);
-  const pipelines = new PipelineControl(pipelineStore, { maxReceipts: Infinity });
+  const pipelines = new PipelineControl(pipelineStore, { maxReceipts: 10_000, maxBytes: 64 * 1024 * 1024 });
   const servers = new ServerControl(options.stores.state("servers", databaseSchema, emptyDatabase), options.serverObservers);
   const team = new TeamControl(options.stores.state("team", teamDatabase, emptyTeamDatabase));
   const builds = new BuildControl(options.stores.state("builds", buildDatabase, emptyBuildDatabase), options.buildProfiles ?? [], options.buildAdapter);
@@ -152,7 +150,15 @@ export function createControlApplication(options: ControlOptions) {
   const updates = options.mode === "local" ? createUpdateControl(options.updateHelper ?? createUpdateHelper()) : undefined;
   const workloads = options.mode === "local" ? createWorkloadControl(options.workloadPlanHelper ?? createWorkloadPlanHelper()) : undefined;
   const failures = new Map<string, { count: number; until: number }>();
-  const activeAssistantTurns = new Set<string>();
+  let snapshotUntil = 0;
+  let sharedSnapshot: Promise<{ workspaceId: string; pipelineId: string; graphRevision: number; layoutRevision: number; updatedBy: string }[]> | undefined;
+  function pipelineSnapshot() {
+    if (!sharedSnapshot || Date.now() >= snapshotUntil) {
+      snapshotUntil = Infinity;
+      sharedSnapshot = pipelineStore.read().then(db => db.records.map(record => ({ workspaceId: record.workspaceId, pipelineId: record.document.id, graphRevision: record.graphRevision, layoutRevision: record.layoutRevision, updatedBy: record.updatedBy }))).finally(() => { snapshotUntil = Date.now() + 1500; });
+    }
+    return sharedSnapshot;
+  }
   function originBoundary(req: IncomingMessage) {
     // Do not trust Forwarded/X-Forwarded-* supplied by clients. The gateway
     // preserves Host and Origin, and only explicitly configured origins pass.
@@ -165,14 +171,14 @@ export function createControlApplication(options: ControlOptions) {
       const token = authorization.slice(7);
       if (options.mode === "local") {
         if (!options.localApiToken || !secretEqual(token, options.localApiToken)) throw new ControlError("UNAUTHENTICATED", "无效的本地 API 凭据。", 401);
-        return { actor: { id: "local-mcp", workspaceIds: [workspaceId], scopes: localScopes }, csrf: "", username: "local-mcp" };
+        return { actor: { id: "local-mcp", workspaceIds: [workspaceId], scopes: localScopes }, kind: "api" as const, csrf: "", username: "local-mcp" };
       }
       return team.authenticate(token, "api");
     }
     originBoundary(req);
     if (options.mode === "local") {
       if (mutation && (typeof req.headers["x-studio-control-token"] !== "string" || !secretEqual(req.headers["x-studio-control-token"], localToken))) throw new ControlError("FORBIDDEN", "控制会话已失效，请重新连接。", 403);
-      return { actor: { id: "local-user", workspaceIds: [workspaceId], scopes: localScopes }, csrf: localToken, username: "local-user" };
+      return { actor: { id: "local-user", workspaceIds: [workspaceId], scopes: localScopes }, kind: "browser" as const, csrf: localToken, username: "local-user" };
     }
     const context = await team.authenticate(cookie(req), "browser");
     if (mutation && (typeof req.headers["x-studio-control-token"] !== "string" || !secretEqual(req.headers["x-studio-control-token"], context.csrf))) throw new ControlError("FORBIDDEN", "缺少有效的会话 CSRF 凭据。", 403);
@@ -182,7 +188,7 @@ export function createControlApplication(options: ControlOptions) {
     const csrf = req.headers["x-csrf-token"];
     if (typeof csrf !== "string" || !secretEqual(csrf, localToken)) throw new ControlError("FORBIDDEN", "缺少有效的本地会话 CSRF 凭据。", 403);
   }
-  const groups = new Map<string, { commands: Record<string, { readOnly: boolean; scope?: string; description?: string }>; execute(raw: unknown, actor: Actor): Promise<unknown> }>([
+  const groups = new Map<string, { commands: Record<string, { readOnly: boolean; scope?: string; requiredScopes?: readonly string[]; description?: string }>; execute(raw: unknown, actor: Actor): Promise<unknown> }>([
     ["/studio-pipelines", { commands: pipelineCommands, execute: (raw, actor) => pipelines.execute(raw, actor) }],
     ["/studio-control", { commands, execute: (raw, actor) => servers.execute(raw, actor) }],
     ["/studio-monitoring", { commands: monitoringCommands, execute: (raw, actor) => monitoring.execute(raw, actor) }],
@@ -192,7 +198,7 @@ export function createControlApplication(options: ControlOptions) {
   ]);
   if (updates) groups.set("/studio-updates", { commands: updates.commands, execute: (raw, actor) => updates.execute(raw, actor) });
   if (workloads) groups.set("/studio-workloads", { commands: workloads.commands, execute: (raw, actor) => workloads.execute(raw, actor) });
-  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([name, command]) => (name !== "monitoring.snapshot" || actor.scopes.includes("pipelines.read")) && actor.scopes.includes(command.scope ?? `${prefix === "/studio-runs" ? "runs" : "pipelines"}.${command.readOnly ? "read" : "write"}`)).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
+  const permittedCommands = (prefix: string, definitions: Record<string, { readOnly: boolean; scope?: string; requiredScopes?: readonly string[]; description?: string }>, actor: Actor) => Object.entries(definitions).filter(([, command]) => (command.requiredScopes ?? [command.scope!]).every(scope => actor.scopes.includes(scope))).map(([name, command]) => ({ name, readOnly: command.readOnly, description: command.description, endpoint: `${prefix}/v1/commands` }));
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const path = (req.url ?? "").split("?")[0];
@@ -200,18 +206,7 @@ export function createControlApplication(options: ControlOptions) {
       await ready;
       if (path === "/studio-mcp/v1/info" && req.method === "GET") {
         const { actor } = await authorize(req, false);
-        return send(res, 200, { endpoint: "/studio-mcp", protocolVersion: "2025-11-25", transport: "streamable-http", readOnly: !!options.mcpReadOnly, diagnostics: !!options.localDiagnostics, assistant: { configured: !!options.assistantProvider, model: options.assistantProvider?.model }, actor });
-      }
-      if (path === "/studio-assistant/v1/turn" && req.method === "POST") {
-        const { actor } = await authorize(req, true);
-        if (activeAssistantTurns.has(actor.id) || activeAssistantTurns.size >= 16) throw new ControlError("ASSISTANT_BUSY", "助手仍在处理请求，请稍后重试。", 429);
-        const input = await readJson(req, 262144);
-        if (activeAssistantTurns.has(actor.id) || activeAssistantTurns.size >= 16) throw new ControlError("ASSISTANT_BUSY", "助手仍在处理请求，请稍后重试。", 429);
-        activeAssistantTurns.add(actor.id);
-        const abort = new AbortController(), closed = () => abort.abort();
-        res.once("close", closed);
-        try { return send(res, 200, await assistantTurn(input, actor, options.assistantProvider, mcp(actor), AbortSignal.any([abort.signal, AbortSignal.timeout(25000)]))); }
-        finally { activeAssistantTurns.delete(actor.id); res.off("close", closed); }
+        return send(res, 200, { endpoint: "/studio-mcp", protocolVersion: "2025-11-25", transport: "streamable-http", readOnly: !!options.mcpReadOnly, diagnostics: !!options.localDiagnostics, actor });
       }
       if (path === "/studio-mcp") {
         // Validate Origin even with bearer credentials; browser POSTs need CSRF.
@@ -243,9 +238,9 @@ export function createControlApplication(options: ControlOptions) {
         const push = async () => {
           if (pending || closed) return; pending = true;
           try {
-            const { actor } = await authorize(req, false), db = await pipelineStore.read();
+            const { actor } = await authorize(req, false), snapshot = await pipelineSnapshot();
             if (!actor.scopes.includes("pipelines.read")) throw new ControlError("FORBIDDEN", "订阅权限已失效。", 403);
-            const records = db.records.filter(record => actor.workspaceIds.includes(record.workspaceId)).map(record => ({ workspaceId: record.workspaceId, pipelineId: record.document.id, graphRevision: record.graphRevision, layoutRevision: record.layoutRevision, updatedBy: record.updatedBy }));
+            const records = snapshot.filter(record => actor.workspaceIds.includes(record.workspaceId));
             const data = JSON.stringify(records), next = createHash("sha256").update(data).digest("hex");
             if (!closed && next !== cursor) { cursor = next; res.write(`id: ${next}\nevent: snapshot\ndata: ${data}\n\n`); }
             else if (!closed) res.write(": heartbeat\n\n");
@@ -262,29 +257,29 @@ export function createControlApplication(options: ControlOptions) {
           catch (error) { if (error instanceof ControlError && error.status === 401) return send(res, 200, { mode: options.mode, authenticated: false }); throw error; }
         }
         if (path === "/studio-team/v1/login" && req.method === "POST" && options.mode === "team") {
-          const key = req.socket.remoteAddress ?? "unknown", now = Date.now();
+          const input = z.object({ username: z.string().max(100), password: z.string().max(256) }).strict().parse(await readJson(req, 4096));
+          const key = input.username, now = Date.now();
           for (const [id, failure] of failures) if (failure.until <= now) failures.delete(id);
           if ((failures.get(key)?.count ?? 0) >= 10 || failures.size >= 10000) throw new ControlError("RATE_LIMITED", "登录尝试过多，请稍后重试。", 429);
           failures.set(key, { count: (failures.get(key)?.count ?? 0) + 1, until: now + 60_000 });
-          const input = z.object({ username: z.string(), password: z.string() }).strict().parse(await readJson(req, 4096));
           const issued = await team.login(input.username, input.password);
           failures.delete(key);
-          const secure = origins.every(origin => origin.startsWith("https:"));
+          const secure = origins.some(origin => new URL(origin).host === req.headers.host && origin.startsWith("https:"));
           res.setHeader("set-cookie", `${cookieName}=${issued.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${secure ? "; Secure" : ""}`);
           return send(res, 200, { token: issued.csrf, expiresAt: issued.expiresAt });
         }
-        const { actor } = await authorize(req, req.method !== "GET");
+        const context = await authorize(req, req.method !== "GET"), { actor } = context;
         if (path === "/studio-team/v1/logout" && req.method === "POST") { await team.logout(cookie(req)); res.setHeader("set-cookie", `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`); return send(res, 200, { ok: true }); }
         if (path === "/studio-team/v1/members" && req.method === "GET") return send(res, 200, { items: await team.list(actor) });
         if (path === "/studio-team/v1/members" && req.method === "POST") return send(res, 201, await team.createMember(await readJson(req, 16384), actor));
         if (path === "/studio-team/v1/tokens" && req.method === "POST") {
           const input = z.object({ scopes: z.array(z.string()).max(20) }).strict().parse(await readJson(req, 4096));
-          return send(res, 201, await team.issueApiToken(actor, input.scopes));
+          return send(res, 201, await team.issueApiToken(context, input.scopes));
         }
-        if (path === "/studio-team/v1/tokens" && req.method === "GET") return send(res, 200, { items: await team.listApiTokens(actor) });
+        if (path === "/studio-team/v1/tokens" && req.method === "GET") return send(res, 200, { items: await team.listApiTokens(context) });
         if (path === "/studio-team/v1/tokens/revoke" && req.method === "POST") {
           const { id } = z.object({ id: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(await readJson(req, 4096));
-          return send(res, 200, await team.revokeApiToken(id, actor));
+          return send(res, 200, await team.revokeApiToken(id, context));
         }
       }
       for (const [prefix, group] of groups) {
@@ -301,6 +296,7 @@ export function createControlApplication(options: ControlOptions) {
         await authorize(req, false); return send(res, 200, { configured: !!options.navigatorUrl, target: options.navigatorUrl ?? null });
       }
       if (path.startsWith("/api")) {
+        const navigatorPolicy = navigatorProxyPolicy(req.method ?? "GET", path);
         const permission = productPermission(req.method ?? "GET", path);
         const legacy = allowedSettingsRequest(req.method ?? "GET", path);
         if (!permission && !legacy) throw new ControlError("STUDIO_SETTINGS_ONLY", "此代理只允许节点设置接口。", 403);
@@ -318,13 +314,11 @@ export function createControlApplication(options: ControlOptions) {
         // Product settings already use Navigator's CSRF protocol. Team writes
         // additionally require Studio editor permission; browser Origin is checked.
         if (!permission && !path.startsWith("/api/v1/auth/") && req.method !== "GET" && !actor.scopes.includes("pipelines.write")) throw new ControlError("FORBIDDEN", "没有设置编辑权限。", 403);
-        const productWorkspace = path.match(/^\/api\/v1\/navigator\/harness\/workspaces\/([^/]+)\/sessions$/)?.[1];
-        if (productWorkspace && !actor.workspaceIds.includes(productWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
-        const workWorkspace = path.match(/^\/api\/v1\/workspaces\/([^/]+)\/work\//)?.[1];
-        if (workWorkspace && !actor.workspaceIds.includes(workWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
-        if (path === "/api/v1/navigator/approvals" || path.startsWith("/api/v1/navigator/approvals/")
-          || path === "/api/v1/navigator/tasks" || path.startsWith("/api/v1/navigator/tasks/")) {
-          if (!actor.workspaceIds.includes(workspaceId)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
+        const targetWorkspace = navigatorPolicy && navigatorPolicyWorkspace(navigatorPolicy, path, workspaceId);
+        if (targetWorkspace && !actor.workspaceIds.includes(targetWorkspace)) throw new ControlError("FORBIDDEN", "没有此工作空间权限。", 403);
+        if (navigatorPolicy?.browserOnly) {
+          const context = await authorize(req, true);
+          if (context.kind !== "browser") throw new ControlError("FORBIDDEN", "模型凭据配置需要浏览器会话。", 403);
         }
         if (localSessionCompatibility) {
           if (directMutation) authorizeDirectProductMutation(req);
@@ -365,23 +359,27 @@ export function createControlApplication(options: ControlOptions) {
         }
         let body: Buffer | undefined;
         if (req.method !== "GET" && req.method !== "HEAD") {
-          const limit = /^\/api\/v1\/catalyst\/datasets\/[^/]+\/preparations$/.test(path)
-            || /^\/api\/v1\/catalyst\/api\/v1\/datasets\/[^/]+\/sources$/.test(path) ? 32 * 1024 * 1024
-            : /^\/api\/v1\/catalyst\/api\/v1\/datasets\/[^/]+\/sources\/batch$/.test(path) ? 129 * 1024 * 1024
-            : path === "/api/v1/echo/api/v1/session-artifacts" ? 16 * 1024 * 1024
-            : /^\/api\/v1\/workspaces\/[^/]+\/work\/attachments$/.test(path) ? 16 * 1024 * 1024
-              : 1_048_576;
+          const limit = productBodyLimit(path, navigatorPolicy);
           let bytes = 0; const chunks: Buffer[] = [];
           for await (const chunk of req) { const part = Buffer.from(chunk); bytes += part.length; if (bytes > limit) throw new ControlError("TOO_LARGE", "请求超过大小限制。", 413); chunks.push(part); }
           if (chunks.length) body = Buffer.concat(chunks);
+        }
+        if (navigatorPolicy?.validateBody && body) {
+          let input: unknown;
+          try { input = JSON.parse(body.toString("utf8")); } catch { throw new ControlError("INVALID_JSON", "请求不是有效 JSON。"); }
+          const violation = navigatorPolicy.validateBody(input, options.mode);
+          if (violation) throw new ControlError(violation.code, violation.message, violation.status);
         }
         const abort = new AbortController();
         const closed = () => abort.abort(); res.once("close", closed);
         const deadline = setTimeout(() => abort.abort(), 10000);
         let upstream: Response;
+        const navigatorUrl = navigatorPolicy
+          ? navigatorProxyUpstreamPath(req.url ?? path, workspaceId, navigatorPolicy)
+          : navigatorUpstreamPath(req.url ?? path, workspaceId);
         const upstreamUrl = directTarget
           ? `${directTarget.origin}${directProductUpstreamPath(req.url ?? path)}`
-          : `${options.navigatorUrl}${navigatorUpstreamPath(req.url ?? path, workspaceId)}`;
+          : `${options.navigatorUrl}${navigatorUrl}`;
         try { upstream = await fetch(upstreamUrl, { method: req.method, headers, body: body ? new Uint8Array(body) : undefined, redirect: "manual", signal: abort.signal }); }
         catch (error) { res.off("close", closed); throw error; }
         finally { clearTimeout(deadline); }
@@ -404,8 +402,8 @@ export function createControlApplication(options: ControlOptions) {
       }
       throw new ControlError("NOT_FOUND", "不存在此接口。", 404);
     } catch (error) {
-      const failure = error instanceof ControlError ? error : error instanceof z.ZodError ? new ControlError("INVALID_INPUT", "请求不符合接口契约。") : new ControlError("CONTROL_UNAVAILABLE", "控制操作未完成，请核对状态后重试。", 503);
-      if (!res.headersSent) send(res, failure.status, { error: { code: failure.code, message: failure.message } }); else res.end();
+      const failure = error instanceof ControlError ? error : error instanceof z.ZodError ? new ControlError("INVALID_INPUT", "请求不符合接口契约。") : new ControlError("CONTROL_UNAVAILABLE", "控制操作结果未知，请读取当前状态；重试时沿用同一个幂等键。", 503, undefined, "unknown");
+      if (!res.headersSent) send(res, failure.status, { error: { code: failure.code, message: failure.message, outcome: failure.outcome, ...(failure.details ? { details: failure.details } : {}) } }); else res.end();
     }
   };
   const server = createServer((req, res) => { void handler(req, res); });

@@ -17,7 +17,7 @@ export const nodeSchema = z.object({
       digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
       size_bytes: z.number().int().nonnegative(), kind: z.string().min(1).max(128),
       manifest_digest: z.string().regex(/^sha256:[0-9a-f]{64}$/).nullish(),
-    }).strict().optional(),
+    }).strict().refine(value => value.uri === `artifact://sha256/${value.digest.slice(7)}`, "制品 URI 与摘要不一致").optional(),
   }).strict().optional(),
 }).strict();
 const endpoint = z.object({ node: id, port: z.string().min(1).max(100) }).strict();

@@ -7,4 +7,5 @@ export const productPages: { id: RouteId; zh: string; en: string }[] = [
   { id: "integrations", zh: "授权与云观测", en: "Authorization & cloud" },
   { id: "chat", zh: "模型对话", en: "Model chat" }, { id: "overview", zh: "服务状态", en: "Service status" }, { id: "settings", zh: "连接与凭据", en: "Connections & credentials" },
   { id: "assistant", zh: "工作助手", en: "Work assistant" },
+  { id: "installer", zh: "安装与组件", en: "Install & Components" },
 ];

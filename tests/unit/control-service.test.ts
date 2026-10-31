@@ -102,8 +102,8 @@ describe("independent control service", () => {
     expect((await a.request("/studio-team/v1/members", { method: "POST", headers: { "content-type": "application/json", cookie }, body })).status).toBe(403);
     expect((await a.request("/studio-team/v1/members", { method: "POST", headers: { "content-type": "application/json", cookie, "x-studio-control-token": session.token }, body })).status).toBe(201);
     const readerSession = await a.team.login("reader", "reader-long-test-password"), actor = (await a.team.authenticate(readerSession.token, "browser")).actor;
-    await expect(a.team.issueApiToken(actor, ["runs.write"])).rejects.toMatchObject({ code: "FORBIDDEN" });
-    const issued = await a.team.issueApiToken(actor, ["pipelines.read"]);
+    await expect(a.team.issueApiToken({ actor, kind: "browser" }, ["runs.write"])).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const issued = await a.team.issueApiToken({ actor, kind: "browser" }, ["pipelines.read"]);
     const remote = new RemoteControl(a.origin, issued.token);
     expect((await remote.session()).scopes).toEqual(["pipelines.read"]);
     const directory = await (await fetch(`${a.origin}/studio-commands/v1/session`, { headers: { authorization: `Bearer ${issued.token}` } })).json();

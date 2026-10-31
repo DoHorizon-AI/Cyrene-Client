@@ -1,0 +1,893 @@
+/* ---------------------------------------------------------------------------
+ * Module: services/installer/src/installer.css
+ * Role: Scoped styles for the Cyrene Installer UI.
+ * 中文：模块职责：Cyrene 安装器 UI 的作用域样式。
+ *
+ * Design rules (from design-tokens.css):
+ * - Dark base using --dh-bg-* surfaces
+ * - Brand gradient only on .installer-horizon, workflow progress
+ * - Hollow diamond only on horizons and progress meters
+ * - No heavy shadows; separate with hairlines (--dh-border-subtle)
+ * - Small radii: 2–6px
+ * - One filled primary button per workflow step
+ * --------------------------------------------------------------------------- */
+
+/* ── Shell ──────────────────────────────────────────────────────────────── */
+
+.installer-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  background: var(--dh-bg-canvas);
+  color: var(--dh-text-primary);
+  font-family: var(--dh-font-sans);
+  font-size: var(--dh-fs-base);
+  line-height: var(--dh-lh-body);
+}
+
+/* ── NOT_CONNECTED banner ───────────────────────────────────────────────── */
+
+.installer-not-connected {
+  display: flex;
+  align-items: center;
+  gap: var(--dh-space-2);
+  padding: var(--dh-space-2) var(--dh-space-4);
+  background: var(--dh-warning-soft);
+  border-bottom: 1px solid var(--dh-warning-line);
+  color: var(--dh-warning);
+  font-size: var(--dh-fs-xs);
+  font-weight: 500;
+}
+
+/* ── Step progress (horizon) ────────────────────────────────────────────── */
+
+.installer-steps {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: var(--dh-space-4) var(--dh-space-6);
+  border-bottom: 1px solid var(--dh-border-subtle);
+  background: var(--dh-bg-sheet);
+  overflow-x: auto;
+}
+
+.installer-step {
+  display: flex;
+  align-items: center;
+  gap: var(--dh-space-2);
+  flex-shrink: 0;
+}
+
+.installer-step__marker {
+  width: 20px;
+  height: 20px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Hollow diamond for inactive steps */
+.installer-step__marker::before {
+  content: "";
+  display: block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--dh-border-strong);
+  border-radius: var(--dh-radius-xs);
+  transform: rotate(45deg);
+  background: transparent;
+}
+
+/* Filled diamond for active step */
+.installer-step--active .installer-step__marker::before {
+  background: var(--dh-gradient-mark);
+  border-color: transparent;
+}
+
+/* Checkmark for completed steps */
+.installer-step--done .installer-step__marker::before {
+  background: var(--dh-success);
+  border-color: transparent;
+}
+
+.installer-step__label {
+  font-size: var(--dh-fs-sm);
+  color: var(--dh-text-tertiary);
+  white-space: nowrap;
+}
+
+.installer-step--active .installer-step__label {
+  color: var(--dh-text-primary);
+  font-weight: 500;
+}
+
+.installer-step--done .installer-step__label {
+  color: var(--dh-success);
+}
+
+.installer-step__connector {
+  flex: 1 0 24px;
+  height: 1px;
+  background: var(--dh-border-subtle);
+  margin: 0 var(--dh-space-2);
+}
+
+/* ── Two-pane layout ────────────────────────────────────────────────────── */
+
+.installer-body {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  flex: 1;
+  overflow: hidden;
+}
+
+@media (max-width: 800px) {
+  .installer-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.installer-sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--dh-border-subtle);
+  background: var(--dh-bg-sheet);
+  overflow-y: auto;
+}
+
+.installer-main {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: var(--dh-space-6);
+  gap: var(--dh-space-6);
+}
+
+/* ── Tab nav (sidebar) ──────────────────────────────────────────────────── */
+
+.installer-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--dh-border-subtle);
+}
+
+.installer-tab {
+  flex: 1;
+  padding: var(--dh-space-3) var(--dh-space-2);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--dh-text-tertiary);
+  font-size: var(--dh-fs-sm);
+  font-family: var(--dh-font-sans);
+  cursor: pointer;
+  transition: color var(--dh-dur-fast) var(--dh-ease),
+    border-color var(--dh-dur-fast) var(--dh-ease);
+  white-space: nowrap;
+}
+
+.installer-tab:hover {
+  color: var(--dh-text-secondary);
+}
+
+.installer-tab--active {
+  color: var(--dh-text-primary);
+  border-bottom-color: var(--dh-orchid);
+}
+
+.installer-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--dh-focus-ring);
+}
+
+/* ── Workload card ──────────────────────────────────────────────────────── */
+
+.installer-workloads {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-3);
+  padding: var(--dh-space-4);
+}
+
+.installer-workload-card {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: var(--dh-space-3);
+  padding: var(--dh-space-4);
+  background: var(--dh-bg-raised);
+  border: 1px solid var(--dh-border);
+  border-radius: var(--dh-radius-md);
+  cursor: pointer;
+  transition: border-color var(--dh-dur-fast) var(--dh-ease),
+    background var(--dh-dur-fast) var(--dh-ease);
+}
+
+.installer-workload-card:hover {
+  border-color: var(--dh-border-hover);
+  background: var(--dh-bg-hover);
+}
+
+.installer-workload-card--selected {
+  border-color: var(--dh-orchid);
+  background: var(--dh-bg-hover);
+}
+
+.installer-workload-card:focus-within {
+  outline: none;
+  box-shadow: var(--dh-focus-ring);
+}
+
+.installer-workload-card__check {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.installer-workload-card__title {
+  font-size: var(--dh-fs-md);
+  font-weight: 600;
+  font-family: var(--dh-font-display);
+  margin: 0 0 var(--dh-space-1);
+  color: var(--dh-text-primary);
+}
+
+.installer-workload-card__desc {
+  font-size: var(--dh-fs-sm);
+  color: var(--dh-text-secondary);
+  margin: 0 0 var(--dh-space-2);
+}
+
+.installer-workload-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dh-space-1);
+}
+
+/* ── Affinity chips ─────────────────────────────────────────────────────── */
+
+.installer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--dh-space-2);
+  border-radius: var(--dh-radius-pill);
+  font-size: var(--dh-fs-xs);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.installer-chip--required {
+  background: var(--dh-danger-soft);
+  color: var(--dh-danger);
+  border: 1px solid var(--dh-danger-line);
+}
+
+.installer-chip--recommended {
+  background: var(--dh-info-soft);
+  color: var(--dh-info);
+  border: 1px solid var(--dh-info-line);
+}
+
+.installer-chip--optional {
+  background: var(--dh-neutral-soft);
+  color: var(--dh-text-tertiary);
+  border: 1px solid var(--dh-border);
+}
+
+/* ── Component list (Individual Components tab) ─────────────────────────── */
+
+.installer-component-search {
+  display: flex;
+  align-items: center;
+  gap: var(--dh-space-2);
+  padding: var(--dh-space-3) var(--dh-space-4);
+  border-bottom: 1px solid var(--dh-border-subtle);
+}
+
+.installer-component-search input {
+  flex: 1;
+  background: var(--dh-bg-field);
+  border: 1px solid var(--dh-border);
+  border-radius: var(--dh-radius-md);
+  padding: var(--dh-space-2) var(--dh-space-3);
+  color: var(--dh-text-primary);
+  font-size: var(--dh-fs-base);
+  font-family: var(--dh-font-sans);
+  height: var(--dh-control-h);
+}
+
+.installer-component-search input::placeholder {
+  color: var(--dh-text-placeholder);
+}
+
+.installer-component-search input:focus {
+  outline: none;
+  border-color: var(--dh-orchid);
+  box-shadow: var(--dh-focus-ring);
+}
+
+.installer-filter-bar {
+  display: flex;
+  gap: var(--dh-space-1);
+  padding: var(--dh-space-2) var(--dh-space-4);
+  border-bottom: 1px solid var(--dh-border-subtle);
+  overflow-x: auto;
+}
+
+.installer-filter-btn {
+  padding: 3px var(--dh-space-3);
+  background: none;
+  border: 1px solid var(--dh-border);
+  border-radius: var(--dh-radius-pill);
+  color: var(--dh-text-tertiary);
+  font-size: var(--dh-fs-xs);
+  font-family: var(--dh-font-sans);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--dh-dur-fast), border-color var(--dh-dur-fast),
+    background var(--dh-dur-fast);
+}
+
+.installer-filter-btn:hover {
+  border-color: var(--dh-border-hover);
+  color: var(--dh-text-secondary);
+}
+
+.installer-filter-btn--active {
+  border-color: var(--dh-orchid);
+  color: var(--dh-orchid);
+  background: var(--dh-info-soft);
+}
+
+.installer-component-list {
+  display: flex;
+  flex-direction: column;
+  padding: var(--dh-space-2) 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.installer-component-row {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: start;
+  gap: var(--dh-space-3);
+  padding: var(--dh-space-3) var(--dh-space-4);
+  border-bottom: 1px solid var(--dh-border-subtle);
+  cursor: pointer;
+  transition: background var(--dh-dur-fast) var(--dh-ease);
+}
+
+.installer-component-row:hover {
+  background: var(--dh-bg-hover);
+}
+
+.installer-component-row--selected {
+  background: var(--dh-bg-selected);
+}
+
+.installer-component-row--incompatible {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.installer-component-row__name {
+  font-size: var(--dh-fs-base);
+  font-weight: 500;
+  color: var(--dh-text-primary);
+  margin: 0;
+  word-break: break-word;
+}
+
+.installer-component-row__desc {
+  font-size: var(--dh-fs-xs);
+  color: var(--dh-text-tertiary);
+  margin: 2px 0 0;
+}
+
+.installer-component-row__meta {
+  font-size: var(--dh-fs-xs);
+  color: var(--dh-text-tertiary);
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* ── Detail pane (right side) ───────────────────────────────────────────── */
+
+.installer-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-4);
+}
+
+.installer-detail__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-1);
+}
+
+.installer-detail__eyebrow {
+  font-family: var(--dh-font-display);
+  font-size: var(--dh-fs-xs);
+  font-weight: 700;
+  letter-spacing: var(--dh-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--dh-text-tertiary);
+}
+
+.installer-detail__title {
+  font-family: var(--dh-font-display);
+  font-size: var(--dh-fs-xl);
+  font-weight: 600;
+  margin: 0;
+  color: var(--dh-text-primary);
+}
+
+.installer-detail__desc {
+  font-size: var(--dh-fs-base);
+  color: var(--dh-text-secondary);
+  margin: 0;
+}
+
+/* Brand horizon divider */
+.installer-horizon {
+  height: 2px;
+  background: var(--dh-gradient);
+  border: none;
+  margin: 0;
+}
+
+/* ── Installation plan ───────────────────────────────────────────────────── */
+
+.installer-plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-4);
+}
+
+.installer-plan__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-2);
+}
+
+.installer-plan__section-title {
+  font-size: var(--dh-fs-xs);
+  font-weight: 700;
+  letter-spacing: var(--dh-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--dh-text-tertiary);
+  font-family: var(--dh-font-display);
+}
+
+.installer-plan__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dh-space-3);
+  padding: var(--dh-space-3);
+  background: var(--dh-bg-raised);
+  border: 1px solid var(--dh-border-subtle);
+  border-radius: var(--dh-radius-md);
+}
+
+.installer-plan__item-name {
+  font-size: var(--dh-fs-base);
+  font-weight: 500;
+  flex: 1;
+  word-break: break-word;
+}
+
+.installer-plan__item-meta {
+  font-size: var(--dh-fs-xs);
+  color: var(--dh-text-tertiary);
+  white-space: nowrap;
+}
+
+.installer-plan__reason {
+  font-size: var(--dh-fs-xs);
+  color: var(--dh-text-tertiary);
+  margin: 2px 0 0;
+}
+
+.installer-plan__meta-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--dh-space-3);
+}
+
+@media (max-width: 600px) {
+  .installer-plan__meta-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.installer-plan__meta-card {
+  padding: var(--dh-space-3);
+  background: var(--dh-bg-raised);
+  border: 1px solid var(--dh-border-subtle);
+  border-radius: var(--dh-radius-md);
+}
+
+.installer-plan__meta-label {
+  font-size: var(--dh-fs-xs);
+  color: var(--dh-text-tertiary);
+  margin-bottom: var(--dh-space-1);
+}
+
+.installer-plan__meta-value {
+  font-size: var(--dh-fs-sm);
+  color: var(--dh-text-primary);
+  font-family: var(--dh-font-mono);
+  word-break: break-all;
+}
+
+.installer-plan__size {
+  font-family: var(--dh-font-display);
+  font-size: var(--dh-fs-2xl);
+  font-weight: 600;
+  color: var(--dh-text-primary);
+}
+
+.installer-plan__size-label {
+  font-size: var(--dh-fs-xs);
+  color: var(--dh-text-tertiary);
+}
+
+.installer-plan__tbd {
+  color: var(--dh-text-tertiary);
+  font-style: italic;
+  font-size: var(--dh-fs-sm);
+}
+
+.installer-plan__limitation-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-1);
+}
+
+.installer-plan__limitation-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dh-space-2);
+  font-size: var(--dh-fs-sm);
+  color: var(--dh-text-secondary);
+}
+
+.installer-plan__limitation-list li::before {
+  content: "·";
+  color: var(--dh-text-tertiary);
+  flex-shrink: 0;
+}
+
+/* ── Footer / actions ────────────────────────────────────────────────────── */
+
+.installer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--dh-space-3);
+  padding: var(--dh-space-4) var(--dh-space-6);
+  border-top: 1px solid var(--dh-border-subtle);
+  background: var(--dh-bg-sheet);
+  position: sticky;
+  bottom: 0;
+}
+
+.installer-footer__summary {
+  flex: 1;
+  font-size: var(--dh-fs-sm);
+  color: var(--dh-text-secondary);
+}
+
+/* ── Component management ────────────────────────────────────────────────── */
+
+.installer-mgmt-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-3);
+}
+
+.installer-mgmt-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-2);
+  padding: var(--dh-space-4);
+  background: var(--dh-bg-raised);
+  border: 1px solid var(--dh-border);
+  border-radius: var(--dh-radius-md);
+}
+
+.installer-mgmt-card__header {
+  display: flex;
+  align-items: center;
+  gap: var(--dh-space-3);
+}
+
+.installer-mgmt-card__name {
+  flex: 1;
+  font-size: var(--dh-fs-md);
+  font-weight: 600;
+  color: var(--dh-text-primary);
+}
+
+.installer-mgmt-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dh-space-2);
+  margin-top: var(--dh-space-1);
+}
+
+.installer-mgmt-card__guard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-1);
+  padding: var(--dh-space-2) var(--dh-space-3);
+  background: var(--dh-warning-soft);
+  border: 1px solid var(--dh-warning-line);
+  border-radius: var(--dh-radius-sm);
+  font-size: var(--dh-fs-xs);
+  color: var(--dh-warning);
+}
+
+.installer-mgmt-card__guard-binding {
+  font-weight: 500;
+}
+
+/* ── Affinity impact warning ─────────────────────────────────────────────── */
+
+.installer-affinity-warning {
+  padding: var(--dh-space-3);
+  background: var(--dh-warning-soft);
+  border: 1px solid var(--dh-warning-line);
+  border-radius: var(--dh-radius-md);
+  font-size: var(--dh-fs-xs);
+  color: var(--dh-warning);
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-1);
+}
+
+.installer-affinity-warning__list {
+  list-style: none;
+  padding: 0;
+  margin: var(--dh-space-1) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.installer-affinity-warning__list li::before {
+  content: "– ";
+  color: var(--dh-warning);
+}
+
+/* ── Status pill (installed status) ─────────────────────────────────────── */
+
+.installer-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px var(--dh-space-2);
+  border-radius: var(--dh-radius-pill);
+  font-size: var(--dh-fs-xs);
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.installer-status-pill::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.installer-status-pill--running {
+  color: var(--dh-success);
+  background: var(--dh-success-soft);
+}
+
+.installer-status-pill--failed {
+  color: var(--dh-danger);
+  background: var(--dh-danger-soft);
+}
+
+.installer-status-pill--installed,
+.installer-status-pill--configured,
+.installer-status-pill--enabled,
+.installer-status-pill--verified {
+  color: var(--dh-info);
+  background: var(--dh-info-soft);
+}
+
+.installer-status-pill--available,
+.installer-status-pill--not_installed {
+  color: var(--dh-text-tertiary);
+  background: var(--dh-neutral-soft);
+}
+
+/* ── Selection summary chip ──────────────────────────────────────────────── */
+
+.installer-selection-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--dh-space-2);
+  padding: var(--dh-space-2) var(--dh-space-4);
+  border-top: 1px solid var(--dh-border-subtle);
+  background: var(--dh-bg-inset);
+  font-size: var(--dh-fs-xs);
+  color: var(--dh-text-secondary);
+}
+
+.installer-selection-summary__count {
+  font-weight: 600;
+  color: var(--dh-text-primary);
+  font-family: var(--dh-font-display);
+}
+
+/* ── Uninstall confirm dialog ────────────────────────────────────────────── */
+
+.installer-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.installer-confirm-dialog {
+  background: var(--dh-bg-sheet);
+  border: 1px solid var(--dh-border-strong);
+  border-radius: var(--dh-radius-lg);
+  padding: var(--dh-space-6);
+  max-width: 440px;
+  width: 90%;
+  box-shadow: var(--dh-shadow-overlay);
+  display: flex;
+  flex-direction: column;
+  gap: var(--dh-space-4);
+}
+
+.installer-confirm-dialog__title {
+  font-family: var(--dh-font-display);
+  font-size: var(--dh-fs-lg);
+  font-weight: 600;
+  margin: 0;
+  color: var(--dh-text-primary);
+}
+
+.installer-confirm-dialog__body {
+  font-size: var(--dh-fs-sm);
+  color: var(--dh-text-secondary);
+  margin: 0;
+}
+
+.installer-confirm-dialog__data-notice {
+  padding: var(--dh-space-3);
+  border-radius: var(--dh-radius-md);
+  font-size: var(--dh-fs-sm);
+}
+
+.installer-confirm-dialog__data-notice--retain {
+  background: var(--dh-success-soft);
+  color: var(--dh-success);
+  border: 1px solid var(--dh-success-line);
+}
+
+.installer-confirm-dialog__data-notice--remove {
+  background: var(--dh-danger-soft);
+  color: var(--dh-danger);
+  border: 1px solid var(--dh-danger-line);
+}
+
+.installer-confirm-dialog__data-notice--unknown {
+  background: var(--dh-warning-soft);
+  color: var(--dh-warning);
+  border: 1px solid var(--dh-warning-line);
+}
+
+.installer-confirm-dialog__actions {
+  display: flex;
+  gap: var(--dh-space-2);
+  justify-content: flex-end;
+}
+
+/* ── Empty / loading states ──────────────────────────────────────────────── */
+
+.installer-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--dh-space-12) var(--dh-space-6);
+  text-align: center;
+  gap: var(--dh-space-2);
+}
+
+.installer-state__title {
+  font-size: var(--dh-fs-md);
+  font-weight: 600;
+  color: var(--dh-text-primary);
+  margin: 0;
+}
+
+.installer-state__detail {
+  font-size: var(--dh-fs-sm);
+  color: var(--dh-text-tertiary);
+  margin: 0;
+  max-width: 340px;
+}
+
+/* ── Buttons (local overrides using existing dh patterns) ────────────────── */
+
+.installer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dh-space-2);
+  height: var(--dh-control-h);
+  padding: 0 var(--dh-space-4);
+  border: 1px solid var(--dh-border);
+  border-radius: var(--dh-radius-md);
+  background: var(--dh-bg-raised);
+  color: var(--dh-text-primary);
+  font-size: var(--dh-fs-sm);
+  font-family: var(--dh-font-sans);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dh-dur-fast), border-color var(--dh-dur-fast),
+    color var(--dh-dur-fast);
+}
+
+.installer-btn:hover:not(:disabled) {
+  background: var(--dh-bg-hover);
+  border-color: var(--dh-border-hover);
+}
+
+.installer-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--dh-focus-ring);
+}
+
+.installer-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Primary — one per workflow step */
+.installer-btn--primary {
+  background: var(--dh-primary-bg);
+  border-color: transparent;
+  color: var(--dh-text-inverse);
+}
+
+.installer-btn--primary:hover:not(:disabled) {
+  background: var(--dh-primary-bg-hover);
+  border-color: transparent;
+}
+
+.installer-btn--primary:disabled {
+  background: var(--dh-primary-bg-disabled);
+  color: var(--dh-primary-fg-disabled);
+}
+
+/* Danger */
+.installer-btn--danger {
+  border-color: var(--dh-danger-line);
+  color: var(--dh-danger);
+  background: var(--dh-danger-soft);
+}
+
+.installer-btn--danger:hover:not(:disabled) {
+  background: var(--dh-danger-press);
+}

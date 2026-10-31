@@ -5,7 +5,7 @@
 // │                                                                      │
 // │  模块职责：验证不可变静态 Web 包及标准 Release 元数据。                │
 // └─────────────────────────────────────────────────────────────────────┘
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -66,10 +66,19 @@ describe("static-web immutable release", () => {
     await expect(inspectStaticWebRoot(site)).rejects.toThrow("source map");
     await rm(join(site, "app.js.map"));
 
-    await writeFile(join(site, "app.js"), `const checkout=${JSON.stringify(process.cwd())};`);
-    await expect(inspectStaticWebRoot(site)).rejects.toThrow("checkout-path");
+    for (const path of [process.cwd(), process.cwd().replaceAll("\\", "/")]) {
+      await writeFile(join(site, "app.js"), `const checkout=${JSON.stringify(path)};`);
+      await expect(inspectStaticWebRoot(site)).rejects.toThrow("checkout-path");
+    }
     await writeFile(join(site, "app.js"), "ok");
-    await symlink(join(site, "app.js"), join(site, "linked.js"));
+    if (process.platform === "win32") {
+      const target = join(directory, "link-target");
+      await mkdir(target);
+      await symlink(target, join(site, "linked"), "junction");
+    } else {
+      await symlink(join(site, "app.js"), join(site, "linked.js"));
+    }
+    expect((await lstat(join(site, process.platform === "win32" ? "linked" : "linked.js"))).isSymbolicLink()).toBe(true);
     await expect(inspectStaticWebRoot(site)).rejects.toThrow("symlink");
   });
 

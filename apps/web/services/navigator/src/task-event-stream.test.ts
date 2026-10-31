@@ -10,9 +10,9 @@ import { assistantEventLabel, readAssistantTaskEvents } from "./task-event-strea
 describe("assistant task event stream", () => {
   it("accepts only new sequenced events and never renders an event message", async () => {
     const response = new Response([
-      "id: 2", "event: task.status_changed", 'data: {"type":"task.status_changed","status":"running","message":"private-qr-payload"}', "",
+      "id: 2", "event: status", 'data: {"type":"status","status":"running","message":"private-qr-payload"}', "",
       "id: 2", "event: duplicate", 'data: {"type":"duplicate"}', "",
-      "id: 3", "event: task.completed", 'data: {"type":"task.completed","status":"completed"}', "", "",
+      "id: 3", "event: finish", 'data: {"type":"finish","status":"completed"}', "", "",
     ].join("\n"), { headers: { "Content-Type": "text/event-stream" } });
     const controller = new AbortController();
     const accepted: Array<{ sequence: number; label: string }> = [];
@@ -21,8 +21,8 @@ describe("assistant task event stream", () => {
     });
     expect(cursor).toBe(3);
     expect(accepted).toEqual([
-      { sequence: 2, label: "task.status_changed · running" },
-      { sequence: 3, label: "task.completed · completed" },
+      { sequence: 2, label: "status · running" },
+      { sequence: 3, label: "finish · completed" },
     ]);
     expect(JSON.stringify(accepted)).not.toContain("private-qr-payload");
     expect(assistantEventLabel({ sequence: 4, name: "private-qr-payload", data: { type: "private-qr-payload", status: "private-qr-payload" } })).toBe("task.event");

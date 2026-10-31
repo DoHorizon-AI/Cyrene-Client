@@ -4,7 +4,7 @@
 // -----------------------------------------------------------------------------
 // 中文：// 中文：模块职责：测试会话轮换与同源 Product 代理客户端。
 
-import { NavigatorApi } from "./api";
+import { NavigatorApi, type Fetcher } from "./api";
 import { describe, expect, it } from "vitest";
 
 function response(body: unknown, status = 200): Response {
@@ -15,6 +15,166 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("NavigatorApi", () => {
+  it("shares cookie rotation and CSRF across a rebuilt session owner", async () => {
+    const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "old-csrf", refreshed: false };
+    let release!: (value: Response) => void;
+    const calls: { path: string; csrf: string | null }[] = [];
+    const fetcher: Fetcher = async (input, init) => {
+      const path = String(input);
+      calls.push({ path, csrf: new Headers(init?.headers).get("X-CSRF-Token") });
+      if (path.endsWith("/refresh")) return new Promise(resolve => { release = resolve; });
+      return init?.method === "DELETE" ? response(undefined, 204) : response(session);
+    };
+    const oldOwner = new NavigatorApi(fetcher);
+    await oldOwner.getSession();
+    const refreshing = oldOwner.refreshSession();
+    await Promise.resolve();
+    const newOwner = new NavigatorApi(fetcher);
+    const logout = newOwner.logout();
+    await Promise.resolve();
+    expect(calls).toHaveLength(2);
+    release(response({ ...session, csrfToken: "rotated-csrf", refreshed: true }));
+    await Promise.all([refreshing, logout]);
+    expect(calls[2]).toEqual({ path: "/api/v1/auth/session", csrf: "rotated-csrf" });
+    expect(oldOwner.sessionCsrfToken).toBeNull();
+    expect(newOwner.sessionCsrfToken).toBeNull();
+  });
+
+  it("does not let an old owner's late denial expire a newly paired owner", async () => {
+    const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "new-session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "new-csrf", refreshed: false };
+    let release!: (value: Response) => void, reads = 0, refreshes = 0;
+    const fetcher: Fetcher = async input => {
+      if (String(input).endsWith("/pair")) return response(session);
+      if (String(input).endsWith("/refresh")) { refreshes++; return response({}, 401); }
+      return reads++ === 0 ? new Promise(resolve => { release = resolve; }) : response([]);
+    };
+    const oldOwner = new NavigatorApi(fetcher);
+    const pending = oldOwner.requestProductResponse("/api/v1/echo/status", { method: "GET" });
+    const newOwner = new NavigatorApi(fetcher);
+    await newOwner.pair("one-time-code");
+    release(response({}, 401));
+    expect((await pending).status).toBe(200);
+    expect(refreshes).toBe(0);
+    expect(newOwner.sessionCsrfToken).toBe("new-csrf");
+  });
+
+  it("serializes refresh, pair, and logout including the rotating CSRF token", async () => {
+    const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "old-csrf", refreshed: false };
+    const calls: { path: string; csrf: string | null }[] = [];
+    let release!: (value: Response) => void;
+    const api = new NavigatorApi(async (input, init) => {
+      const path = String(input);
+      calls.push({ path, csrf: new Headers(init?.headers).get("X-CSRF-Token") });
+      if (path.endsWith("/refresh")) return new Promise(resolve => { release = resolve; });
+      if (path.endsWith("/pair")) return response({ ...session, csrfToken: "paired-csrf" });
+      if (init?.method === "DELETE") return response(undefined, 204);
+      return response(session);
+    });
+    await api.getSession();
+    const refreshing = api.refreshSession();
+    await Promise.resolve();
+    const pairing = api.pair("one-time-code");
+    const logout = api.logout();
+    await Promise.resolve();
+    expect(calls.map(call => call.path)).toEqual(["/api/v1/auth/session", "/api/v1/auth/session/refresh"]);
+    release(response({ ...session, csrfToken: "rotated-csrf", refreshed: true }));
+    await Promise.all([refreshing, pairing, logout]);
+    expect(calls.slice(2)).toEqual([
+      { path: "/api/v1/auth/pair", csrf: "rotated-csrf" },
+      { path: "/api/v1/auth/session", csrf: "paired-csrf" },
+    ]);
+    expect(api.sessionCsrfToken).toBeNull();
+  });
+
+  for (const method of ["GET", "POST"] as const) it(`does not expire a newly paired session on a late Product ${method} denial`, async () => {
+    const session = { authenticated: true, state: "AUTHENTICATED", sessionId: "new-session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "new-csrf", refreshed: false };
+    let release!: (value: Response) => void;
+    let productReads = 0, refreshes = 0, expirations = 0;
+    const api = new NavigatorApi(async (input) => {
+      const path = String(input);
+      if (path.endsWith("/pair")) return response(session);
+      if (path.endsWith("/refresh")) { refreshes++; return response({}, 401); }
+      if (productReads++ === 0) return new Promise(resolve => { release = resolve; });
+      return response([]);
+    });
+    api.setSessionExpiredHandler(() => { expirations++; });
+    const pending = api.requestProductResponse("/api/v1/echo/status", { method });
+    await api.pair("one-time-code");
+    release(response({ detail: "old session denied" }, 401));
+    expect((await pending).status).toBe(method === "GET" ? 200 : 401);
+    expect(api.sessionCsrfToken).toBe("new-csrf");
+    expect(refreshes).toBe(0);
+    expect(expirations).toBe(0);
+  });
+
+  it("coalesces simultaneous Product denials into one refresh", async () => {
+    let refreshes = 0, reads = 0;
+    let release!: (value: Response) => void;
+    const api = new NavigatorApi(async input => {
+      if (String(input).endsWith("/refresh")) {
+        refreshes++;
+        return new Promise(resolve => { release = resolve; });
+      }
+      return reads++ < 2 ? response({ detail: "expired" }, 401) : response([]);
+    });
+    const first = api.getModelImports(), second = api.getModelImports();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(refreshes).toBe(1);
+    release(response({ authenticated: true, state: "AUTHENTICATED", sessionId: "session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "rotated-csrf", refreshed: true }));
+    expect(await Promise.all([first, second])).toEqual([[], []]);
+    expect(refreshes).toBe(1);
+    expect(api.sessionCsrfToken).toBe("rotated-csrf");
+  });
+
+  for (const command of ["refresh", "logout"] as const) it(`ignores an old session GET after ${command}`, async () => {
+    const old = { authenticated: true, state: "AUTHENTICATED", sessionId: "old-session", expiresAt: null,
+      refreshExpiresAt: null, refreshable: true, csrfToken: "old-csrf", refreshed: false };
+    let release!: (response: Response) => void;
+    const states: boolean[] = [];
+    const api = new NavigatorApi(async (input, init) => {
+      if (String(input).endsWith("/refresh")) return response({ ...old, csrfToken: "rotated-csrf", refreshed: true });
+      if (init?.method === "DELETE") return response(undefined, 204);
+      return new Promise(resolve => { release = resolve; });
+    });
+    api.subscribeSession(session => states.push(session.authenticated));
+    const pending = api.getSession();
+    if (command === "refresh") await api.refreshSession(); else await api.logout();
+    release(response(old));
+    const restored = await pending;
+    expect(restored.authenticated).toBe(command === "refresh");
+    expect(api.sessionCsrfToken).toBe(command === "refresh" ? "rotated-csrf" : null);
+    expect(states).toEqual([command === "refresh"]);
+  });
+  it("reads the Work API bare approval array while retaining legacy envelope compatibility", async () => {
+    const approval = { id: "approval-1", taskId: "task-1", kind: "cyrene_mcp_write", summary: "pipelines.patch", details: { pipelineId: "flow-1" }, status: "pending" };
+    let body: unknown = [approval];
+    const api = new NavigatorApi(async () => response(body));
+    expect(await api.getWorkApprovals("local")).toEqual([approval]);
+    body = { items: [approval] };
+    expect(await api.getWorkApprovals("local")).toEqual([approval]);
+    body = [{ ...approval, status: "guessed" }];
+    await expect(api.getWorkApprovals("local")).rejects.toMatchObject({ name: "NavigatorContractError" });
+  });
+  it("uses one stable task id for retries and forwards only supported executor fields", async () => {
+    const calls: { key: string | null; body: unknown }[] = [];
+    const task = { id: "request-1", sessionId: "session-1", workspaceId: "local", prompt: "Hello", status: "queued", createdAt: 1,
+      startedAt: null, endedAt: null, output: "", reasoning: "", error: null, durationMs: 0, sequence: 1, metadata: {} };
+    const api = new NavigatorApi(async (_input, init) => {
+      calls.push({ key: new Headers(init?.headers).get("Idempotency-Key"), body: JSON.parse(String(init?.body)) });
+      return response(task);
+    });
+    const input = { prompt: "Hello" };
+    await api.createAssistantTask(input, "request-1"); await api.createAssistantTask(input, "request-1");
+    expect(calls).toEqual([
+      { key: "request-1", body: { prompt: "Hello", taskId: "request-1" } },
+      { key: "request-1", body: { prompt: "Hello", taskId: "request-1" } },
+    ]);
+  });
   it("refreshes an event stream once and preserves the cursor, Accept header and cancellation", async () => {
     const calls: Array<{ path: string; init: RequestInit }> = [];
     let opened = 0;
@@ -398,8 +558,9 @@ describe("NavigatorApi", () => {
     expect(detail.id).toBe("task-2");
     expect(cancelled).toEqual({ taskId: "task-1", cancelled: true });
     expect(calls[0]?.path).toBe("/api/v1/navigator/tasks?limit=20");
-    expect(calls[1]?.body).toEqual({ prompt: "check status" });
-    expect(calls[1]?.headers.get("Idempotency-Key")).toBeTruthy();
+    expect(calls[1]?.body).toEqual({ prompt: "check status", taskId: expect.any(String) });
+    expect(Object.keys(calls[1]?.body as Record<string, unknown>).sort()).toEqual(["prompt", "taskId"]);
+    expect(calls[1]?.headers.get("Idempotency-Key")).toBe(calls[1]?.body && (calls[1]?.body as Record<string, unknown>).taskId);
     expect(calls[2]?.path).toBe("/api/v1/navigator/tasks/task-2");
     expect(calls[3]?.headers.get("Idempotency-Key")).toBeTruthy();
   });
@@ -409,7 +570,7 @@ describe("NavigatorApi", () => {
     const controller = new AbortController();
     const api = new NavigatorApi(async (input, init) => {
       call = { path: String(input), headers: new Headers(init?.headers), signal: init?.signal ?? undefined };
-      return new Response("id: 11\nevent: task.status_changed\ndata: {\"status\":\"running\"}\n\n", {
+      return new Response("id: 11\nevent: status\ndata: {\"type\":\"status\",\"status\":\"running\"}\n\n", {
         headers: { "Content-Type": "text/event-stream; charset=utf-8" },
       });
     });
@@ -441,7 +602,14 @@ describe("NavigatorApi", () => {
       const path = String(input), method = init?.method ?? "GET";
       calls.push({ path, method, body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined, headers: new Headers(init?.headers) });
       if (path.endsWith("/approvals?status=pending&limit=100")) return response({ items: [] });
-      if (path.endsWith("/approvals/approval-1/resolve")) return response({ id: "approval-1", status: "approved" });
+      if (path.endsWith("/approvals/approval-1/resolve")) {
+        const body = JSON.parse(String(init?.body)) as { decision: "approved" | "rejected" };
+        return response({
+          approval: { id: "approval-1", taskId: "task-1", kind: "tool", summary: "Review tool", details: {}, status: body.decision, createdAt: 1 },
+          duplicate: false,
+          task: { id: "task-1", workspaceId: "workspace-1", sessionId: "session-1", prompt: "Review", status: "waiting_approval", createdAt: 1, startedAt: 1, endedAt: null, output: "", reasoning: "", error: null, durationMs: 0, sequence: 1, metadata: {} },
+        });
+      }
       if (path.endsWith("/inputs?status=pending&limit=100")) return response({ items: [{ id: "input-1", taskId: "task-1", summary: "Choose a deployment region", details: { options: ["east", "west"] }, status: "pending", createdAt: 1, answeredAt: null, answeredBy: null, answer: null, messageId: "input-request-1" }] });
       if (path.endsWith("/inputs/input-1/resolve")) return response({ input: { id: "input-1", taskId: "task-1", status: "answered" }, task: { id: "task-1" }, duplicate: false });
       if (path.endsWith("/memory/facts?includeStale=true&limit=100")) return response({ items: [] });
@@ -463,7 +631,7 @@ describe("NavigatorApi", () => {
     });
 
     await api.getWorkApprovals("workspace-1");
-    await api.resolveWorkApproval("workspace-1", "approval-1", "approved");
+    await api.resolveWorkApproval("workspace-1", "approval-1", "approved", "approval-message-1");
     const inputs = await api.getWorkInputs("workspace-1");
     await api.resolveWorkInput("workspace-1", "input-1", "east", "input-message-1");
     await api.getMemoryFacts("workspace-1");
@@ -504,6 +672,8 @@ describe("NavigatorApi", () => {
     ]);
     expect(calls[3]?.body).toMatchObject({ answer: { text: "east" }, messageId: "input-message-1" });
     expect(calls[3]?.headers.get("Idempotency-Key")).toBe("input-message-1");
+    expect(calls[1]?.body).toMatchObject({ decision: "approved", messageId: "approval-message-1" });
+    expect(calls[1]?.headers.get("Idempotency-Key")).toBe("approval-message-1");
     expect(calls[10]?.body).toEqual({});
     expect(calls[11]?.body).toEqual({ loginId: "login-1" });
     expect(calls.every(call => call.headers.get("Authorization") === null)).toBe(true);
