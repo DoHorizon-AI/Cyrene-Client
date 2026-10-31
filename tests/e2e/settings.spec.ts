@@ -6,6 +6,7 @@ import { examplePipeline } from "../../packages/pipeline-model";
 async function fixtures(page: Page) {
   const writes: { path: string; method: string; body: any; headers: Record<string, string> }[] = [];
   let currentDraft = structuredClone(draft);
+  await page.route("**/studio-team/v1/session", route => route.fulfill({ json: { mode: "local", authenticated: true, token: "studio-csrf", actor: { id: "local-user", workspaceIds: ["local"], scopes: ["pipelines.read", "pipelines.write", "servers.read", "servers.write"] } } }));
   await page.route("**/studio-api/connection", (r) => r.fulfill({ json: { configured: true, target: "http://127.0.0.1:8100" } }));
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
@@ -138,7 +139,7 @@ test("switching nodes ignores a late response and a missing proxy is explicit", 
 
 test("pairing is in-memory and a started draft cannot be saved", async ({ page }) => {
   const writes = await fixtures(page);
-  await page.route("**/api/v1/auth/session", (r) => r.fulfill({ json: { authenticated: false, refreshable: false, csrfToken: null } }));
+  await page.route("**/api/v1/auth/session", (r) => r.fulfill({ json: { ...authSession, state: "ANONYMOUS", authenticated: false, refreshable: false, csrfToken: null } }));
   await page.route("**/api/v1/auth/pair", async (r) => {
     expect(r.request().postDataJSON()).toEqual({ pairingCode: "one-time-code" });
     await r.fulfill({ json: authSession });

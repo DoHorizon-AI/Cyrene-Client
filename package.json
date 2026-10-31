@@ -9,6 +9,7 @@
   "scripts": {
     "mcp": "tsx apps/mcp/main.ts",
     "dev": "node scripts/dev.mjs",
+    "assistant": "node scripts/assistant.mjs",
     "dev:services": "node scripts/dev.mjs",
     "control": "node --env-file-if-exists=.env.local --import tsx apps/control/main.ts",
     "team:bootstrap": "node --env-file-if-exists=.env.local --import tsx apps/control/main.ts --bootstrap-admin",
@@ -21,7 +22,9 @@
     "test:e2e:control": "playwright test --config playwright.control.config.ts",
     "test:e2e:security": "playwright test --config playwright.security.config.ts",
     "test:containers": "tsx scripts/verify-containers.ts",
-    "check": "npm test && npm run build && npm run test:e2e && npm run test:e2e:control && npm run test:e2e:security",
+    "contracts:navigator": "node scripts/generate-navigator-contracts.mjs --sync",
+    "contracts:navigator:check": "node scripts/generate-navigator-contracts.mjs --check",
+    "check": "npm run contracts:navigator:check && npm test && npm run build && npm run test:e2e && npm run test:e2e:control && npm run test:e2e:security",
     "dev:web:navigator": "npm run dev:services",
     "build:web:navigator": "npm run build",
     "check:web:navigator": "vitest run apps/web/services/navigator/src",
@@ -31,7 +34,7 @@
   },
   "dependencies": {
     "@fontsource-variable/space-grotesk": "5.3.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "elkjs": "0.12.0",
     "fflate": "0.8.3",
     "litegraph.js": "0.7.14",

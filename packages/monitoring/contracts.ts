@@ -19,6 +19,7 @@ export const monitoringCommands = {
   "monitoring.snapshot": {
     input: z.object({ workspaceId: identifier, pipelineId: identifier.optional(), history: z.boolean().default(false) }).strict(),
     output: monitoringSnapshotSchema, readOnly: true, scope: "runs.read",
+    requiredScopes: ["pipelines.read", "runs.read"], effects: "read", external: false,
     description: "按工作空间或流水线读取节点与运行监控摘要；需要 pipelines.read 和 runs.read。默认返回进行中及每条流水线最近结束的运行，history 包含历史。不包含配置或凭据。",
   },
 } as const;

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { ResizeHandle } from "./Chrome";
 import { useI18n } from "../i18n";
 
-export type EditorId = "graph" | "source" | "file" | "monitor" | "product";
+export type EditorId = "graph" | "source" | "file" | "monitor" | "product" | "assistant";
 export interface EditorWorkspaceHandle { split(id: EditorId, side?: "left" | "right"): void; merge(id: EditorId): void }
 interface Tab { id: EditorId; label: ReactNode; content(visible: boolean): ReactNode }
 interface Props {

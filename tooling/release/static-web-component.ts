@@ -77,7 +77,10 @@ export async function inspectStaticWebRoot(siteRoot: string): Promise<StaticWebF
 
   const files: Record<string, string> = {};
   let uncompressedBytes = 0;
-  const sourceRoots = [process.cwd(), process.env.GITHUB_WORKSPACE].filter((value): value is string => !!value).map(value => resolve(value));
+  const sourceRoots = [process.cwd(), process.env.GITHUB_WORKSPACE].filter((value): value is string => !!value).flatMap(value => {
+    const absolute = resolve(value), slashPath = absolute.replaceAll("\\", "/");
+    return [absolute, slashPath, JSON.stringify(absolute).slice(1, -1), JSON.stringify(slashPath).slice(1, -1)];
+  });
   for (const path of paths) {
     if (!safeRelativePath(path) || path.toLowerCase().endsWith(".map")) throw new Error(`Static web path is unsafe or includes a source map: ${path}`);
     const bytes = await readFile(join(root, ...path.split("/")));
@@ -123,7 +126,7 @@ export async function createStaticWebArchive(siteRoot: string, archivePath: stri
   }
   await mkdir(resolve(archivePath, ".."), { recursive: true });
   await writeFile(archivePath, compressed, { flag: "wx", mode: 0o644 });
-  const listed = spawnSync("tar", ["--list", "--gzip", "--file", resolve(archivePath)], { cwd: root, encoding: "utf8", maxBuffer: 2 * 1024 * 1024 });
+  const listed = spawnSync("tar", ["--list", "--gzip", ...(process.platform === "win32" ? ["--force-local"] : []), "--file", resolve(archivePath)], { cwd: root, encoding: "utf8", maxBuffer: 2 * 1024 * 1024 });
   if (listed.error) throw listed.error;
   if (listed.status !== 0) throw new Error(`tar could not read back the static web archive: ${listed.stderr.slice(0, 2000)}`);
   const actualPaths = listed.stdout.trimEnd().split("\n").sort();

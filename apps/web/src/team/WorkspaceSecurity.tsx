@@ -1,20 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { TeamAccount } from "./TeamAccount";
-import { WorkspaceBffClient, WorkspaceBffError, type WorkspaceSummary } from "../services/workspace-bff-client";
+import { WorkspaceBffError, type WorkspaceSummary } from "../services/workspace-bff-client";
+import { useNavigatorSession } from "../services/NavigatorSessionProvider";
 import { requestDeviceAssertion, type DeviceApproval } from "../services/workspace-security-contracts";
 import "./security.css";
 
 export function WorkspaceSecurity() {
   const { locale } = useI18n();
   const tx = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
-  const [client] = useState(() => new WorkspaceBffClient());
+  const { workspaceBff: client } = useNavigatorSession();
   const [workspaces, setWorkspaces] = useState<readonly WorkspaceSummary[]>([]), [workspace, setWorkspace] = useState("");
   const [code, setCode] = useState(""), [approval, setApproval] = useState<DeviceApproval | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [result, setResult] = useState("");
   const [uncertain, setUncertain] = useState(false), [now, setNow] = useState(Date.now());
   const operation = useRef<AbortController | null>(null), alive = useRef(true);
-  useEffect(() => { alive.current = true; const timer = setInterval(() => setNow(Date.now()), 1000); return () => { alive.current = false; operation.current?.abort(); client.reset(); clearInterval(timer); }; }, [client]);
+  useEffect(() => { alive.current = true; const timer = setInterval(() => setNow(Date.now()), 1000); return () => { alive.current = false; operation.current?.abort(); clearInterval(timer); }; }, [client]);
   const expired = !!approval && Date.parse(approval.challengeExpiresAt) <= now;
   const message = (e: unknown) => {
     if (e instanceof WorkspaceBffError) {

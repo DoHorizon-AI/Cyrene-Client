@@ -4,6 +4,8 @@ import { buildCommands, type Build, type BuildProfile } from "../../../../packag
 import { catalogCommands } from "../../../../packages/node-registry/commands";
 import { controlCommand } from "../services/commands";
 import { useTeamIdentity } from "../team/TeamGate";
+import { useI18n } from "../i18n";
+import { isTerminalBuild, mergeBuildObservation } from "./observations";
 
 type Preview = z.infer<typeof buildCommands["builds.preview"]["output"]>;
 type Catalog = z.infer<typeof catalogCommands["catalog.list_packages"]["output"]>;
@@ -12,6 +14,7 @@ const call = <N extends keyof typeof buildCommands>(name: N, input: unknown, key
 const catalog = <N extends keyof typeof catalogCommands>(name: N, input: unknown, key?: string) => controlCommand<z.infer<(typeof catalogCommands)[N]["output"]>>("/studio-catalog", name, input, key);
 
 export function useBuildControl(onNotice: (message: string) => void) {
+  const { locale } = useI18n(), tx = (zh: string, en: string) => locale === "zh-CN" ? zh : en;
   const { workspaceId, actorId, scopes } = useTeamIdentity();
   const [profiles, setProfiles] = useState<BuildProfile[]>([]), [profileId, setProfile] = useState(""), [sourceRef, setSource] = useState("");
   const [items, setItems] = useState<Build[]>([]), [build, setBuild] = useState<Build | null>(null), [preview, setPreview] = useState<Preview | null>(null);
@@ -19,6 +22,11 @@ export function useBuildControl(onNotice: (message: string) => void) {
   const [logs, setLogs] = useState<{ sequence: number; message: string }[]>([]), [busy, setBusy] = useState(false);
   const live = useRef({ workspaceId, actorId, profileId, sourceRef, buildId: build?.id }); live.current = { workspaceId, actorId, profileId, sourceRef, buildId: build?.id };
   const alive = useRef(false), pending = useRef(false), keys = useRef(new Map<string, string>());
+  const currentBuild = useRef(build); currentBuild.current = build;
+  const observe = (next: Build) => {
+    const merged = mergeBuildObservation(currentBuild.current, next);
+    currentBuild.current = merged; setBuild(merged);
+  };
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { setProfiles([]); setProfile(""); setSource(""); setBuild(null); setItems([]); setPreview(null); setActivation(null); setPackages(null); keys.current.clear(); }, [workspaceId, actorId]);
   const keyFor = (name: string, input: unknown) => { const value = JSON.stringify([workspaceId, actorId, name, input]); if (!keys.current.has(value)) keys.current.set(value, crypto.randomUUID()); return keys.current.get(value)!; };
@@ -31,17 +39,24 @@ export function useBuildControl(onNotice: (message: string) => void) {
   }
   useEffect(() => {
     if (!build) return;
-    let active = true, polling = false, cursor = 0; setLogs([]);
+    let active = true, polling = false, cursor = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined; setLogs([]);
     async function poll() {
       if (polling) return; polling = true;
       try {
         const [next, events] = await Promise.all([call("builds.get", { workspaceId, buildId: build!.id }), call("builds.read_events", { workspaceId, buildId: build!.id, after: cursor })]);
-        if (active) { setBuild(next); cursor = events.cursor; setLogs(rows => [...rows, ...events.items].slice(-200)); }
+        if (active && live.current.buildId === build!.id && currentBuild.current?.id === build!.id) {
+          observe(next); cursor = Math.max(cursor, events.cursor);
+          setLogs(rows => [...new Map([...rows, ...events.items].map(row => [row.sequence, row])).values()].slice(-200));
+        }
       } catch { /* Last observation remains visible; a disconnect does not cancel. */ }
-      finally { polling = false; }
+      finally {
+        polling = false;
+        if (active && currentBuild.current && !isTerminalBuild(currentBuild.current)) timer = setTimeout(() => void poll(), 3000);
+      }
     }
-    void poll(); const timer = setInterval(() => void poll(), 3000);
-    return () => { active = false; clearInterval(timer); };
+    void poll();
+    return () => { active = false; clearTimeout(timer); };
   }, [build?.id, workspaceId, actorId]);
   const refresh = <button disabled={busy || !scopes.includes("builds.read")} onClick={() => void perform(async current => {
     const [available, builds] = await Promise.all([call("builds.list_profiles", { workspaceId }), call("builds.list", { workspaceId })]);
@@ -51,11 +66,19 @@ export function useBuildControl(onNotice: (message: string) => void) {
   const start = <button disabled={busy || !preview || !scopes.includes("builds.write")} onClick={() => void perform(async current => {
     if (!preview) return; const input = { workspaceId, profileId, sourceRef, expectedFingerprint: preview.fingerprint };
     const result = await call("builds.start", input, keyFor("start", input));
-    if (current()) { setBuild(result); setItems(rows => [...rows.filter(r => r.id !== result.id), result]); setPreview(null); setActivation(null); onNotice("构建请求已保存。关闭面板不会取消构建。"); }
+    if (current()) { observe(result); setItems(rows => [...rows.filter(r => r.id !== result.id), result]); setPreview(null); setActivation(null); onNotice("构建请求已保存。关闭面板不会取消构建。"); }
   })}>提交节点镜像构建</button>;
   const cancel = <button disabled={busy || !build || ["succeeded", "failed", "cancelled", "cancelling"].includes(build.state) || !scopes.includes("builds.write")} onClick={() => void perform(async current => {
-    if (!build) return; const input = { workspaceId, buildId: build.id, expectedRevision: build.revision }; const result = await call("builds.cancel", input, keyFor("cancel", input)); if (current()) setBuild(result);
+    if (!build) return; const input = { workspaceId, buildId: build.id, expectedRevision: build.revision }; const result = await call("builds.cancel", input, keyFor("cancel", input)); if (current()) observe(result);
   })}>取消选中构建</button>;
+  const reconcile = <button disabled={busy || !build || !["unknown", "dispatching", "cancelling"].includes(build.state) || !scopes.includes("builds.write")} onClick={() => void perform(async current => {
+    if (!build) return;
+    const workflowRunId = window.prompt(tx("输入原构建的 GitHub run ID。将验证任务身份，不会重新启动构建。", "Enter the original GitHub run ID to verify and resume observation."), build.workflowRunId ?? "")?.trim();
+    if (!workflowRunId) return;
+    const input = { workspaceId, buildId: build.id, expectedRevision: build.revision, workflowRunId };
+    const result = await call("builds.reconcile", input, keyFor("reconcile", input));
+    if (current()) observe(result);
+  })}>{tx("核对 GitHub 任务", "Reconcile GitHub run")}</button>;
   const listPackages = <button disabled={busy || !scopes.includes("pipelines.read")} onClick={() => void perform(async current => { const result = await catalog("catalog.list_packages", { workspaceId }); if (current()) setPackages(result); })}>读取节点包版本</button>;
   const previewActivation = <button disabled={busy || build?.state !== "succeeded" || !scopes.includes("catalog.write")} onClick={() => void perform(async current => {
     if (!build) return; const state = await catalog("catalog.list_packages", { workspaceId }); if (!current()) return;
@@ -74,10 +97,10 @@ export function useBuildControl(onNotice: (message: string) => void) {
     </div>
     {preview && <p>待构建源码：<code>{preview.sourceSha}</code> · 镜像：{preview.profile.imageRepository} · 构建工作流：<code>{preview.workflowSha}</code></p>}
     <select aria-label="构建任务" disabled={busy} value={build?.id ?? ""} onChange={e => { const found = items.find(b => b.id === e.target.value); setBuild(found ?? null); setActivation(null); }}><option value="">选择构建任务</option>{items.map(item => <option key={item.id} value={item.id}>{item.profile.title} · {item.state} · {item.id.slice(0, 8)}</option>)}</select>
-    {build && <><p>{build.id} · {build.state} · v{build.revision} · {build.message}</p>{build.workflowUrl && <a href={build.workflowUrl} target="_blank" rel="noreferrer">打开 GitHub 构建日志</a>}<p><code>{build.result?.image}</code></p>{cancel}{previewActivation}{activate}<details open><summary>构建事件</summary>{logs.map(event => <p key={event.sequence}>{event.sequence} · {event.message}</p>)}</details></>}
-    {activation && <p>将启用 {activation.preview.package.id}@{activation.preview.package.version}；替换：{activation.preview.replacing.join(", ") || "无"}。原版本继续保留。</p>}
+    {build && <><p>{build.id} · {build.state} · v{build.revision} · {build.message}</p>{build.workflowUrl && <a href={build.workflowUrl} target="_blank" rel="noreferrer">打开 GitHub 构建日志</a>}<p><code>{build.result?.image}</code></p>{cancel}{reconcile}{previewActivation}{activate}<details open><summary>构建事件</summary>{logs.map(event => <p key={event.sequence}>{event.sequence} · {event.message}</p>)}</details></>}
+    {activation && <p>将启用 {activation.preview.package.id}@{activation.preview.package.version}；替换：{activation.preview.replacing.join(", ") || "无"}。{tx("此操作影响实例内所有工作空间。原版本继续保留。", "This affects every workspace on this instance. Previous versions remain available.")}</p>}
     {packages && <details open><summary>节点包 · 目录 v{packages.revision}</summary>{packages.packages.map(pkg => <p key={`${pkg.id}@${pkg.version}`}>{pkg.id}@{pkg.version} · {packages.active.includes(`${pkg.id}@${pkg.version}`) ? "已启用" : "保留版本"}</p>)}</details>}
     <p>构建使用管理员配置的 GitHub Actions。构建成功后需管理员显式启用节点版本。</p>
   </section>;
-  return { panel, menu: <>{refresh}{previewAction}{start}{cancel}<hr />{listPackages}{previewActivation}{activate}</> };
+  return { panel, menu: <>{refresh}{previewAction}{start}{cancel}{reconcile}<hr />{listPackages}{previewActivation}{activate}</> };
 }

@@ -1,5 +1,9 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { menuAction } from "./ide-helpers";
+async function openMcp(page: Page) {
+  await page.getByRole('button', { name: 'AI Assistant', exact: true }).click();
+  if (!await page.locator('.mcp-panel').isVisible()) await page.locator('.assistant-heading').getByRole('button', { name: /MCP/ }).click();
+}
 
 test("local account page identifies its mode and exposes setup without pretending team accounts are enabled", async ({ page }) => {
   await page.goto("/");
@@ -18,8 +22,8 @@ test("local account page identifies its mode and exposes setup without pretendin
 test("tool windows retain edits, resize, collapse and restore layout preferences", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("训练轮数").fill("8");
-  await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
-  await page.getByLabel("助手任务").fill("保留训练节点，增加第二组评估。");
+  await openMcp(page);
+  await page.getByLabel("调用参数 JSON").fill('{"workspaceId":"local"}');
   await page.getByRole("button", { name: "节点信息", exact: true }).click();
   await expect(page.getByLabel("训练轮数")).toHaveValue("8");
   const left = page.getByRole("separator", { name: "调整左侧窗口宽度" });
@@ -34,12 +38,12 @@ test("tool windows retain edits, resize, collapse and restore layout preferences
   await expect(page.getByRole("region", { name: "底部工具窗口" })).toBeHidden();
   await page.keyboard.press("Control+s");
   await expect(page.locator(".footer [role=status]")).toContainText("草稿已保存");
-  await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
-  await expect(page.getByLabel("助手任务")).toHaveValue("保留训练节点，增加第二组评估。");
+  await openMcp(page);
+  await expect(page.getByLabel("调用参数 JSON")).toHaveValue('{"workspaceId":"local"}');
   await page.reload();
   await expect(left).toHaveAttribute("aria-valuenow", "256");
   await expect(right).toHaveAttribute("aria-valuenow", "350");
-  await expect(page.getByRole("button", { name: "平台 MCP", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "AI Assistant", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("region", { name: "底部工具窗口" })).toBeHidden();
   await page.getByRole("button", { name: "日志", exact: true }).click();
   await expect(page.locator(".ide-event-log")).toBeVisible();
@@ -77,20 +81,17 @@ test("menus support keyboard and file previews do not mutate the graph", async (
   expect(errors).toEqual([]);
 });
 
-test("MCP panel keeps external task copy and reports unavailable legacy transport without a model request", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test("MCP panel is manual tools only and reports unavailable legacy transport", async ({ page }) => {
   const requests: string[] = [];
   page.on("request", r => { if (r.method() !== "GET") requests.push(r.url()); });
   await page.goto("/");
-  await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
-  await expect(page.getByText("模型尚未配置。", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "连接 MCP", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("npm run dev");
-  await page.getByLabel("助手任务").fill("增加评估节点，保留已锁定的位置。");
-  await page.getByRole("button", { name: /复制任务与上下文/ }).click();
-  await expect(page.locator(".footer [role=status]")).toContainText("上下文已复制");
-  const copied = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copied).toContain("instruction-tuning"); expect(copied).toContain("training"); expect(copied).toContain("增加评估节点");
+  await openMcp(page);
+  const panel = page.locator(".mcp-panel");
+  await expect(panel.getByRole("button", { name: "模型提议调试", exact: true })).toHaveCount(0);
+  await panel.getByRole("button", { name: "连接 MCP", exact: true }).click();
+  await expect(panel.getByRole("alert")).toContainText("npm run dev");
+  await panel.getByRole("button", { name: "接入与测试", exact: true }).click();
+  await expect(panel).toContainText("Navigator 会话管理");
   expect(requests).toEqual([]);
   await page.screenshot({ path: "test-results/client-ide-mcp.png", fullPage: true });
 });
@@ -102,7 +103,7 @@ test("narrow windows avoid overlapping docks and horizontal overflow", async ({ 
   await page.getByRole("button", { name: "项目文件", exact: true }).click();
   await expect(page.locator(".ide-left-dock")).toBeVisible();
   await expect(page.locator(".ide-right-dock")).toBeHidden();
-  await page.getByRole("button", { name: "平台 MCP", exact: true }).click();
+  await openMcp(page);
   await expect(page.locator(".ide-left-dock")).toBeHidden();
   await expect(page.locator(".ide-right-dock")).toBeVisible();
   for (const width of [760, 390]) {

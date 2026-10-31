@@ -3,7 +3,7 @@ import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SqliteStoreFactory } from "../../tooling/sqlite-store";
 import { createControlApplication } from "../../apps/control/application";
-import { admittedLoopbackTarget, directProductUpstreamPath, productPermission } from "../../tooling/product-proxy";
+import { admittedLoopbackTarget, directProductUpstreamPath, navigatorProxyPolicy, productPermission } from "../../tooling/product-proxy";
 
 const cleanup: (() => Promise<void>)[] = [];
 const renewalSessionId = "00000000-0000-4000-8000-000000000001";
@@ -66,6 +66,7 @@ it("rejects privilege and CSRF violations before forwarding, preserves raw uploa
   expect((await f.request("/api/v1/yield/training-drafts/x/actions/start", editor, "POST", "{}")).status).toBe(403);
   expect(f.received).toHaveLength(2);
   expect((await f.request("/api/v1/navigator/harness/workspaces/other/sessions", viewer)).status).toBe(403);
+  expect((await f.request("/api/v1/navigator/harness/workspaces/other:tenant/sessions", viewer)).status).toBe(403);
   expect(f.received).toHaveLength(2);
   expect((await f.request("/api/v1/auth/pair", { ...viewer, "content-type": "application/json" }, "POST", '{"code":"one-time-code"}')).status).toBe(200);
   expect(f.received[2].url).toBe("/api/v1/auth/pair");
@@ -182,6 +183,20 @@ it("allowlists Client authorization and cloud integration operations with least-
   expect(productPermission("POST", "/api/v1/integrations/notifications/notice-1/ack")).toBe("products.operate");
   expect(productPermission("POST", "/api/v1/integrations/connections/conn-1/actions/delete")).toBeNull();
   expect(productPermission("POST", "/api/v1/integrations/connections/%2fother/actions/refresh")).toBeNull();
+});
+
+it("binds Navigator task proxy permissions to the pinned executor input and denies unpublished routes", () => {
+  const taskPath = "/api/v1/navigator/tasks";
+  const create = navigatorProxyPolicy("POST", taskPath);
+  expect(create?.validateBody?.({ prompt: "inspect", taskId: "task-1", sessionId: "session-1" }, "local")).toBeNull();
+  expect(create?.validateBody?.({ prompt: "inspect", taskId: "task-1", sessionId: "session-1", stream: false }, "team")).toBeNull();
+  expect(create?.validateBody?.({ prompt: "inspect", execution: { runtime: "codebuddy" } }, "local")).toMatchObject({ code: "RUNTIME_SELECTION_UNAVAILABLE", status: 403 });
+  expect(create?.validateBody?.({ prompt: "inspect", metadata: { navigator: { runtime: "codebuddy" } } }, "local")).toMatchObject({ code: "RESERVED_EXECUTION_METADATA", status: 403 });
+  expect(create?.validateBody?.({ prompt: "inspect", unsupported: true }, "local")).toMatchObject({ code: "TASK_FIELD_UNSUPPORTED", status: 400 });
+  expect(navigatorProxyPolicy("GET", "/api/v1/navigator/assistant/capabilities")).toBeUndefined();
+  expect(navigatorProxyPolicy("PUT", "/api/v1/navigator/assistant/providers/personal")).toBeUndefined();
+  expect(productPermission("PATCH", "/api/v1/workspaces/local/work/tasks/task-1")).toBeNull();
+  expect(productPermission("POST", "/api/v1/workspaces/local/work/tasks/task-1/events")).toBeNull();
 });
 
 async function directFixture(includeEcho = true) {

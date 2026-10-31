@@ -49,6 +49,12 @@ test("legacy management links open in Studio and page switching retains unfinish
   await expect(page.getByRole("navigation", { name: "主菜单" })).toBeVisible();
   const input = page.getByPlaceholder("instruction-tuning-v1").first();
   await input.fill("keep-my-dataset-draft");
+  await page.getByRole("tab", { name: "结构化准备", exact: true }).click();
+  await expect(input).toBeHidden();
+  await page.getByRole("tab", { name: "文档工作台", exact: true }).click();
+  await expect(input).toBeHidden();
+  await page.getByRole("tab", { name: "数据集与版本", exact: true }).click();
+  await expect(input).toHaveValue("keep-my-dataset-draft");
   const editorArea = page.locator(".ide-editor-area");
   await page.getByRole("tab", { name: "数据集管理", exact: true }).dragTo(editorArea, { targetPosition: { x: (await editorArea.boundingBox())!.width - 12, y: 130 } });
   await expect(input).toHaveValue("keep-my-dataset-draft");

@@ -7,7 +7,8 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import QRCode from "qrcode";
 import { makeIdempotencyKey, NavigatorHttpError, type MemoryFact, type NavigatorApi, type NavigatorTaskEvent, type NavigatorTaskRecord, type QqConnectorHealth, type QqLoginChallenge, type WorkApproval, type WorkAttachment, type WorkConnector, type WorkInput, type WorkNotification } from "./api";
-import { assistantEventLabel, readAssistantTaskEvents } from "./task-event-stream";
+import { assistantEventLabel } from "./task-event-stream";
+import { useTaskStream } from "./useTaskStream";
 import { isQqQrExpired } from "./qq-login";
 import { Button, PageHeader, Panel, StateBlock, StatusPill } from "./components";
 import { useI18n } from "./i18n";
@@ -27,6 +28,8 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const { t } = useI18n();
   const [loading, setLoading] = useState(false), [pageError, setPageError] = useState("");
   const [hostWorkspaceId, setHostWorkspaceId] = useState<string | null>(null);
+  const [workspaceLoading, setWorkspaceLoading] = useState(true), [workspaceError, setWorkspaceError] = useState("");
+  const workspaceProbe = useRef(0);
   const [tasks, setTasks] = useState<NavigatorTaskRecord[]>([]), [tasksError, setTasksError] = useState("");
   const [selectedTaskId, setSelectedTaskId] = useState(""), [taskDetail, setTaskDetail] = useState<NavigatorTaskRecord | null>(null), [detailError, setDetailError] = useState("");
   const [taskEvents, setTaskEvents] = useState<NavigatorTaskEvent[]>([]), [streamError, setStreamError] = useState("");
@@ -39,20 +42,24 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const [bindingId, setBindingId] = useState(""), [qqHealth, setQqHealth] = useState<QqConnectorHealth | null>(null), [qqError, setQqError] = useState("");
   const [challenge, setChallenge] = useState<QqChallengeView | null>(null), [qrImage, setQrImage] = useState(""), [qrBusy, setQrBusy] = useState(false);
   const [attachments, setAttachments] = useState<WorkAttachment[]>([]), [attachmentBusy, setAttachmentBusy] = useState(false), [attachmentError, setAttachmentError] = useState("");
-  const taskDetailRef = useRef<NavigatorTaskRecord | null>(null);
-  const taskStreamControllerRef = useRef<AbortController | null>(null);
   const inputMessageIdsRef = useRef(new Map<string, { answer: string; messageId: string }>());
-  useEffect(() => { taskDetailRef.current = taskDetail; }, [taskDetail]);
-  const effectiveWorkspaceId = hostWorkspaceId || workspaceId;
-  const workspaceAligned = !hostWorkspaceId || !workspaceId || hostWorkspaceId === workspaceId;
+  const effectiveWorkspaceId = workspaceId;
+  const workspaceKnown = !!hostWorkspaceId;
+  const workspaceAligned = workspaceKnown && !!workspaceId && hostWorkspaceId === workspaceId;
   const mayOperate = canOperate && workspaceAligned;
   const mayWrite = canWrite && workspaceAligned;
 
-  useEffect(() => {
-    let active = true;
-    void api.getSystemStatus().then(status => { if (active) setHostWorkspaceId(status.workspaceId || null); }, () => { if (active) setHostWorkspaceId(null); });
-    return () => { active = false; };
-  }, [api]);
+  const reloadWorkspace = useCallback(async () => {
+    const generation = ++workspaceProbe.current;
+    setWorkspaceLoading(true); setWorkspaceError(""); setHostWorkspaceId(null);
+    try {
+      const status = await api.getSystemStatus();
+      if (!status.workspaceId) throw new Error(t("Navigator did not report a workspace identity."));
+      if (generation === workspaceProbe.current) setHostWorkspaceId(status.workspaceId);
+    } catch (error) { if (generation === workspaceProbe.current) setWorkspaceError(errorText(error)); }
+    finally { if (generation === workspaceProbe.current) setWorkspaceLoading(false); }
+  }, [api, t]);
+  useEffect(() => { void reloadWorkspace(); return () => { workspaceProbe.current++; }; }, [reloadWorkspace]);
 
   const refreshAll = useCallback(async () => {
     setLoading(true); setPageError("");
@@ -77,6 +84,7 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   useEffect(() => {
     if (!selectedTaskId) { setTaskDetail(null); return; }
     const controller = new AbortController();
+    setTaskDetail(current => current?.id === selectedTaskId ? current : null);
     setDetailError(""); setTaskEvents([]); setStreamError("");
     void api.getAssistantTask(selectedTaskId, controller.signal).then(value => {
       if (!controller.signal.aborted) setTaskDetail(value);
@@ -84,43 +92,24 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
     return () => controller.abort();
   }, [api, selectedTaskId]);
 
-  useEffect(() => {
-    if (!selectedTaskId || TERMINAL_TASK_STATES.has(taskDetail?.status ?? "")) return;
-    const controller = new AbortController();
-    taskStreamControllerRef.current = controller;
-    let cursor = 0;
-    const connect = async () => {
-      while (!controller.signal.aborted) {
-        try {
-          const response = await api.openAssistantTaskEvents(selectedTaskId, cursor, controller.signal);
-          cursor = await readAssistantTaskEvents(response, cursor, controller.signal, event => {
-            setTaskEvents(previous => previous.some(item => item.sequence === event.sequence) ? previous : [...previous.slice(-99), event]);
-            void api.getAssistantTask(selectedTaskId, controller.signal).then(value => {
-              if (!controller.signal.aborted) {
-                setTaskDetail(value);
-                if (TERMINAL_TASK_STATES.has(value.status)) controller.abort();
-              }
-            }, error => { if (!controller.signal.aborted) setDetailError(errorText(error)); });
-          });
-        } catch (error) {
-          if (controller.signal.aborted) return;
-          setStreamError(errorText(error));
-          if (error instanceof NavigatorHttpError && error.status < 500 && error.status !== 408 && error.status !== 429) return;
-        }
-        if (controller.signal.aborted || TERMINAL_TASK_STATES.has(taskDetailRef.current?.status ?? "")) return;
-        await pause(1200, controller.signal);
-      }
-    };
-    void connect();
-    return () => {
-      controller.abort();
-      if (taskStreamControllerRef.current === controller) taskStreamControllerRef.current = null;
-    };
-  }, [api, selectedTaskId]);
-
-  useEffect(() => {
-    if (TERMINAL_TASK_STATES.has(taskDetail?.status ?? "")) taskStreamControllerRef.current?.abort();
-  }, [taskDetail?.status]);
+  useTaskStream({
+    api, taskId: selectedTaskId, scopeKey: workspaceId,
+    terminal: taskDetail?.id === selectedTaskId && TERMINAL_TASK_STATES.has(taskDetail.status),
+    onEvent: event => setTaskEvents(previous => previous.some(item => item.sequence === event.sequence) ? previous : [...previous.slice(-99), event]),
+    onTask: value => {
+      setTaskDetail(current => current?.id === value.id && current.sequence > value.sequence ? current : value);
+      setTasks(current => current.map(task => task.id === value.id && task.sequence <= value.sequence ? value : task));
+    },
+    onRefresh: async signal => {
+      const [nextApprovals, nextInputs] = await Promise.allSettled([api.getWorkApprovals(effectiveWorkspaceId), api.getWorkInputs(effectiveWorkspaceId)]);
+      if (signal.aborted) return;
+      if (nextApprovals.status === "fulfilled") { setApprovals(nextApprovals.value); setApprovalsError(""); }
+      else setApprovalsError(errorText(nextApprovals.reason));
+      if (nextInputs.status === "fulfilled") { setPendingInputs(nextInputs.value); setInputsError(""); }
+      else setInputsError(errorText(nextInputs.reason));
+    },
+    onError: (error, source) => source === "stream" ? setStreamError(errorText(error)) : setDetailError(errorText(error)),
+  });
 
   useEffect(() => {
     if (!bindingId) { setQqHealth(null); return; }
@@ -186,6 +175,7 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   };
 
   const resolveApproval = async (approvalId: string, decision: "approved" | "rejected") => {
+    if (!mayOperate || approvalBusy) return;
     setApprovalBusy(approvalId);
     try {
       await api.resolveWorkApproval(effectiveWorkspaceId, approvalId, decision);
@@ -242,7 +232,7 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const uploadAttachment = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
-    if (!file) return;
+    if (!file || !mayWrite || attachmentBusy) return;
     setAttachmentError("");
     if (file.size > MAX_ATTACHMENT_BYTES) { setAttachmentError(t("Attachments are limited to 10 MB.")); return; }
     setAttachmentBusy(true);
@@ -290,8 +280,9 @@ export function WorkAssistantPage({ api, workspaceId, canOperate, canWrite }: { 
   const taskActive = !!taskDetail && !TERMINAL_TASK_STATES.has(taskDetail.status);
   return <div className="page-container work-assistant">
     <PageHeader eyebrow={t("WORK ASSISTANT")} title={t("Work assistant")} description={t("Tasks run beside the paired Navigator host; workspace data stays with its owner.")} action={<Button onClick={() => void refreshAll()} disabled={loading}>{loading ? t("Refreshing...") : t("Refresh all")}</Button>} />
-    {!workspaceAligned && <p role="alert" className="work-assistant__notice work-assistant__notice--error">{t("Selected workspace does not match the Navigator host configuration.")} {workspaceId} ≠ {hostWorkspaceId}</p>}
-    {!mayOperate && <p className="work-assistant__notice">{t("Execution permission is required to create tasks, resolve approvals, answer requests, or start QQ login.")}</p>}
+    {!workspaceKnown && <p role={workspaceError ? "alert" : "status"} className="work-assistant__notice">{workspaceLoading ? t("Verifying Navigator workspace identity...") : workspaceError || t("Navigator did not report a workspace identity.")} <Button disabled={workspaceLoading} onClick={() => void reloadWorkspace()}>{t("Retry workspace connection")}</Button></p>}
+    {workspaceKnown && !workspaceAligned && <p role="alert" className="work-assistant__notice work-assistant__notice--error">{t("Selected workspace does not match the Navigator host configuration.")} {workspaceId} / {hostWorkspaceId} <Button onClick={() => void reloadWorkspace()}>{t("Retry workspace connection")}</Button></p>}
+    {!canOperate && <p className="work-assistant__notice">{t("Execution permission is required to create tasks, resolve approvals, answer requests, or start QQ login.")}</p>}
     {pageError && <p role="alert" className="work-assistant__notice work-assistant__notice--error">{pageError}</p>}
 
     <div className="work-assistant__grid">
@@ -406,13 +397,4 @@ async function fileToBase64(file: File): Promise<string> {
     binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
   }
   return btoa(binary);
-}
-
-function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  return new Promise(resolve => {
-    const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", finish); resolve(); };
-    const timer = setTimeout(finish, milliseconds);
-    signal.addEventListener("abort", finish, { once: true });
-  });
 }

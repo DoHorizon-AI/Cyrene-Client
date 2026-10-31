@@ -11,9 +11,9 @@ import { readFile } from "node:fs/promises";
 import { buildProfile } from "../../packages/build-control/contracts";
 import { GitHubBuildAdapter } from "../../packages/build-control/github";
 import { readConfiguredSecret } from "./secrets";
-import { validateProvider } from "./assistant";
+import { controlListener } from "./listener";
 
-const mode = process.env.STUDIO_MODE === "team" ? "team" : "local";
+const { mode, host } = controlListener(process.env);
 if (mode === "team" && !process.env.STUDIO_DATABASE_URL) throw new Error("Team mode requires STUDIO_DATABASE_URL (PostgreSQL)");
 const stores = process.env.STUDIO_DATABASE_URL ? new PostgresStoreFactory(process.env.STUDIO_DATABASE_URL) : new SqliteStoreFactory(resolve(process.env.STUDIO_CONTROL_DATA_DIR ?? ".studio", "control.sqlite"));
 
@@ -27,9 +27,6 @@ for (const name of ["yield", "echo"]) {
 }
 const buildProfiles = process.env.STUDIO_BUILD_PROFILES_FILE ? buildProfile.array().max(100).parse(JSON.parse(await readFile(process.env.STUDIO_BUILD_PROFILES_FILE, "utf8"))) : [];
 const githubToken = process.env.STUDIO_GITHUB_TOKEN_FILE ? (await readFile(process.env.STUDIO_GITHUB_TOKEN_FILE, "utf8")).trim() : process.env.STUDIO_GITHUB_TOKEN;
-const assistantUrl = process.env.STUDIO_ASSISTANT_URL?.trim(), assistantModel = process.env.STUDIO_ASSISTANT_MODEL?.trim();
-if (Boolean(assistantUrl) !== Boolean(assistantModel)) throw new Error("STUDIO_ASSISTANT_URL and STUDIO_ASSISTANT_MODEL are required together");
-const assistantProvider = assistantUrl && assistantModel ? validateProvider({ url: assistantUrl, model: assistantModel, apiKey: await readConfiguredSecret("STUDIO_ASSISTANT_API_KEY") }) : undefined;
 const navigatorUrl = admittedTarget(process.env.STUDIO_NAVIGATOR_URL);
 const directEnvironmentNames = ["STUDIO_CATALYST_URL", "STUDIO_CATALYST_API_TOKEN", "STUDIO_CATALYST_API_TOKEN_FILE", "STUDIO_ECHO_URL", "STUDIO_ECHO_API_TOKEN", "STUDIO_ECHO_API_TOKEN_FILE"];
 const directConfigured = directEnvironmentNames.some(name => !!process.env[name]?.trim());
@@ -47,7 +44,7 @@ if (directConfigured) {
   }
   if (!productTargets.catalyst) throw new Error("Direct Product mode requires STUDIO_CATALYST_URL and its server-side token.");
 }
-const application = createControlApplication({ stores, mode, workspaceId: process.env.STUDIO_WORKSPACE_ID, assistantProvider, localDiagnostics: process.env.STUDIO_LOCAL_DIAGNOSTICS === "1", mcpReadOnly: process.env.STUDIO_MCP_READ_ONLY === "1", publicOrigins: (process.env.STUDIO_PUBLIC_ORIGINS ?? "http://127.0.0.1:5180").split(",").map(s => s.trim()), navigatorUrl, productTargets: directConfigured ? productTargets : undefined, localApiToken: process.env.STUDIO_LOCAL_API_TOKEN, loadPackages: () => loadNodePackages(process.env.STUDIO_NODE_PACKAGES_DIR), adapters, buildProfiles, buildAdapter: githubToken ? new GitHubBuildAdapter(() => githubToken) : undefined });
+const application = createControlApplication({ stores, mode, workspaceId: process.env.STUDIO_WORKSPACE_ID, localDiagnostics: process.env.STUDIO_LOCAL_DIAGNOSTICS === "1", mcpReadOnly: process.env.STUDIO_MCP_READ_ONLY === "1", publicOrigins: (process.env.STUDIO_PUBLIC_ORIGINS ?? "http://127.0.0.1:5180").split(",").map(s => s.trim()), navigatorUrl, productTargets: directConfigured ? productTargets : undefined, localApiToken: process.env.STUDIO_LOCAL_API_TOKEN, loadPackages: () => loadNodePackages(process.env.STUDIO_NODE_PACKAGES_DIR), adapters, buildProfiles, buildAdapter: githubToken ? new GitHubBuildAdapter(() => githubToken) : undefined });
 await application.ready;
 if (process.argv.includes("--bootstrap-admin")) {
   if (!process.env.STUDIO_ADMIN_USER || !process.env.STUDIO_ADMIN_PASSWORD) throw new Error("Set STUDIO_ADMIN_USER and STUDIO_ADMIN_PASSWORD for this command only");
@@ -56,7 +53,7 @@ if (process.argv.includes("--bootstrap-admin")) {
   await stores.close();
 } else {
   const port = Number(process.env.STUDIO_CONTROL_PORT ?? 5182);
-  application.server.listen(port, process.env.STUDIO_CONTROL_HOST ?? "127.0.0.1", () => process.stdout.write(`Studio control listening on port ${port} (${mode})\n`));
+  application.server.listen(port, host, () => process.stdout.write(`Studio control listening on port ${port} (${mode})\n`));
   let reconciliation: Promise<void> | undefined;
   const worker = setInterval(() => {
     if (reconciliation) return;

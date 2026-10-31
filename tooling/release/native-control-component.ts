@@ -87,7 +87,10 @@ export async function inspectNativeControlRoot(bundleRoot: string): Promise<Nati
   const executableSet = new Set<string>(EXECUTABLE_FILES);
   const files: Record<string, string> = {};
   let uncompressedBytes = 0;
-  const sourceRoots = [process.cwd(), process.env.GITHUB_WORKSPACE].filter((value): value is string => !!value).map(value => resolve(value));
+  const sourceRoots = [process.cwd(), process.env.GITHUB_WORKSPACE].filter((value): value is string => !!value).flatMap(value => {
+    const absolute = resolve(value), slashPath = absolute.replaceAll("\\", "/");
+    return [absolute, slashPath, JSON.stringify(absolute).slice(1, -1), JSON.stringify(slashPath).slice(1, -1)];
+  });
   for (const path of paths) {
     const absolute = join(root, ...path.split("/"));
     const info = await lstat(absolute);
@@ -145,7 +148,7 @@ export async function createNativeControlArchive(bundleRoot: string, archivePath
   if (compressed.byteLength < 1 || compressed.byteLength > MAX_ARCHIVE_BYTES) throw new Error("Compressed native Control archive exceeds the 512 MiB release limit.");
   await mkdir(resolve(archivePath, ".."), { recursive: true });
   await writeFile(archivePath, compressed, { flag: "wx", mode: 0o644 });
-  const listed = spawnSync("tar", ["--list", "--gzip", "--file", resolve(archivePath)], { cwd: root, encoding: "utf8", maxBuffer: 2 * 1024 * 1024 });
+  const listed = spawnSync("tar", ["--list", "--gzip", ...(process.platform === "win32" ? ["--force-local"] : []), "--file", resolve(archivePath)], { cwd: root, encoding: "utf8", maxBuffer: 2 * 1024 * 1024 });
   if (listed.error) throw listed.error;
   if (listed.status !== 0) throw new Error(`tar could not read back the native Control archive: ${listed.stderr.slice(0, 2000)}`);
   const actualPaths = listed.stdout.trimEnd().split("\n").sort();

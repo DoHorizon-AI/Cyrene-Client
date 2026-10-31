@@ -13,7 +13,7 @@ async function fixture() {
   await app.ready; await app.team.bootstrap("owner", "stream-test-password");
   const login = await app.team.login("owner", "stream-test-password");
   const { actor } = await app.team.authenticate(login.token, "browser");
-  const token = (await app.team.issueApiToken(actor, ["runs.read"])).token;
+  const token = (await app.team.issueApiToken({ actor, kind: "browser" }, ["runs.read"])).token;
   const document = examplePipeline(); document.nodes = document.nodes.filter(n => n.type === "compute"); document.edges = [];
   document.presentation.nodes = Object.fromEntries(document.nodes.map(n => [n.id, document.presentation.nodes[n.id]]));
   await app.pipelines.execute({ name: "pipelines.create", input: { workspaceId: "local", document }, requestId: "create", idempotencyKey: "create" }, actor);
@@ -48,7 +48,7 @@ it("checks stream workspace, scope, authentication and cursors before emitting h
   expect((await fetch(f.origin + other, { headers })).status).toBe(403);
   expect((await fetch(f.origin + f.path, { headers: { ...headers, "last-event-id": "not-a-cursor" } })).status).toBe(400);
   expect((await fetch(f.origin + f.path, { headers: { ...headers, "last-event-id": "999" } })).status).toBe(409);
-  const restricted = await f.app.team.issueApiToken(f.actor, ["pipelines.read"]);
+  const restricted = await f.app.team.issueApiToken({ actor: f.actor, kind: "browser" }, ["pipelines.read"]);
   expect((await fetch(f.origin + f.path, { headers: { authorization: `Bearer ${restricted.token}` } })).status).toBe(403);
   await f.app.team.logout(f.token);
   expect((await fetch(f.origin + f.path, { headers })).status).toBe(401);

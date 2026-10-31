@@ -21,7 +21,7 @@ export class ServerControl {
   async execute(raw: unknown, actor: Actor): Promise<unknown> {
     const request = commandRequest.parse(raw), definition = commands[request.name];
     const input = definition.input.parse(request.input);
-    if (!actor.workspaceIds.includes(input.workspaceId) || !actor.scopes.includes(definition.scope)) {
+    if (!actor.workspaceIds.includes(input.workspaceId) || !definition.requiredScopes.every(scope => actor.scopes.includes(scope))) {
       throw new ControlError("FORBIDDEN", "没有此工作空间的操作权限。", 403);
     }
     if (definition.readOnly) {
