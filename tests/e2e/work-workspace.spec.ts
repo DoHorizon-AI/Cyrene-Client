@@ -124,7 +124,7 @@ test("Work assistant reconciles an accepted-but-lost task response before retry"
   expect(submissions[0].idempotencyKey).toBe(submissions[0].taskId);
 
   await page.getByRole("button", { name: "Retry same task", exact: true }).first().click();
-  await expect(page.getByText("Create one durable task")).toBeVisible();
+  await expect(page.locator(".work-assistant__task-list").getByRole("button", { name: /Create one durable task/ })).toBeVisible();
   expect(submissions).toHaveLength(1);
   expect(tasks).toHaveLength(1);
 });
