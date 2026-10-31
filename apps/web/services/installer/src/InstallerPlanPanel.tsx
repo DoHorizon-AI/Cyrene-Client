@@ -180,19 +180,12 @@ export function InstallerPlanPanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      {/* Provider demo / unconnected notice */}
-      {(provider.isDemo || !provider.isConnected) && (
-        <div className="installer-not-connected" role="status">
-          {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
-        </div>
-      )}
-
       <div className="installer-main" style={{ flex: 1 }}>
         <div className="installer-detail__header">
           <span className="installer-detail__eyebrow">{l("Installation Plan")}</span>
           <h2 className="installer-detail__title">{l("Review your installation")}</h2>
           <p className="installer-detail__desc">
-            {l("This plan was resolved by the Installer API.")}
+            {l("This preview plan uses sample data; no Installer service is connected.")}
           </p>
         </div>
         <hr className="installer-horizon" />
@@ -206,7 +199,7 @@ export function InstallerPlanPanel({
 
         {loading ? (
           <div className="installer-state" role="status" aria-live="polite">
-            <h3 className="installer-state__title">{l("Resolving installation plan…")}</h3>
+            <h3 className="installer-state__title">{l("Preparing plan…")}</h3>
             <p className="installer-state__detail">{l("Loading…")}</p>
           </div>
         ) : error ? (
@@ -401,7 +394,7 @@ export function InstallerPlanPanel({
           disabled={!plan || loading || Boolean(isInstalling) || Boolean(error) || provider.isDemo || !provider.isConnected || plan.status === "blocked"}
           title={
             provider.isDemo || !provider.isConnected
-              ? l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")
+              ? l("PREVIEW PROTOTYPE — sample data only; no Installer service is connected. Install and uninstall operations are disabled.")
               : plan?.status === "blocked"
               ? l("Installation plan is blocked by dependency or system requirements.")
               : undefined

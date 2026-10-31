@@ -29,7 +29,9 @@ test.describe("Cyrene Installer UI", () => {
     // Verify NOT_CONNECTED banner is prominently displayed
     const notConnectedBanner = page.locator(".installer-not-connected");
     await expect(notConnectedBanner).toBeVisible();
-    await expect(notConnectedBanner).toContainText(/NOT CONNECTED|未连接/);
+    await expect(notConnectedBanner).toContainText(/PREVIEW PROTOTYPE|预览原型/);
+    await expect(notConnectedBanner).toContainText(/sample data|样例数据/);
+    await expect(notConnectedBanner).toContainText(/install and uninstall operations are disabled|安装和卸载操作均已禁用/);
 
     // Verify step indicators
     await expect(page.locator(".installer-steps")).toBeVisible();
@@ -94,6 +96,8 @@ test.describe("Cyrene Installer UI", () => {
 
     // Verify we arrived at the Plan page
     await expect(page.locator(".installer-detail__title")).toContainText(/确认安装内容|Review your installation/i);
+    await expect(notConnectedBanner).toBeVisible();
+    await expect(page.getByText(/此预览计划使用样例数据|This preview plan uses sample data/)).toBeVisible();
     await expect(page.locator(".installer-plan__section-title").filter({ hasText: /将安装的产品|Products to install/i })).toBeVisible();
 
     // Take screenshot of installation plan
@@ -173,6 +177,7 @@ test.describe("Cyrene Installer UI", () => {
 
     // Switch to Component Management tab
     await page.getByRole("button", { name: /组件管理|Component Management/i }).click();
+    await expect(page.locator(".installer-not-connected")).toContainText(/PREVIEW PROTOTYPE|预览原型/);
 
     // Verify Management header
     await expect(page.locator(".installer-detail__title")).toContainText(/管理已安装组件|Manage installed components/i);

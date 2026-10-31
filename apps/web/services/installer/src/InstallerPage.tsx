@@ -127,11 +127,6 @@ function InstallProgressPlaceholder({
         </h2>
       </div>
       <hr className="installer-horizon" />
-      {provider.isDemo && (
-        <div className="installer-not-connected" role="status">
-          {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
-        </div>
-      )}
       {streamError && (
         <div className="installer-affinity-warning" role="alert" style={{ margin: "var(--dh-space-2) 0" }}>
           <span>{streamError}</span>
@@ -231,6 +226,11 @@ export function InstallerPage({
   return (
     <InstallerProviderBoundary provider={provider}>
       <div className="installer-shell" style={{ height: "100%", overflow: "hidden" }}>
+        {(provider.isDemo || !provider.isConnected) && (
+          <div className="installer-not-connected" role="status">
+            {l("PREVIEW PROTOTYPE — sample data only; no Installer service is connected. Install and uninstall operations are disabled.")}
+          </div>
+        )}
         {/* Step progress */}
         {!showManagement && (
           <StepIndicator steps={STEPS.filter((s) => s.id !== "management")} current={step} locale={locale} />

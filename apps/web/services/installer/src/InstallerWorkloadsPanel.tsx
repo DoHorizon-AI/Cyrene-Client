@@ -686,13 +686,6 @@ export function InstallerWorkloadsPanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      {/* NOT_CONNECTED banner */}
-      {(provider.isDemo || !provider.isConnected) && (
-        <div className="installer-not-connected" role="status">
-          {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
-        </div>
-      )}
-
       {/* Explicit catalog error banner and retry button */}
       {catalogError && (
         <div

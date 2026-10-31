@@ -1,125 +1,37 @@
-# Cyrene Installer UI / Cyrene 安装器模块
+# Cyrene Installer UI prototype / Cyrene Installer UI 原型
 
-## 概述 (Overview)
+This module is a UI-only prototype. The Client uses `DemoInstallerProvider` by default and shows sample catalog and plan data. It is not connected to an Installer service, does not install software, and keeps install and uninstall actions disabled.
 
-Cyrene 模块化安装与组件管理 UI，遵循 DoHorizon 设计系统规范（深色基底、珊瑚粉到兰花紫品牌地平线渐变、空心菱形步骤指示器与细线分层）。交互参考 Visual Studio Installer，但在视觉风格、组件结构和交互语言上与 Cyrene Client/Studio 保持高度统一。
+本模块仅为 UI 原型。Client 默认使用 `DemoInstallerProvider`，展示样例目录和计划数据。它没有连接 Installer 服务，不会安装软件，安装和卸载操作均保持禁用。
 
-## 架构与设计准则 (Architecture & Design Rules)
+## Scope / 范围
 
-1. **零硬编码依赖解析**：UI 不实现第二套依赖解析器。组件的 Required / Recommended / Optional 状态、依赖树及冲突检查完全由后端 Installer API / Workload Resolver 统一计算。
-2. **非阻断式警告提示**：当用户取消勾选 Recommended 能力时，UI 不禁止操作，而是清晰展示会受到影响的工作负载或功能。
-3. **真实数据与诚实显示**：在后端未提供可信下载大小时显示「待确定」，不伪造数据量或版本信息。
-4. **NOT_CONNECTED 边界**：在后端真实 API 尚未接通前，前端组件明确标注 `NOT_CONNECTED` 状态，安装操作按钮保持安全禁用，防止向用户呈现无法执行的伪功能。
-5. **生命周期与运维管理**：预留日常组件管理界面，涵盖 `available`、`verified`、`installed`、`configured`、`enabled`、`running`、`failed` 7 种状态；卸载对话框严格说明用户数据保留策略。
+The prototype contains workload and component selection, plan review, lifecycle status cards, and bilingual copy. Its local TypeScript types and sample data support UI development only; they do not define an approved backend API or acceptance contract.
 
----
+原型包含工作负载与组件选择、计划预览、生命周期状态卡片和双语文案。本地 TypeScript 类型和样例数据仅用于 UI 开发，不构成已批准的后端 API 或验收契约。
 
-## 模块结构 (Module Structure)
+`ControlWorkloadInstallerProvider` is an experimental, unused adapter outline. The Client does not instantiate it. Its `/studio-workloads/v1/*` paths are not an implemented or approved service contract; do not wire these calls or describe them as operational. A future integration requires an independently approved backend contract and owner before implementation.
 
-```text
-apps/web/services/installer/
-├── README.md                           # 本说明文档与接口对接指南
-└── src/
-    ├── contracts.ts                    # Installer API / Resolver 契约定义与 Mock 目录
-    ├── copy.ts                         # 中英双语文本字典
-    ├── installer.css                   # 作用域样式（基于 --dh-* 设计 Tokens）
-    ├── InstallerWorkloadsPanel.tsx     # 工作负载与独立组件选择面板
-    ├── InstallerPlanPanel.tsx          # 安装计划预览面板（平台、架构、组件、原因与大小）
-    ├── InstallerManagementPanel.tsx    # 组件管理与生命周期控制面板
-    ├── InstallerPage.tsx               # 安装器主入口与流程引导外壳
-    └── installer.test.ts               # 契约完整性与纯选择解析逻辑单元测试
-```
+`ControlWorkloadInstallerProvider` 是未接入 Client 的实验性适配器草案。Client 不会实例化它。其 `/studio-workloads/v1/*` 路径不是已实现或批准的服务契约；不得接入这些调用或将其描述为可运行功能。未来集成必须先由后端负责人独立批准服务契约。
 
----
+## Safety boundary / 安全边界
 
-## 接口对接指南 (API Integration Contract)
+- `DemoInstallerProvider` returns sample data, reports no active connection, exposes no allowed component operations, and rejects execution.
+- The optional adapter rejects session payloads without a non-empty token, actor identity, and explicitly shaped scopes. Failed refresh and authorization responses clear cached identity.
+- The visible prototype notice remains on every Installer view while the provider is demo or disconnected.
+- This prototype is source/UI evidence only. It is not evidence of a working installer, package runtime, backend route, or host installation.
 
-在后端 Resolver 和 Package Runtime 开发完成后，将 `contracts.ts` 中的 Mock 数据替换为真实 API 调用：
+- `DemoInstallerProvider` 返回样例数据、报告未连接状态、不提供任何组件操作权限，并拒绝执行操作。
+- 可选适配器会拒绝缺少非空令牌、操作者身份或有效权限列表的会话响应；刷新失败及授权失败响应会清除缓存身份。
+- Provider 为演示或未连接状态时，所有 Installer 页面都会显示原型提示。
+- 本原型仅证明源码与 UI 存在，不能证明安装器、软件包运行时、后端路由或主机安装可用。
 
-### 1. 获取工作负载目录 (Get Workloads Catalog)
-- **Endpoint**: `GET /api/installer/v1/workloads`
-- **Response**: `WorkloadCatalog`
-```ts
-interface WorkloadCatalog {
-  workloads: Array<{
-    id: string;
-    name: string;
-    nameCn?: string;
-    description: string;
-    descriptionCn?: string;
-    components: Array<{
-      componentId: string;
-      affinity: "required" | "recommended" | "optional";
-    }>;
-  }>;
-}
-```
+## Verification / 验证
 
-### 2. 获取组件目录 (Get Component Catalog)
-- **Endpoint**: `GET /api/installer/v1/components`
-- **Response**: `ComponentCatalog`
-```ts
-interface ComponentCatalog {
-  generation: number;
-  components: InstallerComponent[];
-  fetchedAt: string;
-}
-```
+- Unit tests: `npx vitest run apps/web/services/installer/src`
+- Browser tests: `npx playwright test tests/e2e/installer.spec.ts`
+- TypeScript and production build: `npm run build`
 
-### 3. 生成安装计划 (Resolve Installation Plan)
-- **Endpoint**: `POST /api/installer/v1/plans`
-- **Request Body**:
-```json
-{
-  "workloadIds": ["catalyst"],
-  "componentIds": ["cyrene.tools.document-parsing", "cyrene.tools.dataset-preparation"],
-  "excludedRecommendedIds": ["cyrene.tools.knowledge-preparation"]
-}
-```
-- **Response**: `InstallationPlan`
-```ts
-interface InstallationPlan {
-  planId: string;
-  workloadIds: string[];
-  additionalComponentIds: string[];
-  components: Array<{
-    componentId: string;
-    affinity: "required" | "recommended" | "optional";
-    reason: string;
-    downloadBytes: number | null;
-    version: string | null;
-  }>;
-  totalDownloadBytes: number | null;
-  targetPlatform: { os: string; architecture: string; distribution?: string };
-  deploymentMode: string;
-  permissionsRequired: string[];
-  knownLimitations: string[];
-  alreadyInstalledComponentIds: string[];
-  resolvedAt: string;
-}
-```
-
-### 4. 执行操作与状态流 (Execute Operations)
-- **Endpoint**: `POST /api/installer/v1/operations`
-- **Stream**: `GET /api/installer/v1/operations/{operationId}/stream` (SSE)
-
----
-
-## 未接通功能清单 (Unconnected Features Checklist)
-
-| 功能项 | 当前状态 | 依赖接通方 | 说明 |
-| :--- | :--- | :--- | :--- |
-| **真实 Workload Resolver** | `NOT_CONNECTED` | Platform / Package Runtime | 依赖后端提供 `POST /api/installer/v1/plans` |
-| **实时组件包下载与解包** | `NOT_CONNECTED` | Package Runtime / Daemon | 当前处于安全禁用，避免虚假安装触发 |
-| **运行时进度 SSE 推送** | `NOT_CONNECTED` | Operation Event Stream | 安装进度界面展示连接占位与协议契约说明 |
-| **组件真实启停与热重载** | `NOT_CONNECTED` | Cyrene Process Supervisor | 依赖端点进程管理守护服务 |
-| **组件真实卸载与数据清理** | `NOT_CONNECTED` | Storage & Package Manager | 卸载确认对话框已实现，待对接后端数据清理钩子 |
-| **Yield / Reactor 安装流** | `RESERVED` | 未来产品发布迭代 | 架构与模型已预留，第一版暂不开放安装入口 |
-
----
-
-## 验证与测试命令 (Verification Commands)
-
-- **单元测试**: `npx vitest run apps/web/services/installer/src` (18 项全部通过)
-- **类型检查与构建**: `npm run build` (`tsc --noEmit && vite build` 0 错误)
-- **端到端 E2E 测试**: `LD_LIBRARY_PATH=/home/baijin/.local/libs/usr/lib/x86_64-linux-gnu npx playwright test tests/e2e/installer.spec.ts` (4 项全部通过并保存截图)
+- 单元测试：`npx vitest run apps/web/services/installer/src`
+- 浏览器测试：`npx playwright test tests/e2e/installer.spec.ts`
+- TypeScript 与生产构建：`npm run build`

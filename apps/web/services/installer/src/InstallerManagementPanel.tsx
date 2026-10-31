@@ -304,13 +304,6 @@ export function InstallerManagementPanel() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      {/* NOT_CONNECTED banner */}
-      {isDemoOrDisconnected && (
-        <div className="installer-not-connected" role="status">
-          {l("⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.")}
-        </div>
-      )}
-
       {/* Action feedback / error alert banners */}
       {errorBanner && (
         <div className="installer-affinity-warning" role="alert" style={{ margin: "var(--dh-space-2) var(--dh-space-4)" }}>

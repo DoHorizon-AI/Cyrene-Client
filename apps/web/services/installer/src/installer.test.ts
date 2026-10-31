@@ -412,6 +412,54 @@ describe("RealInstallerProvider", () => {
     expect(failingProvider.isConnected).toBe(false);
   });
 
+  it("fails closed on missing identity or malformed session scopes without sending commands", async () => {
+    const invalidSessions: unknown[] = [
+      { token: "csrf-token-123" },
+      { token: "csrf-token-123", actor: { scopes: ["workloads.read", "workloads.install"] } },
+      { token: "csrf-token-123", actor: { id: "local-user", scopes: ["workloads.read", 7] } },
+      { token: "csrf-token-123", actor: { id: "local-user", scopes: "workloads.read workloads.install" } },
+    ];
+
+    for (const invalidSession of invalidSessions) {
+      const fetchMock = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify(invalidSession), { status: 200 })),
+      );
+      globalThis.fetch = fetchMock;
+      const provider = new RealInstallerProvider({ prefix: "/studio-workloads" });
+
+      await expect(provider.getWorkloadCatalog()).rejects.toThrow(PermissionDeniedError);
+      expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith("/v1/session"))).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        "/studio-workloads/v1/commands",
+        expect.anything(),
+      );
+    }
+  });
+
+  it("clears cached identity after a forced refresh is denied", async () => {
+    const responses = [
+      new Response(JSON.stringify(mockSession), { status: 200 }),
+      new Response("Forbidden", { status: 403 }),
+      new Response(JSON.stringify(mockSession), { status: 200 }),
+    ];
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/v1/session")) return Promise.resolve(responses.shift());
+      if (url.endsWith("/v1/commands")) {
+        return Promise.resolve(new Response(JSON.stringify({ result: { status: "ready" } }), { status: 200 }));
+      }
+      return Promise.reject(new Error(`Unexpected URL ${url}`));
+    });
+    globalThis.fetch = fetchMock;
+    const provider = new RealInstallerProvider({ prefix: "/studio-workloads" });
+
+    await provider.fetchSession();
+    await expect(provider.fetchSession(true)).rejects.toThrow(PermissionDeniedError);
+    await expect(provider.dispatchCommand("workloads.status", {})).resolves.toEqual({ status: "ready" });
+
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/v1/session"))).toHaveLength(3);
+    expect(fetchMock).toHaveBeenCalledWith("/studio-workloads/v1/commands", expect.anything());
+  });
+
   it("unconnected/unverified provider causes zero real installation side-effects", async () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock;
@@ -921,4 +969,3 @@ describe("Bilingual copy table", () => {
     expect(installerText("Restore", "en-US")).toBe("Restore");
   });
 });
-

@@ -236,7 +236,7 @@ export class DemoInstallerProvider implements InstallerProvider {
 }
 
 // ---------------------------------------------------------------------------
-// § Real Provider (prepares integration with Codex's Installer API)
+// § Experimental adapter outline (not connected to a Client backend)
 // ---------------------------------------------------------------------------
 
 export interface ControlInstallerProviderOptions {
@@ -272,7 +272,13 @@ export class ControlWorkloadInstallerProvider implements InstallerProvider {
     return this.isConfigured && this._verified;
   }
 
+  private invalidateSession(): void {
+    this.cachedSession = null;
+    this._verified = false;
+  }
+
   async fetchSession(forceRefresh = false): Promise<{ token: string; actor: { id: string; scopes: string[] } }> {
+    if (forceRefresh) this.invalidateSession();
     if (!forceRefresh && this.cachedSession) {
       return this.cachedSession;
     }
@@ -289,18 +295,22 @@ export class ControlWorkloadInstallerProvider implements InstallerProvider {
         signal: controller.signal,
       });
       if (res.status === 401 || res.status === 403) {
+        this.invalidateSession();
         throw new PermissionDeniedError(`Installer permission denied (${res.status})`);
       }
       if (!res.ok) {
+        this.invalidateSession();
         throw new NotConnectedError(`Failed to fetch Control session: ${res.status} ${res.statusText}`);
       }
-      const data = await res.json();
-      this.cachedSession = {
-        token: data.token,
-        actor: data.actor ?? { id: "user", scopes: ["workloads.read", "workloads.install"] },
-      };
+      const data: unknown = await res.json();
+      if (!isInstallerSessionPayload(data)) {
+        this.invalidateSession();
+        throw new PermissionDeniedError("Installer session must include a token and an identified actor with explicit scopes.");
+      }
+      this.cachedSession = { token: data.token.trim(), actor: { id: data.actor.id.trim(), scopes: [...data.actor.scopes] } };
       return this.cachedSession;
     } catch (err: unknown) {
+      this.invalidateSession();
       if (err instanceof PermissionDeniedError) throw err;
       throw new NotConnectedError(
         `Failed to reach Control session endpoint at ${this.prefix}/v1/session: ${err instanceof Error ? err.message : String(err)}`,
@@ -368,6 +378,7 @@ export class ControlWorkloadInstallerProvider implements InstallerProvider {
       });
 
       if (res.status === 401 || res.status === 403) {
+        this.invalidateSession();
         throw new PermissionDeniedError(`Installer API permission denied (${res.status})`);
       }
       if (res.status === 409) {
@@ -804,6 +815,21 @@ export class ControlWorkloadInstallerProvider implements InstallerProvider {
       userDataRetained: false,
     };
   }
+}
+
+function isInstallerSessionPayload(value: unknown): value is {
+  token: string;
+  actor: { id: string; scopes: string[] };
+} {
+  if (!value || typeof value !== "object") return false;
+  const session = value as Record<string, unknown>;
+  if (typeof session.token !== "string" || !session.token.trim()) return false;
+  if (!session.actor || typeof session.actor !== "object") return false;
+  const actor = session.actor as Record<string, unknown>;
+  return typeof actor.id === "string"
+    && Boolean(actor.id.trim())
+    && Array.isArray(actor.scopes)
+    && actor.scopes.every((scope) => typeof scope === "string" && Boolean(scope.trim()));
 }
 
 export const RealInstallerProvider = ControlWorkloadInstallerProvider;

@@ -64,8 +64,10 @@ const ZH_MAP: Record<string, string> = {
   "None reported": "无",
   "Install": "开始安装",
   "Back": "返回",
-  "This plan was resolved by the Installer API.":
-    "此计划由 Installer API 解析。",
+  "This preview plan uses sample data; no Installer service is connected.":
+    "此预览计划使用样例数据；当前未连接 Installer 服务。",
+  "PREVIEW PROTOTYPE — sample data only; no Installer service is connected. Install and uninstall operations are disabled.":
+    "预览原型 — 仅展示样例数据；当前未连接 Installer 服务，安装和卸载操作均已禁用。",
 
   // Status
   "Verified": "已验证",
@@ -96,10 +98,6 @@ const ZH_MAP: Record<string, string> = {
   "Confirm uninstall": "确认卸载",
   "Cancel": "取消",
 
-  // NOT_CONNECTED banner
-  "⚠ NOT CONNECTED — this view uses mock data. Install operations are disabled.":
-    "⚠ 未连接 — 当前页面使用模拟数据，安装操作已禁用。",
-
   // Progress steps
   "Select": "选择",
   "Components": "组件",
@@ -123,7 +121,8 @@ const ZH_MAP: Record<string, string> = {
   "TBD": "待确定",
   "Undetermined": "待确定",
   "Unverified": "未验证",
-  "Resolving installation plan…": "正在生成权威安装计划…",
+  "Preparing plan…": "正在准备计划…",
+  "Preparing preview plan…": "正在准备预览计划…",
   "Target machine / architecture": "目标设备与架构",
   "Demo / Unverified Catalog": "演示 / 未验证目录",
 
