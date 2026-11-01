@@ -8,9 +8,11 @@ import { DeploymentApi } from "./api/deployment";
 import { ExchangeApi } from "./api/exchange";
 import { AssistantApi } from "./api/assistant";
 import { WorkApi } from "./api/work";
+import { ConversationMemoryApi } from "./api/conversation-memory";
 
 export * from "./api/types";
 export * from "./api/errors";
+export * from "./api/conversation-memory";
 export { NAVIGATOR_PROXY_PATHS } from "./api/constants";
 export { makeIdempotencyKey } from "./api/requests";
 
@@ -23,6 +25,7 @@ export class NavigatorApi extends NavigatorTransport {
   private readonly exchangeApi = new ExchangeApi(this);
   private readonly assistantApi = new AssistantApi(this);
   private readonly workApi = new WorkApi(this);
+  private readonly conversationMemoryApi = new ConversationMemoryApi(this);
 
   getSystemStatus(...args: Parameters<HostApi["getSystemStatus"]>): ReturnType<HostApi["getSystemStatus"]> {
     return this.hostApi.getSystemStatus(...args);
@@ -254,5 +257,49 @@ export class NavigatorApi extends NavigatorTransport {
 
   pollQqLogin(...args: Parameters<WorkApi["pollQqLogin"]>): ReturnType<WorkApi["pollQqLogin"]> {
     return this.workApi.pollQqLogin(...args);
+  }
+
+  getConversationMemoryOverview(...args: Parameters<ConversationMemoryApi["getOverview"]>): ReturnType<ConversationMemoryApi["getOverview"]> {
+    return this.conversationMemoryApi.getOverview(...args);
+  }
+
+  getConversationMessages(...args: Parameters<ConversationMemoryApi["getMessages"]>): ReturnType<ConversationMemoryApi["getMessages"]> {
+    return this.conversationMemoryApi.getMessages(...args);
+  }
+
+  listConversationMemories(...args: Parameters<ConversationMemoryApi["listMemories"]>): ReturnType<ConversationMemoryApi["listMemories"]> {
+    return this.conversationMemoryApi.listMemories(...args);
+  }
+
+  queryConversationMemories(...args: Parameters<ConversationMemoryApi["queryMemories"]>): ReturnType<ConversationMemoryApi["queryMemories"]> {
+    return this.conversationMemoryApi.queryMemories(...args);
+  }
+
+  createConversationMemory(...args: Parameters<ConversationMemoryApi["createMemory"]>): ReturnType<ConversationMemoryApi["createMemory"]> {
+    return this.conversationMemoryApi.createMemory(...args);
+  }
+
+  updateConversationMemory(...args: Parameters<ConversationMemoryApi["updateMemory"]>): ReturnType<ConversationMemoryApi["updateMemory"]> {
+    return this.conversationMemoryApi.updateMemory(...args);
+  }
+
+  deleteConversationMemory(...args: Parameters<ConversationMemoryApi["deleteMemory"]>): ReturnType<ConversationMemoryApi["deleteMemory"]> {
+    return this.conversationMemoryApi.deleteMemory(...args);
+  }
+
+  listConversationMemorySources(...args: Parameters<ConversationMemoryApi["listSources"]>): ReturnType<ConversationMemoryApi["listSources"]> {
+    return this.conversationMemoryApi.listSources(...args);
+  }
+
+  revokeConversationMemorySource(...args: Parameters<ConversationMemoryApi["revokeSource"]>): ReturnType<ConversationMemoryApi["revokeSource"]> {
+    return this.conversationMemoryApi.revokeSource(...args);
+  }
+
+  createConversationMemorySourceGrant(...args: Parameters<ConversationMemoryApi["createSourceGrant"]>): ReturnType<ConversationMemoryApi["createSourceGrant"]> {
+    return this.conversationMemoryApi.createSourceGrant(...args);
+  }
+
+  revokeConversationMemorySourceGrant(...args: Parameters<ConversationMemoryApi["revokeSourceGrant"]>): ReturnType<ConversationMemoryApi["revokeSourceGrant"]> {
+    return this.conversationMemoryApi.revokeSourceGrant(...args);
   }
 }

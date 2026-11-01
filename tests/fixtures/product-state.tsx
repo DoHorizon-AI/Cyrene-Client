@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CatalystDataToolsPanel } from "../../apps/web/services/catalyst/src/CatalystDataToolsPanel";
+import { ConversationMemoryPage } from "../../apps/web/services/navigator/src/conversation-memory";
 import { WorkAssistantPage } from "../../apps/web/services/navigator/src/work-assistant";
 import { NavigatorApi } from "../../apps/web/services/navigator/src/api";
 import { ControlledLocaleProvider } from "../../apps/web/services/navigator/src/i18n";
 
 const api = new NavigatorApi();
 const catalyst = new URLSearchParams(location.search).get("fixture") === "catalyst";
+const conversationMemory = new URLSearchParams(location.search).get("fixture") === "conversation-memory";
 
 function WorkAssistantFixture() {
   const initialWorkspace = new URLSearchParams(location.search).get("workspace") ?? "local";
@@ -18,6 +20,12 @@ function WorkAssistantFixture() {
   </>;
 }
 
+function ConversationMemoryFixture() {
+  const readOnly = new URLSearchParams(location.search).get("readonly") === "1";
+  useEffect(() => { void api.getSession().catch(() => undefined); }, []);
+  return <ConversationMemoryPage api={api} workspaceId="local" canWrite={!readOnly} />;
+}
+
 createRoot(document.getElementById("root")!).render(<ControlledLocaleProvider locale="en-US" setLocale={() => {}}>{catalyst
   ? <CatalystDataToolsPanel datasets={[{ id: "dataset-1", name: "Fixture" }]} transport={{ requestProductResponse: (path, init) => fetch(path, init) }} />
-  : <WorkAssistantFixture />}</ControlledLocaleProvider>);
+  : conversationMemory ? <ConversationMemoryFixture /> : <WorkAssistantFixture />}</ControlledLocaleProvider>);
