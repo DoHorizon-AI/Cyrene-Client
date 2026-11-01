@@ -11,6 +11,7 @@ import {
   createNavigatorChildEnvironment,
   prepareAssistantEnvironment,
 } from './assistant-environment.mjs';
+import { createNavigatorServeArgs, requestNavigatorShutdown } from './assistant-process.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { values } = parseArgs({ options: {
@@ -97,11 +98,9 @@ function close(code = 0) {
     } else child.kill('SIGTERM');
   };
   const remaining = () => { for (const child of children) terminate(child); };
-  if (navigatorChild && children.has(navigatorChild) && !navigatorChild.stdin.destroyed) {
-    // The existing Python supervisor releases writer/session leases and shuts
-    // down its children in reverse order before the Client processes stop.
-    navigatorChild.stdin.on('error', () => {});
-    navigatorChild.stdin.end('shutdown\n');
+  if (navigatorChild && children.has(navigatorChild)) {
+    // The pinned Python supervisor handles SIGTERM and stops its children in reverse order.
+    requestNavigatorShutdown(navigatorChild);
     const deadline = setTimeout(remaining, 30_000);
     navigatorChild.once('exit', () => { clearTimeout(deadline); remaining(); });
   } else {
@@ -138,12 +137,21 @@ try {
       PYTHONPATH: [join(navigator, 'src'), inheritedEnv.PYTHONPATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'),
       DSH_HOME: values['isolated-env'] ? join(stateDir, 'harness') : process.env.DSH_HOME ?? join(stateDir, 'harness'),
     };
-    const navigatorArgs = [...prefix, join(navigator, 'scripts/serve-local.py'), '--state-dir', stateDir,
-      '--host', '127.0.0.1', '--port', String(ports[1]), '--persistence-port', String(persistencePort), '--public-url', frontOrigin,
-      '--workspace-id', common.STUDIO_WORKSPACE_ID, '--organization-id', organizationId, '--actor-id', actorId,
-      '--principal-token-env', values['principal-token-env'], '--insecure-http', '--shutdown-stdin'];
-    if (values['principal-config']) navigatorArgs.push('--principal-config', resolve(values['principal-config']));
-    const child = start(file, navigatorArgs, navigator, env, ['pipe', 'pipe', 'inherit']);
+    const navigatorArgs = createNavigatorServeArgs({
+      prefix,
+      scriptPath: join(navigator, 'scripts/serve-local.py'),
+      stateDir,
+      host: '127.0.0.1',
+      port: ports[1],
+      persistencePort,
+      publicUrl: frontOrigin,
+      workspaceId: common.STUDIO_WORKSPACE_ID,
+      organizationId,
+      actorId,
+      principalTokenEnv: values['principal-token-env'],
+      principalConfig: values['principal-config'] ? resolve(values['principal-config']) : undefined,
+    });
+    const child = start(file, navigatorArgs, navigator, env, ['ignore', 'pipe', 'inherit']);
     navigatorChild = child;
     const lines = createInterface({ input: child.stdout });
     lines.on('line', line => {
