@@ -11,11 +11,11 @@ import { useI18n } from "./i18n";
 import { errorMessage } from "./pages/shared";
 import "./conversation-assistant.css";
 
-type Props = { api: NavigatorApi; workspaceId: string; canWrite: boolean };
+type Props = { api: NavigatorApi; workspaceId: string; canWrite: boolean; canOperate: boolean };
 type PeripheralTab = "media" | "bilibili";
 
 /** Present safe peripheral controls backed by Navigator Work APIs. */
-export function ConversationPeripheralPage({ api, workspaceId, canWrite }: Props) {
+export function ConversationPeripheralPage({ api, workspaceId, canWrite, canOperate }: Props) {
   const { t } = useI18n();
   const [tab, setTab] = useState<PeripheralTab>("media");
   const [hostWorkspaceId, setHostWorkspaceId] = useState<string | null>(null);
@@ -23,6 +23,7 @@ export function ConversationPeripheralPage({ api, workspaceId, canWrite }: Props
   const [workspaceError, setWorkspaceError] = useState("");
   const aligned = !!workspaceId && hostWorkspaceId === workspaceId;
   const mayWrite = canWrite && aligned;
+  const mayOperate = canOperate && aligned;
 
   useEffect(() => {
     let active = true;
@@ -45,7 +46,7 @@ export function ConversationPeripheralPage({ api, workspaceId, canWrite }: Props
     <div id="conversation-peripheral-panel" role="tabpanel" aria-label={tab === "media" ? t("Media & speech") : t("Bilibili")}>
       {loading || workspaceError ? <StateBlock kind={loading ? "loading" : "error"} title={loading ? t("Verifying Navigator workspace") : t("Conversation assistant unavailable")} detail={loading ? t("Checking the paired host before reading workspace data.") : workspaceError} />
         : tab === "media" ? <MediaSpeechPanel api={api} workspaceId={workspaceId} mayWrite={mayWrite} />
-          : <BilibiliPanel api={api} workspaceId={workspaceId} mayWrite={mayWrite} />}
+          : <BilibiliPanel api={api} workspaceId={workspaceId} mayOperate={mayOperate} />}
     </div>
   </div>;
 }
@@ -253,7 +254,35 @@ const WRITE_TOOL_SPECS: Record<BilibiliWriteOperationId, { label: string; fields
   "bilibili.dm.send": { label: "Send direct message", fields: ["peer_user_id", "content"], required: ["peer_user_id", "content"], example: { peer_user_id: "", content: "" } },
 };
 
-function BilibiliPanel({ api, workspaceId, mayWrite }: Pick<Props, "api" | "workspaceId"> & { mayWrite: boolean }) {
+type PendingBilibiliWriteIntent = { operationId: BilibiliWriteOperationId; idempotencyKey: string };
+
+function pendingBilibiliWriteStorageKey(workspaceId: string): string {
+  return "cyrene:bilibili-pending-write:" + workspaceId;
+}
+
+function readPendingBilibiliWriteIntent(workspaceId: string): PendingBilibiliWriteIntent | null {
+  try {
+    const raw = globalThis.sessionStorage.getItem(pendingBilibiliWriteStorageKey(workspaceId));
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const row = value as Record<string, unknown>;
+    if (typeof row["operationId"] !== "string" || !Object.hasOwn(WRITE_TOOL_SPECS, row["operationId"])
+      || typeof row["idempotencyKey"] !== "string" || !/^[\x21-\x7e]{1,200}$/.test(row["idempotencyKey"])) return null;
+    return { operationId: row["operationId"] as BilibiliWriteOperationId, idempotencyKey: row["idempotencyKey"] };
+  } catch { return null; }
+}
+
+function savePendingBilibiliWriteIntent(workspaceId: string, intent: PendingBilibiliWriteIntent | null): boolean {
+  try {
+    const key = pendingBilibiliWriteStorageKey(workspaceId);
+    if (intent) globalThis.sessionStorage.setItem(key, JSON.stringify(intent));
+    else globalThis.sessionStorage.removeItem(key);
+    return true;
+  } catch { return false; }
+}
+
+function BilibiliPanel({ api, workspaceId, mayOperate }: Pick<Props, "api" | "workspaceId"> & { mayOperate: boolean }) {
   const { t } = useI18n();
   const [accounts, setAccounts] = useState<BilibiliAccount[]>([]);
   const [accountsError, setAccountsError] = useState("");
@@ -270,7 +299,7 @@ function BilibiliPanel({ api, workspaceId, mayWrite }: Pick<Props, "api" | "work
   const [result, setResult] = useState<unknown>(null);
   const [receipt, setReceipt] = useState<WorkOperationReceipt | null>(null);
   const [receiptId, setReceiptId] = useState("");
-  const [writeIntent, setWriteIntent] = useState<{ connectionRef: string; operationId: BilibiliWriteOperationId; arguments: Record<string, unknown>; idempotencyKey: string } | null>(null);
+  const [writeIntent, setWriteIntent] = useState<PendingBilibiliWriteIntent | null>(() => readPendingBilibiliWriteIntent(workspaceId));
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -313,7 +342,7 @@ function BilibiliPanel({ api, workspaceId, mayWrite }: Pick<Props, "api" | "work
   }, [catalog, operationId]);
 
   const beginLink = async () => {
-    if (!mayWrite || busy) return;
+    if (!mayOperate || busy) return;
     setBusy("link"); setError(""); setNotice(""); setLinkFlow(null); setLinkStatus(null); setQrValid(false);
     try {
       const flow = await api.beginBilibiliLink(workspaceId);
@@ -328,7 +357,7 @@ function BilibiliPanel({ api, workspaceId, mayWrite }: Pick<Props, "api" | "work
   };
 
   const pollLink = async () => {
-    if (!linkFlow || busy) return;
+    if (!mayOperate || !linkFlow || busy) return;
     setBusy("link-status"); setError(""); setNotice("");
     try {
       const status = await api.getBilibiliLinkStatus(workspaceId, linkFlow.loginFlowId); setLinkStatus(status);
@@ -340,10 +369,15 @@ function BilibiliPanel({ api, workspaceId, mayWrite }: Pick<Props, "api" | "work
   };
 
   const currentOperationIsWrite = operationId in WRITE_TOOL_SPECS;
+  const hasUnresolvedWrite = !!writeIntent && receipt?.operation.status !== "verified";
   const changeOperation = (value: string) => {
     const next = value as BilibiliReadOperationId | BilibiliWriteOperationId; setOperationId(next);
     const spec = next in WRITE_TOOL_SPECS ? WRITE_TOOL_SPECS[next as BilibiliWriteOperationId] : READ_TOOL_SPECS[next as BilibiliReadOperationId];
     setArgumentsText(JSON.stringify(spec.example, null, 2)); setResult(null); setReceipt(null);
+    if (receipt?.operation.status === "verified") {
+      setWriteIntent(null);
+      savePendingBilibiliWriteIntent(workspaceId, null);
+    }
   };
 
   const parseArguments = (): Record<string, unknown> => {
@@ -359,18 +393,25 @@ function BilibiliPanel({ api, workspaceId, mayWrite }: Pick<Props, "api" | "work
   };
 
   const runOperation = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); if (!connectionRef.trim() || !connections.some((connection) => connection.connectionRef === connectionRef && connection.enabled) || busy || (currentOperationIsWrite && !mayWrite)) return;
+    event.preventDefault(); if (!mayOperate || !connectionRef.trim() || !connections.some((connection) => connection.connectionRef === connectionRef && connection.enabled) || busy || (currentOperationIsWrite && hasUnresolvedWrite)) return;
     let args: Record<string, unknown>;
     try { args = parseArguments(); } catch (reason) { setError(errorMessage(reason)); return; }
     setBusy("operation"); setError(""); setNotice(""); setResult(null); setReceipt(null);
     try {
       if (currentOperationIsWrite) {
         if (!window.confirm(`${t("This will request a Bilibili write operation")}: ${operationId}. ${t("An uncertain result will not be resent automatically.")}`)) return;
-        const intent = writeIntent?.operationId === operationId && writeIntent.connectionRef === connectionRef.trim() && JSON.stringify(writeIntent.arguments) === JSON.stringify(args)
-          ? writeIntent : { connectionRef: connectionRef.trim(), operationId: operationId as BilibiliWriteOperationId, arguments: args, idempotencyKey: newConversationMemoryKey() };
+        const intent = { operationId: operationId as BilibiliWriteOperationId, idempotencyKey: newConversationMemoryKey() };
+        if (!savePendingBilibiliWriteIntent(workspaceId, intent)) {
+          setError(t("Could not preserve the Bilibili write reference. No provider operation was sent."));
+          return;
+        }
         setWriteIntent(intent);
-        const saved = await api.runBilibiliWrite(workspaceId, intent.connectionRef, intent.operationId, { idempotencyKey: intent.idempotencyKey, arguments: intent.arguments });
+        const saved = await api.runBilibiliWrite(workspaceId, connectionRef.trim(), intent.operationId, { idempotencyKey: intent.idempotencyKey, arguments: args });
         setReceipt(saved); setReceiptId(saved.operation.id); setNotice(bilibiliWriteNotice(saved, t));
+        if (saved.operation.status === "verified") {
+          setWriteIntent(null);
+          savePendingBilibiliWriteIntent(workspaceId, null);
+        }
       } else {
         const saved = await api.runBilibiliRead(workspaceId, connectionRef.trim(), operationId as BilibiliReadOperationId, args); setResult(saved); setNotice(t("Provider read operation completed; the displayed payload is the returned result."));
       }
@@ -379,9 +420,17 @@ function BilibiliPanel({ api, workspaceId, mayWrite }: Pick<Props, "api" | "work
   };
 
   const reconcileSameIntent = async () => {
-    if (!writeIntent || busy || !mayWrite) return;
+    if (!writeIntent || busy) return;
     setBusy("reconcile-intent"); setError(""); setNotice("");
-    try { const saved = await api.runBilibiliWrite(workspaceId, writeIntent.connectionRef, writeIntent.operationId, { idempotencyKey: writeIntent.idempotencyKey, arguments: writeIntent.arguments }); setReceipt(saved); setReceiptId(saved.operation.id); setNotice(bilibiliWriteNotice(saved, t)); }
+    try {
+      const saved = await api.getBilibiliOperationByIdempotencyKey(workspaceId, writeIntent.idempotencyKey);
+      if (saved.operation.operationType !== "tool.provider.v1:" + writeIntent.operationId) throw new Error(t("The saved receipt does not match this Bilibili operation."));
+      setReceipt(saved); setReceiptId(saved.operation.id); setNotice(bilibiliWriteNotice(saved, t));
+      if (saved.operation.status === "verified") {
+        setWriteIntent(null);
+        savePendingBilibiliWriteIntent(workspaceId, null);
+      }
+    }
     catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(""); }
   };
@@ -401,13 +450,13 @@ function BilibiliPanel({ api, workspaceId, mayWrite }: Pick<Props, "api" | "work
 
   return <div className="page-stack">
     <PageHeader eyebrow={t("CONVERSATION ASSISTANT")} title={t("Bilibili")} description={t("Link a Bilibili account through the configured Navigator flow, select an owned Exchange connection, run allowlisted reads, and track writes through durable Work receipts.")} action={<Button onClick={() => setReloadKey((value) => value + 1)} disabled={busy !== ""}>{t("Refresh")}</Button>} />
-    {!mayWrite && <p className="dh-notice product-readonly">{t("This session is read-only. Viewing is available; login and provider writes require products.write.")}</p>}
+    {!mayOperate && <p className="dh-notice product-readonly">{t("This session is read-only. Viewing is available; Bilibili login and provider operations require products.operate.")}</p>}
     {error && <p role="alert" className="dh-notice dh-notice--danger">{error}</p>}{notice && <p role="status" className="dh-notice">{notice}</p>}
     <div className="conversation-assistant__grid">
       <Panel title={t("Owned accounts")} meta={<span>{accounts.length}</span>}>
         {accountsError ? <StateBlock kind="error" title={t("Account profiles unavailable")} detail={accountsError} /> : accounts.length ? <ul className="conversation-assistant__list">{accounts.map((account) => <li key={account.profileRef}><div><strong>{account.displayName ?? account.profileRef}</strong><p>{account.externalSubject ?? t("External subject not provided")}</p><small>{account.profileRef} · {t("Auth status")}: {account.authStatus} · {t("Access")}: {account.accessMode} · {t("Credential expiry")}: {account.expiresAt === null ? t("Not reported") : formatEpochSeconds(account.expiresAt)} · {t("Credential revision")}: {account.credentialRevision}</small><details><summary>{t("Account scope")}</summary><pre className="conversation-assistant__json">{JSON.stringify(account.targetScope, null, 2)}</pre></details></div></li>)}</ul> : <StateBlock kind="empty" title={t("No owned Bilibili profiles")} detail={t("Exchange returned no Bilibili profile for this actor. The UI does not create a local account record.")} />}
-        <div className="conversation-assistant__form"><p className="conversation-assistant__help">{t("New login is bound to the Navigator server's configured Bilibili auth profile. The browser cannot choose credentials or profile references.")}</p><Button tone="primary" onClick={() => void beginLink()} disabled={!mayWrite || busy !== ""} loading={busy === "link"}>{t("Start QR link")}</Button></div>
-        {linkFlow && qrValid && linkFlow.qrCodeBase64 && <section className="conversation-assistant__qr"><h3>{t("Scan to link Bilibili")}</h3><img src={`data:image/png;base64,${linkFlow.qrCodeBase64}`} alt={t("Ephemeral Bilibili login QR code")} /><p>{t("Expires")}: {new Date(linkFlow.expiresAt).toLocaleString()}</p><small>{t("QR digest verified in browser")}: {linkFlow.qrCodeSha256}</small><div className="conversation-assistant__actions"><Button onClick={() => void pollLink()} disabled={busy !== ""} loading={busy === "link-status"}>{t("Poll link status")}</Button><Button onClick={() => { setLinkFlow(null); setLinkStatus(null); setQrValid(false); }}>{t("Clear QR")}</Button></div></section>}
+        <div className="conversation-assistant__form"><p className="conversation-assistant__help">{t("New login is bound to the Navigator server's configured Bilibili auth profile. The browser cannot choose credentials or profile references.")}</p><Button tone="primary" onClick={() => void beginLink()} disabled={!mayOperate || busy !== ""} loading={busy === "link"}>{t("Start QR link")}</Button></div>
+        {linkFlow && qrValid && linkFlow.qrCodeBase64 && <section className="conversation-assistant__qr"><h3>{t("Scan to link Bilibili")}</h3><img src={`data:image/png;base64,${linkFlow.qrCodeBase64}`} alt={t("Ephemeral Bilibili login QR code")} /><p>{t("Expires")}: {new Date(linkFlow.expiresAt).toLocaleString()}</p><small>{t("QR digest verified in browser")}: {linkFlow.qrCodeSha256}</small><div className="conversation-assistant__actions"><Button onClick={() => void pollLink()} disabled={!mayOperate || busy !== ""} loading={busy === "link-status"}>{t("Poll link status")}</Button><Button onClick={() => { setLinkFlow(null); setLinkStatus(null); setQrValid(false); }}>{t("Clear QR")}</Button></div></section>}
         {linkFlow && !qrValid && <p className="conversation-assistant__help">{t("The QR flow is expired and has no image to display.")} <Button onClick={() => { setLinkFlow(null); setLinkStatus(null); }}>{t("Clear QR")}</Button></p>}
         {linkStatus && <p className="conversation-assistant__help">{t("Link status")}: {linkStatus.status}{linkStatus.profile ? ` · ${linkStatus.profile.displayName ?? linkStatus.profile.profileRef}` : ""}{linkStatus.reloginRequired ? ` · ${t("Relogin required")}` : ""}</p>}
       </Panel>
@@ -423,11 +472,11 @@ function BilibiliPanel({ api, workspaceId, mayWrite }: Pick<Props, "api" | "work
           <label>{t("Connection") }<select value={connectionRef} onChange={(event) => setConnectionRef(event.target.value)} disabled={!connections.some((connection) => connection.enabled) || busy !== ""}><option value="">{t("Select an enabled Bilibili connection")}</option>{connections.map((connection) => <option key={connection.connectionRef} value={connection.connectionRef} disabled={!connection.enabled}>{connection.displayName} · {connection.connectionRef}</option>)}</select></label>
           <label>{t("Operation") }<select value={operationId} onChange={(event) => changeOperation(event.target.value)} disabled={!catalog || busy !== ""}>{readOperationOptions.length > 0 && <optgroup label={t("Read-only operations")}>{readOperationOptions.map((id) => <option key={id} value={id}>{READ_TOOL_SPECS[id].label} · {id}</option>)}</optgroup>}{writeOperationOptions.length > 0 && <optgroup label={t("Write operations")}>{writeOperationOptions.map((id) => <option key={id} value={id}>{WRITE_TOOL_SPECS[id].label} · {id}</option>)}</optgroup>}</select></label>
           <label>{t("Provider arguments JSON")}<textarea rows={10} value={argumentsText} onChange={(event) => setArgumentsText(event.target.value)} disabled={busy !== ""} /></label>
-          {currentOperationIsWrite && <p className="conversation-assistant__help">{t("Writes require an explicit confirmation and immutable Work receipt. If the result is uncertain, use the same idempotency key to reconcile; this UI never automatically resends or marks a write verified.")}</p>}
+          {currentOperationIsWrite && <p className="conversation-assistant__help">{t("Writes require an explicit confirmation and immutable Work receipt. If the result is uncertain, read its receipt by the same idempotency key; this UI never resends an unresolved write or marks it verified.")}</p>}
           {operationId === "bilibili.video.read" && <p className="conversation-assistant__help">{t("Video results report metadata or available subtitles; they do not imply that the video itself was watched.")}</p>}
-          <Button tone={currentOperationIsWrite ? "danger" : "primary"} disabled={!selectedConnection?.enabled || !selectedOperationAvailable || (currentOperationIsWrite && !mayWrite) || busy !== "" || !catalog} loading={busy === "operation"}>{currentOperationIsWrite ? t("Run write operation") : t("Run read operation")}</Button>
+          <Button tone={currentOperationIsWrite ? "danger" : "primary"} disabled={!mayOperate || !selectedConnection?.enabled || !selectedOperationAvailable || busy !== "" || !catalog || (currentOperationIsWrite && hasUnresolvedWrite)} loading={busy === "operation"}>{currentOperationIsWrite ? t("Run write operation") : t("Run read operation")}</Button>
         </form>
-        {writeIntent && !receipt && <Button onClick={() => void reconcileSameIntent()} disabled={!mayWrite || busy !== ""} loading={busy === "reconcile-intent"}>{t("Reconcile same write intent")}</Button>}
+        {writeIntent && receipt?.operation.status !== "verified" && <Button onClick={() => void reconcileSameIntent()} disabled={busy !== ""} loading={busy === "reconcile-intent"}>{t("Reconcile same write intent")}</Button>}
         {result !== null && <section><h3>{t("Provider read result")}</h3><pre className="conversation-assistant__json">{JSON.stringify(result, null, 2)}</pre></section>}
         {receipt && <section><h3>{t("Work operation receipt")}</h3><StatusPill value={receipt.operation.status} /><dl className="conversation-assistant__facts"><dt>{t("Receipt ID")}</dt><dd>{receipt.operation.id}</dd><dt>{t("Operation")}</dt><dd>{receipt.operation.operationType}</dd><dt>{t("Idempotency key")}</dt><dd>{receipt.operation.idempotencyKey}</dd><dt>{t("Created")}</dt><dd>{formatEpoch(receipt.operation.createdAt)}</dd><dt>{t("Updated")}</dt><dd>{formatEpoch(receipt.operation.updatedAt)}</dd></dl><details><summary>{t("Receipt evidence")}</summary><pre className="conversation-assistant__json">{JSON.stringify(receipt.operation.evidence, null, 2)}</pre></details></section>}
       </Panel>

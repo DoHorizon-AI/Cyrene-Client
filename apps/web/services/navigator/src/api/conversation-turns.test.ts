@@ -32,8 +32,8 @@ describe("trusted conversation-turn ingress", () => {
       calls.push({ path, method, headers, body });
       if (path === "/api/v1/auth/session") return response({ authenticated: true, state: "AUTHENTICATED", sessionId: "session-1", expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "csrf-1", refreshed: false });
       if (path === "/api/v1/conversation-assistant/turns") return response(admission, 202);
-      if (path === admission.statusUrl) return response(task);
-      if (path === `/api/v1/tasks/${taskId}/events?after=0`) return new Response("id: 1\nevent: status\ndata: {\"type\":\"status\",\"status\":\"completed\"}\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } });
+      if (path === `/api/v1/navigator/tasks/${taskId}`) return response(task);
+      if (path === `/api/v1/navigator/tasks/${taskId}/events?after=0`) return new Response("id: 1\nevent: status\ndata: {\"type\":\"status\",\"status\":\"completed\"}\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } });
       throw new Error(`Unexpected request: ${method} ${path}`);
     });
 
@@ -49,7 +49,7 @@ describe("trusted conversation-turn ingress", () => {
     expect(calls.find((call) => call.path === "/api/v1/conversation-assistant/turns")?.headers.get("Idempotency-Key")).toBe("turn-key-1");
     expect(calls.find((call) => call.path === "/api/v1/conversation-assistant/turns")?.headers.get("X-CSRF-Token")).toBe("csrf-1");
     expect(calls.map((call) => call.path)).toEqual([
-      "/api/v1/auth/session", "/api/v1/conversation-assistant/turns", admission.statusUrl, `/api/v1/tasks/${taskId}/events?after=0`,
+      "/api/v1/auth/session", "/api/v1/conversation-assistant/turns", `/api/v1/navigator/tasks/${taskId}`, `/api/v1/navigator/tasks/${taskId}/events?after=0`,
     ]);
   });
 

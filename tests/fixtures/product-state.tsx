@@ -33,7 +33,7 @@ function ConversationMemoryFixture() {
 function ConversationAssistantFixture() {
   const readOnly = new URLSearchParams(location.search).get("readonly") === "1";
   useEffect(() => { void api.getSession().catch(() => undefined); }, []);
-  return <ConversationAssistantPage api={api} workspaceId="local" canWrite={!readOnly} />;
+  return <ConversationAssistantPage api={api} workspaceId="local" canWrite={!readOnly} canOperate={!readOnly} />;
 }
 
 function ConversationChatFixture() {

@@ -25,18 +25,26 @@ const TASK_STATUSES = new Set<NavigatorTaskRecord["status"]>([
   "queued", "running", "completed", "failed", "aborted", "waiting_approval", "waiting_input", "awaiting_user_authorization",
 ]);
 
-function taskEventPath(taskId: string): string {
+function executorTaskEventPath(taskId: string): string {
   return `/api/v1/tasks/${encodeURIComponent(taskId)}/events`;
 }
 
-function taskStatusPath(taskId: string): string {
+function executorTaskStatusPath(taskId: string): string {
   return `/api/v1/tasks/${encodeURIComponent(taskId)}/status`;
+}
+
+function browserTaskEventPath(taskId: string): string {
+  return `/api/v1/navigator/tasks/${encodeURIComponent(taskId)}/events`;
+}
+
+function browserTaskStatusPath(taskId: string): string {
+  return `/api/v1/navigator/tasks/${encodeURIComponent(taskId)}`;
 }
 
 function assertAdmissionLinks(admission: ConversationTurnAdmission): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,511}$/.test(admission.taskId)
-    || admission.eventsUrl !== `${taskEventPath(admission.taskId)}?after=0`
-    || admission.statusUrl !== taskStatusPath(admission.taskId)) {
+    || admission.eventsUrl !== `${executorTaskEventPath(admission.taskId)}?after=0`
+    || admission.statusUrl !== executorTaskStatusPath(admission.taskId)) {
     throw new NavigatorContractError("Navigator returned an invalid conversation task link.");
   }
 }
@@ -52,7 +60,7 @@ function parseAdmission(value: unknown, expectedConversationId: string): Convers
   }
   const eventsUrl = requireString(row, "eventsUrl", "conversation turn admission");
   const statusUrl = requireString(row, "statusUrl", "conversation turn admission");
-  if (eventsUrl !== `${taskEventPath(taskId)}?after=0` || statusUrl !== taskStatusPath(taskId)) {
+  if (eventsUrl !== `${executorTaskEventPath(taskId)}?after=0` || statusUrl !== executorTaskStatusPath(taskId)) {
     throw new NavigatorContractError("Navigator returned an invalid conversation task link.");
   }
   return {
@@ -95,14 +103,15 @@ export class ConversationTurnsApi {
 
   async getTask(admission: ConversationTurnAdmission, signal?: AbortSignal): Promise<NavigatorTaskRecord> {
     assertAdmissionLinks(admission);
-    const response = await this.transport.requestResponse(admission.statusUrl, { method: "GET", signal });
-    return readConversationTurnJson(response, admission.statusUrl, parseTaskRecord);
+    const path = browserTaskStatusPath(admission.taskId);
+    const response = await this.transport.requestResponse(path, { method: "GET", signal });
+    return readConversationTurnJson(response, path, parseTaskRecord);
   }
 
   async openTaskEvents(admission: ConversationTurnAdmission, afterSequence: number, signal: AbortSignal): Promise<Response> {
     assertAdmissionLinks(admission);
     if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new NavigatorContractError("Invalid conversation task event cursor.");
-    const path = `${taskEventPath(admission.taskId)}?after=${afterSequence}`;
+    const path = `${browserTaskEventPath(admission.taskId)}?after=${afterSequence}`;
     const response = await this.transport.requestResponse(path, {
       method: "GET", signal,
       headers: { Accept: "text/event-stream", "Last-Event-ID": String(afterSequence) },

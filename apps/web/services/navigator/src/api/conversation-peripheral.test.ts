@@ -67,6 +67,7 @@ describe("conversation peripheral Work API", () => {
       if (path.endsWith("/bilibili/connections/connection-1/read-operations")) return response({ readOperations: ["bilibili.search"], writeOperations: ["bilibili.comment.create"] });
       if (path.endsWith("/bilibili/connections/connection-1/reads/bilibili.search")) return response({ items: [{ title: "Real fixture result" }], nextPage: null });
       if (path.endsWith("/bilibili/connections/connection-1/writes/bilibili.comment.create")) return response({ operation, duplicate: false }, 202);
+      if (path.endsWith("/bilibili/operations/by-idempotency-key")) return response({ operation, duplicate: true });
       if (path.endsWith("/operations/operation-1")) return response({ operation });
       if (path.endsWith("/conversation-memory/backups")) return response({ attachment: { ...attachment, mediaType: "application/json" }, downloadPath: `/api/v1/workspaces/workspace-1/work/conversation-memory/backups/attachments/${digest}` });
       throw new Error(`Unexpected request: ${method} ${path}`);
@@ -79,11 +80,13 @@ describe("conversation peripheral Work API", () => {
     expect((await api.listBilibiliReadOperations("workspace-1", "connection-1")).readOperations).toEqual(["bilibili.search"]);
     expect(await api.runBilibiliRead("workspace-1", "connection-1", "bilibili.search", { keyword: "hello", search_type: "video" })).toEqual({ items: [{ title: "Real fixture result" }], nextPage: null });
     expect((await api.runBilibiliWrite("workspace-1", "connection-1", "bilibili.comment.create", { idempotencyKey: "idem-1", arguments: { video_id: "BV1", content: "Hello", root_comment_id: "0", parent_comment_id: "0" } })).operation.status).toBe("uncertain");
+    expect((await api.getBilibiliOperationByIdempotencyKey("workspace-1", "idem-1")).operation.id).toBe("operation-1");
     expect((await api.getWorkOperationReceipt("workspace-1", "operation-1")).operation.id).toBe("operation-1");
     expect((await api.createConversationBackup("workspace-1")).attachment.sha256).toBe(digest);
     expect(calls.find((call) => call.path.endsWith("/accounts/link"))?.body).toEqual({});
     expect(calls.find((call) => call.path.endsWith("/link-status"))?.body).toEqual({ loginFlowId: "flow-1" });
     expect(calls.find((call) => call.path.endsWith("/writes/bilibili.comment.create"))).toMatchObject({ path: expect.stringContaining("/connections/connection-1/"), body: { arguments: { video_id: "BV1" } }, idempotencyKey: "idem-1" });
+    expect(calls.find((call) => call.path.endsWith("/operations/by-idempotency-key"))).toMatchObject({ method: "GET", idempotencyKey: "idem-1" });
   });
 
   it("verifies private binary downloads against the scoped path and digest header", async () => {

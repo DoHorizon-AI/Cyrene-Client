@@ -527,6 +527,10 @@ export class NavigatorApi extends NavigatorTransport {
     return this.conversationPeripheralApi.runBilibiliWrite(...args);
   }
 
+  getBilibiliOperationByIdempotencyKey(...args: Parameters<ConversationPeripheralApi["getBilibiliOperationByIdempotencyKey"]>): ReturnType<ConversationPeripheralApi["getBilibiliOperationByIdempotencyKey"]> {
+    return this.conversationPeripheralApi.getBilibiliOperationByIdempotencyKey(...args);
+  }
+
   getWorkOperationReceipt(...args: Parameters<ConversationPeripheralApi["getWorkOperation"]>): ReturnType<ConversationPeripheralApi["getWorkOperation"]> {
     return this.conversationPeripheralApi.getWorkOperation(...args);
   }

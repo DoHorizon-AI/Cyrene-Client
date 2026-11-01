@@ -25,8 +25,8 @@ async function mountConversationChat(page: Page) {
     if (path === "/api/v1/auth/session") return reply({ authenticated: true, state: "AUTHENTICATED", sessionId: "paired-session", expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "paired-csrf", refreshed: false });
     if (path === "/api/v1/system/status") return reply({ service: "Navigator", status: "OK", version: "fixture", workspaceId: "local", authenticated: true, proxyPrefixes: [], credentials: { active: 0, revoked: 0 }, observedAt: new Date().toISOString() });
     if (path === "/api/v1/conversation-assistant/turns" && method === "POST") return reply({ conversationId, taskId: "task-1", sessionId: "session-1", status: "queued", eventsUrl: "/api/v1/tasks/task-1/events?after=0", statusUrl: "/api/v1/tasks/task-1/status" }, 202);
-    if (path === "/api/v1/tasks/task-1/events") return route.fulfill({ status: 200, contentType: "text/event-stream", body: "id: 1\nevent: status\ndata: {\"type\":\"status\",\"status\":\"completed\"}\n\n" });
-    if (path === "/api/v1/tasks/task-1/status") return reply({ id: "task-1", workspaceId: "local", sessionId: "session-1", prompt: "Test turn", status: "completed", createdAt: 1000, startedAt: 1000, endedAt: 1100, output: "I will keep replies concise.", reasoning: "", error: null, durationMs: 100, sequence: 1, title: "Private conversation", description: null, metadata: {} });
+    if (path === "/api/v1/navigator/tasks/task-1/events") return route.fulfill({ status: 200, contentType: "text/event-stream", body: "id: 1\nevent: status\ndata: {\"type\":\"status\",\"status\":\"completed\"}\n\n" });
+    if (path === "/api/v1/navigator/tasks/task-1") return reply({ id: "task-1", workspaceId: "local", sessionId: "session-1", prompt: "Test turn", status: "completed", createdAt: 1000, startedAt: 1000, endedAt: 1100, output: "I will keep replies concise.", reasoning: "", error: null, durationMs: 100, sequence: 1, title: "Private conversation", description: null, metadata: {} });
     if (path.endsWith("/work/conversation-memory/messages")) return reply({ items: sourceMessages, nextCursor: null });
     return reply({ code: "NOT_FOUND", error: `No simulated route for ${method} ${path}.` }, 404);
   });
@@ -48,6 +48,6 @@ test("SIMULATED conversation page submits one direct/private ingress and reads W
   expect(submit?.idempotencyKey).toMatch(/^[\x21-\x7e]{1,200}$/);
   expect(submit?.csrf).toBe("paired-csrf");
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/work/conversation-memory/messages"))).toBe(false);
-  expect(calls.some(call => call.method === "GET" && call.path === "/api/v1/tasks/task-1/status")).toBe(true);
-  expect(calls.some(call => call.method === "GET" && call.path === "/api/v1/tasks/task-1/events")).toBe(true);
+  expect(calls.some(call => call.method === "GET" && call.path === "/api/v1/navigator/tasks/task-1")).toBe(true);
+  expect(calls.some(call => call.method === "GET" && call.path === "/api/v1/navigator/tasks/task-1/events")).toBe(true);
 });

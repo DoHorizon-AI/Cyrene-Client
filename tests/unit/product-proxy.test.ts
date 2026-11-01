@@ -9,10 +9,15 @@ const cleanup: (() => Promise<void>)[] = [];
 const renewalSessionId = "00000000-0000-4000-8000-000000000001";
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function fixture() {
-  const received: { url: string; body: string; authorization?: string; productAuthorization?: string; workspaceId?: string; cookie?: string; accept?: string; lastEventId?: string; idempotencyKey?: string }[] = [];
+  const received: { url: string; body: string; authorization?: string; productAuthorization?: string; workspaceId?: string; cookie?: string; csrf?: string; accept?: string; lastEventId?: string; idempotencyKey?: string }[] = [];
   const upstream = createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const part of req) chunks.push(part);
-    received.push({ url: req.url!, body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization, productAuthorization: req.headers["x-cyrene-product-authorization"] as string | undefined, workspaceId: req.headers["x-cyrene-workspace-id"] as string | undefined, cookie: req.headers.cookie, accept: req.headers.accept, lastEventId: req.headers["last-event-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
+    received.push({ url: req.url!, body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization, productAuthorization: req.headers["x-cyrene-product-authorization"] as string | undefined, workspaceId: req.headers["x-cyrene-workspace-id"] as string | undefined, cookie: req.headers.cookie, csrf: req.headers["x-csrf-token"] as string | undefined, accept: req.headers.accept, lastEventId: req.headers["last-event-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
+    if (req.url?.endsWith("/conversation-memory/media/assets/asset-1/attachment")) {
+      res.writeHead(200, { "content-type": "image/png", "x-content-sha256": "a".repeat(64) });
+      res.end("private-image-bytes");
+      return;
+    }
     if (req.url?.endsWith("renewal-sessions") && req.method === "POST") {
       res.writeHead(202, { "content-type": "application/json", location: `/api/v1/accounts/renewal-sessions/${renewalSessionId}` });
       res.end(JSON.stringify({ accepted: true }));
@@ -21,6 +26,11 @@ async function fixture() {
     if (req.url?.endsWith("/api/v1/integrations/notifications/events")) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end('id: 13\ndata: {"sequence":13}\n\n');
+      return;
+    }
+    if (req.url?.includes("/api/v1/tasks/") && req.url.includes("/events?")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end('id: 1\nevent: status\ndata: {"type":"status","status":"completed"}\n\n');
       return;
     }
     if (req.url?.endsWith("events/stream")) {
@@ -79,6 +89,13 @@ it("scopes integration reads and renewal, refresh, and acknowledgement actions t
   expect(f.received).toHaveLength(0);
   expect((await f.request("/api/v1/navigator/tasks", { ...viewer, ...exchangeCredential })).status).toBe(200);
   expect(f.received.at(-1)).toMatchObject({ url: "/api/v1/tasks", productAuthorization: undefined, workspaceId: undefined, authorization: undefined });
+  expect((await f.request("/api/v1/navigator/tasks/task.1", viewer)).status).toBe(200);
+  expect(f.received.at(-1)?.url).toBe("/api/v1/tasks/task.1");
+  const taskEvents = await f.request("/api/v1/navigator/tasks/task.1/events?after=0", { ...viewer, accept: "text/event-stream", "last-event-id": "0" });
+  expect(taskEvents.status).toBe(200);
+  expect(String(taskEvents.responseHeaders["content-type"])).toContain("text/event-stream");
+  expect(taskEvents.text).toContain('"status":"completed"');
+  expect(f.received.at(-1)).toMatchObject({ url: "/api/v1/tasks/task.1/events?after=0", accept: "text/event-stream", lastEventId: "0" });
 
   expect((await f.request("/api/v1/integrations/connections/conn-1/authorization-health", { ...viewer, ...exchangeCredential })).status).toBe(200);
   expect((await f.request("/api/v1/integrations/connections/conn-1/resources", { ...viewer, ...exchangeCredential })).status).toBe(200);
@@ -197,6 +214,85 @@ it("binds Navigator task proxy permissions to the pinned executor input and deni
   expect(navigatorProxyPolicy("PUT", "/api/v1/navigator/assistant/providers/personal")).toBeUndefined();
   expect(productPermission("PATCH", "/api/v1/workspaces/local/work/tasks/task-1")).toBeNull();
   expect(productPermission("POST", "/api/v1/workspaces/local/work/tasks/task-1/events")).toBeNull();
+});
+
+it("allowlists scoped conversation Work routes and keeps trusted message/source writers private", () => {
+  const cases: Array<[string, string, string]> = [
+    ["GET", "/api/v1/workspaces/local/work/conversation-memory/overview", "products.read"],
+    ["GET", "/api/v1/workspaces/local/work/conversation-memory/messages", "products.read"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/memories/query", "products.read"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/memories", "products.write"],
+    ["PATCH", "/api/v1/workspaces/local/work/conversation-memory/memories/memory-1", "products.write"],
+    ["DELETE", "/api/v1/workspaces/local/work/conversation-memory/memories/memory-1", "products.write"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/sources/source-1/revoke", "products.write"],
+    ["GET", "/api/v1/workspaces/local/work/conversation-memory/profiles", "products.read"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/graph/proposals", "products.write"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/graph/query", "products.read"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/maintenance/jobs", "products.write"],
+    ["GET", "/api/v1/workspaces/local/work/conversation-memory/media/assets", "products.read"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/media/assets/import", "products.write"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/speech/transcriptions", "products.write"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/bilibili/connections/conn-1/reads/bilibili.search", "products.operate"],
+    ["POST", "/api/v1/workspaces/local/work/conversation-memory/bilibili/connections/conn-1/writes/bilibili.comment.create", "products.operate"],
+    ["GET", "/api/v1/workspaces/local/work/conversation-memory/bilibili/operations/by-idempotency-key", "products.read"],
+    ["GET", "/api/v1/workspaces/local/work/operations/operation-1", "products.read"],
+  ];
+  for (const [method, path, permission] of cases) expect(productPermission(method, path), `${method} ${path}`).toBe(permission);
+
+  expect(productPermission("POST", "/api/v1/workspaces/local/work/conversation-memory/messages")).toBeNull();
+  expect(productPermission("POST", "/api/v1/workspaces/local/work/conversation-memory/bilibili/operations/by-idempotency-key")).toBeNull();
+  expect(productPermission("POST", "/api/v1/workspaces/local/work/conversation-memory/sources/authorize")).toBeNull();
+  expect(productPermission("POST", "/api/v1/workspaces/local/work/conversation-memory/artifacts/authorize")).toBeNull();
+  expect(productPermission("GET", "/api/v1/workspaces/other/work/conversation-memory/overview")).toBe("products.read");
+});
+
+it("admits only the fixed private conversation turn DTO and forwards it with operator scope", async () => {
+  const policy = navigatorProxyPolicy("POST", "/api/v1/conversation-assistant/turns");
+  expect(policy?.permission).toBe("products.operate");
+  expect(policy?.workspace).toBe("host");
+  expect(policy?.validateBody?.({ conversationId: "web-private-1", text: "Hello" }, "local")).toBeNull();
+  expect(policy?.validateBody?.({ conversationId: "web-private-1", text: "Hello", actorId: "actor-1" }, "local")).toMatchObject({ code: "CONVERSATION_TURN_INVALID", status: 400 });
+  expect(policy?.validateBody?.({ conversationId: "invalid id", text: "Hello" }, "local")).toMatchObject({ code: "CONVERSATION_TURN_INVALID", status: 400 });
+
+  const f = await fixture(), viewer = await f.login("viewer"), operator = await f.login("operator"), editor = await f.login("editor");
+  const forbidden = await f.request("/api/v1/conversation-assistant/turns", { ...viewer, "content-type": "application/json", "idempotency-key": "turn-1" }, "POST", JSON.stringify({ conversationId: "web-private-1", text: "Hello" }));
+  expect(forbidden.status).toBe(403);
+  expect(f.received).toHaveLength(0);
+
+  const spoofedBody = await f.request("/api/v1/conversation-assistant/turns", { ...operator, "content-type": "application/json", "idempotency-key": "turn-1" }, "POST", JSON.stringify({ conversationId: "web-private-1", text: "Hello", actorId: "spoofed" }));
+  expect(spoofedBody.status).toBe(400);
+  expect(f.received).toHaveLength(0);
+
+  const accepted = await f.request("/api/v1/conversation-assistant/turns", { ...operator, "content-type": "application/json", "idempotency-key": "turn-1", "x-csrf-token": "navigator-csrf" }, "POST", JSON.stringify({ conversationId: "web-private-1", text: "Hello" }));
+  expect(accepted.status).toBe(200);
+  expect(f.received.at(-1)).toMatchObject({ url: "/api/v1/conversation-assistant/turns", idempotencyKey: "turn-1", authorization: undefined, csrf: "navigator-csrf", cookie: "product_session=upstream-only" });
+  expect(JSON.parse(f.received.at(-1)!.body)).toEqual({ conversationId: "web-private-1", text: "Hello" });
+
+  const writerRead = await f.request("/api/v1/workspaces/local/work/conversation-memory/overview", viewer);
+  expect(writerRead.status).toBe(200);
+  expect(f.received.at(-1)?.url).toBe("/api/v1/workspaces/local/work/conversation-memory/overview");
+  const routedBeforeCrossWorkspaceRead = f.received.length;
+  const otherWorkspace = await f.request("/api/v1/workspaces/other/work/conversation-memory/overview", viewer);
+  expect(otherWorkspace.status).toBe(403);
+  expect(f.received).toHaveLength(routedBeforeCrossWorkspaceRead);
+  const writerSave = await f.request("/api/v1/workspaces/local/work/conversation-memory/memories", { ...editor, "content-type": "application/json" }, "POST", '{"scope":"server-validated"}');
+  expect(writerSave.status).toBe(200);
+  expect(f.received.at(-1)?.url).toBe("/api/v1/workspaces/local/work/conversation-memory/memories");
+
+  const receiptLookup = await f.request("/api/v1/workspaces/local/work/conversation-memory/bilibili/operations/by-idempotency-key", { ...viewer, "idempotency-key": "bili-write-1" });
+  expect(receiptLookup.status).toBe(200);
+  expect(f.received.at(-1)).toMatchObject({ url: "/api/v1/workspaces/local/work/conversation-memory/bilibili/operations/by-idempotency-key", idempotencyKey: "bili-write-1" });
+
+  const trustedOnly = await f.request("/api/v1/workspaces/local/work/conversation-memory/messages", { ...operator, "content-type": "application/json" }, "POST", '{"eventId":"forbidden"}');
+  expect(trustedOnly.status).toBe(403);
+});
+
+it("preserves a validated digest header for actor-private conversation artifacts", async () => {
+  const f = await fixture(), viewer = await f.login("viewer");
+  const response = await f.request("/api/v1/workspaces/local/work/conversation-memory/media/assets/asset-1/attachment", viewer);
+  expect(response.status).toBe(200);
+  expect(response.text).toBe("private-image-bytes");
+  expect(response.responseHeaders["x-content-sha256"]).toBe("a".repeat(64));
 });
 
 it("admits pinned task IDs with dots and encoded colons for detail, events and cancel", () => {

@@ -15,13 +15,13 @@ import { ConversationPeripheralPage } from "./conversation-peripheral-page";
 import "./conversation-assistant.css";
 
 type AssistantTab = "memory" | "profiles" | "graph" | "operations" | "peripherals";
-type AssistantPageProps = { api: NavigatorApi; workspaceId: string; canWrite: boolean };
+type AssistantPageProps = { api: NavigatorApi; workspaceId: string; canWrite: boolean; canOperate: boolean };
 
 /**
  * Present conversation capabilities as sections of one Navigator-owned workspace.
  * 中文：把对话能力整合为由 Navigator 管理的同一工作区分区。
  */
-export function ConversationAssistantPage({ api, workspaceId, canWrite }: AssistantPageProps) {
+export function ConversationAssistantPage({ api, workspaceId, canWrite, canOperate }: AssistantPageProps) {
   const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<AssistantTab>("memory");
   const tabs: readonly { id: AssistantTab; label: string }[] = [
@@ -38,8 +38,8 @@ export function ConversationAssistantPage({ api, workspaceId, canWrite }: Assist
     <div id="conversation-assistant-panel" role="tabpanel" aria-labelledby={`conversation-assistant-tab-${activeTab}`}>
       {activeTab === "memory" ? <ConversationMemoryPage api={api} workspaceId={workspaceId} canWrite={canWrite} />
         : activeTab === "operations" ? <ConversationOperationsPage api={api} workspaceId={workspaceId} canWrite={canWrite} />
-          : activeTab === "peripherals" ? <ConversationPeripheralPage api={api} workspaceId={workspaceId} canWrite={canWrite} />
-          : <ConversationDomainsPage api={api} workspaceId={workspaceId} canWrite={canWrite} section={activeTab} />}
+          : activeTab === "peripherals" ? <ConversationPeripheralPage api={api} workspaceId={workspaceId} canWrite={canWrite} canOperate={canOperate} />
+          : <ConversationDomainsPage api={api} workspaceId={workspaceId} canWrite={canWrite} canOperate={canOperate} section={activeTab} />}
     </div>
   </div>;
 }

@@ -19,7 +19,7 @@ const cardAsset = { ...imageAsset, assetId: "card-image-1", title: "Rendered car
 const readIds = ["bilibili.search", "bilibili.user.find", "bilibili.video.read", "bilibili.comments.list", "bilibili.dynamics.list", "bilibili.dynamic.read", "bilibili.dm.list", "bilibili.dm.read"];
 const writeIds = ["bilibili.comment.create", "bilibili.dynamic.publish", "bilibili.dm.send"];
 
-async function mountPeripheral(page: Page) {
+async function mountPeripheral(page: Page, options: { loseWriteReceipt?: boolean } = {}) {
   const entry = `/@fs/${resolve("tests/fixtures/product-state.tsx").replaceAll("\\", "/")}`;
   await page.route("**/src/main.tsx", route => route.fulfill({ contentType: "text/javascript", body: `import ${JSON.stringify(entry)};` }));
   const calls: Array<{ method: string; path: string; body: unknown; csrf?: string; idempotencyKey?: string }> = [];
@@ -58,7 +58,12 @@ async function mountPeripheral(page: Page) {
     if (path.endsWith("/conversation-memory/bilibili/connections/connection-1/reads/bilibili.search")) return reply({ items: [{ title: "Returned provider result", bvid: "BV1" }], nextPage: null });
     if (path.endsWith("/conversation-memory/bilibili/connections/connection-1/writes/bilibili.comment.create")) {
       receipt = { id: "operation-1", idempotencyKey: request.headers()["idempotency-key"], operationType: "tool.provider.v1:bilibili.comment.create", request: { operationId: "bilibili.comment.create" }, status: "uncertain", evidence: { status: "UNKNOWN", replay: "NOT_REPLAYED" }, createdAt: 3000, updatedAt: 3000 };
+      if (options.loseWriteReceipt) return reply({ code: "UPSTREAM_RESULT_UNKNOWN", detail: "The response was lost after the operation receipt was saved." }, 503);
       return reply({ operation: receipt, duplicate: false }, 202);
+    }
+    if (path.endsWith("/conversation-memory/bilibili/operations/by-idempotency-key")) {
+      if (receipt && request.headers()["idempotency-key"] === receipt["idempotencyKey"]) return reply({ operation: receipt, duplicate: true });
+      return reply({ code: "BILIBILI_OPERATION_NOT_FOUND", detail: "No saved operation receipt exists for this key." }, 404);
     }
     if (path.endsWith("/work/operations/operation-1")) return reply({ operation: receipt });
     return reply({ code: "NOT_FOUND", detail: `No fixture route for ${method} ${path}.` }, 404);
@@ -119,4 +124,34 @@ test("SIMULATED browser flow uploads media, reads speech, and records Bilibili r
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/connections/connection-1/writes/bilibili.comment.create"))).toBe(true);
   expect(calls.some(call => call.method === "GET" && call.path.endsWith("/work/operations/operation-1"))).toBe(true);
   expect(calls.filter(call => call.method !== "GET").every(call => call.csrf === "paired-csrf")).toBe(true);
+});
+
+test("SIMULATED Bilibili reconciliation reads a saved receipt without replaying an uncertain write", async ({ page }) => {
+  const { calls } = await mountPeripheral(page, { loseWriteReceipt: true });
+  page.on("dialog", dialog => dialog.accept());
+  await page.getByRole("tab", { name: "Media & Bilibili" }).click();
+  await page.getByRole("tab", { name: "Bilibili", exact: true }).click();
+  await page.getByRole("button", { name: "Start QR link" }).click();
+  await page.getByRole("button", { name: "Poll link status" }).click();
+  await page.getByRole("combobox", { name: "Connection", exact: true }).first().selectOption("connection-1");
+  await page.getByRole("combobox", { name: "Operation" }).selectOption("bilibili.comment.create");
+  await page.getByLabel("Provider arguments JSON").fill(JSON.stringify({ video_id: "BV1", root_comment_id: "0", parent_comment_id: "0", content: "Uncertain result test" }));
+  await page.getByRole("button", { name: "Run write operation" }).click();
+
+  const writePath = "/api/v1/workspaces/local/work/conversation-memory/bilibili/connections/connection-1/writes/bilibili.comment.create";
+  await expect(page.getByRole("button", { name: "Reconcile same write intent" })).toBeVisible();
+  const firstWrite = calls.find((call) => call.method === "POST" && call.path === writePath);
+  expect(firstWrite?.idempotencyKey).toBeTruthy();
+  await page.reload();
+  await page.getByRole("tab", { name: "Media & Bilibili" }).click();
+  await page.getByRole("tab", { name: "Bilibili", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Reconcile same write intent" })).toBeVisible();
+  await page.getByRole("button", { name: "Reconcile same write intent" }).click();
+  await expect(page.getByText("Bilibili write result is uncertain.", { exact: false })).toBeVisible();
+
+  expect(calls.filter((call) => call.method === "POST" && call.path === writePath)).toHaveLength(1);
+  expect(calls.find((call) => call.method === "GET" && call.path.endsWith("/bilibili/operations/by-idempotency-key"))).toMatchObject({
+    method: "GET",
+    idempotencyKey: firstWrite?.idempotencyKey,
+  });
 });

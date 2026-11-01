@@ -339,6 +339,21 @@ export class ConversationPeripheralApi {
   runBilibiliWrite(workspaceId: string, connectionRef: string, operationId: BilibiliWriteOperationId, input: { idempotencyKey: string; arguments: Record<string, unknown> }): Promise<WorkOperationReceipt> {
     return this.transport.requestJson(workPath(workspaceId, `conversation-memory/bilibili/connections/${workId(connectionRef)}/writes/${workId(operationId)}`), jsonRequest("POST", { arguments: input.arguments }, input.idempotencyKey), parseOperationReceipt);
   }
+  /** Read an existing Bilibili receipt by key without dispatching another provider operation. */
+  getBilibiliOperationByIdempotencyKey(workspaceId: string, idempotencyKey: string, signal?: AbortSignal): Promise<WorkOperationReceipt> {
+    if (!/^[\x21-\x7e]{1,200}$/.test(idempotencyKey)) throw new NavigatorContractError("Invalid Bilibili operation idempotency key.");
+    return this.transport.requestJson(
+      workPath(workspaceId, "conversation-memory/bilibili/operations/by-idempotency-key"),
+      { method: "GET", headers: { "Idempotency-Key": idempotencyKey }, signal },
+      parseOperationReceipt,
+    ).then((receipt) => {
+      if (receipt.duplicate !== true || receipt.operation.idempotencyKey !== idempotencyKey) {
+        throw new NavigatorContractError("Navigator returned a receipt outside the requested idempotency key.");
+      }
+      return receipt;
+    });
+  }
+
   getWorkOperation(workspaceId: string, operationId: string, signal?: AbortSignal): Promise<WorkOperationReceipt> {
     return this.transport.requestJson(workPath(workspaceId, `operations/${workId(operationId)}`), { method: "GET", signal }, parseOperationReceipt);
   }

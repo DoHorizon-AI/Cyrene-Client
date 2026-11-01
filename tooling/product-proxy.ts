@@ -48,12 +48,108 @@ function taskBodyViolation(input: unknown, mode: "local" | "team"): ProxyBodyVio
   return null;
 }
 
+function conversationTurnBodyViolation(input: unknown, _mode: "local" | "team"): ProxyBodyViolation | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { code: "CONVERSATION_TURN_INVALID", message: "对话轮次必须是 JSON 对象。", status: 400 };
+  }
+  const body = input as Record<string, unknown>;
+  if (Object.keys(body).length !== 2 || !Object.hasOwn(body, "conversationId") || !Object.hasOwn(body, "text")) {
+    return { code: "CONVERSATION_TURN_INVALID", message: "只接受 conversationId 和 text；主体、人格和来源由 Navigator 推导。", status: 400 };
+  }
+  if (typeof body.conversationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(body.conversationId)
+    || typeof body.text !== "string" || body.text.trim().length === 0 || body.text.length > 20_000) {
+    return { code: "CONVERSATION_TURN_INVALID", message: "会话 ID 或消息文本超出对话入口限制。", status: 400 };
+  }
+  return null;
+}
+
 function policy(method: string, path: string, access: string | null, options: NavigatorPolicyOptions = {}): NavigatorProxyPolicy {
   return { method, path: new RegExp(`^/api/v1/${path}$`), permission: access === null ? null : `products.${access}`, maxBodyBytes: defaultBodyLimit, ...options };
 }
 
+function conversationPolicy(method: string, path: string, access: "read" | "write" | "operate", options: NavigatorPolicyOptions = {}): NavigatorProxyPolicy {
+  return policy(method, `workspaces/(${workId})/work/conversation-memory/${path}`, access, { workspace: "path", ...options });
+}
+
+const conversationWorkPolicies: readonly NavigatorProxyPolicy[] = [
+  policy("GET", `workspaces/(${workId})/work/operations/${workId}`, "read", { workspace: "path" }),
+  conversationPolicy("GET", "overview", "read"),
+  conversationPolicy("GET", "messages", "read"),
+  conversationPolicy("GET", "memories", "read"),
+  conversationPolicy("POST", "memories/query", "read"),
+  conversationPolicy("POST", "memories", "write"),
+  conversationPolicy("PATCH", `memories/${workId}`, "write"),
+  conversationPolicy("DELETE", `memories/${workId}`, "write"),
+  conversationPolicy("GET", "sources", "read"),
+  conversationPolicy("POST", `sources/${workId}/revoke`, "write"),
+  conversationPolicy("POST", `sources/${workId}/grants`, "write"),
+  conversationPolicy("DELETE", `sources/${workId}/grants/${workId}`, "write"),
+  conversationPolicy("GET", "personas", "read"),
+  conversationPolicy("PUT", "personas", "write"),
+  conversationPolicy("GET", "profile-candidates", "read"),
+  conversationPolicy("POST", "profile-candidates", "write"),
+  conversationPolicy("GET", "profiles", "read"),
+  conversationPolicy("POST", `profile-candidates/${workId}/activate`, "write"),
+  conversationPolicy("POST", `profiles/${workId}/rollback`, "write"),
+  conversationPolicy("POST", "graph/proposals", "write"),
+  conversationPolicy("GET", "graph/changesets", "read"),
+  conversationPolicy("POST", `graph/changesets/${workId}/apply`, "write"),
+  conversationPolicy("POST", "graph/query", "read"),
+  conversationPolicy("GET", "maintenance/jobs", "read"),
+  conversationPolicy("POST", "maintenance/jobs", "write"),
+  conversationPolicy("GET", `maintenance/jobs/${workId}`, "read"),
+  conversationPolicy("PATCH", `maintenance/jobs/${workId}/checkpoint`, "write"),
+  conversationPolicy("POST", `maintenance/jobs/${workId}/cancel`, "write"),
+  conversationPolicy("GET", "research/notes", "read"),
+  conversationPolicy("POST", "research/notes", "write"),
+  conversationPolicy("GET", "research/skills", "read"),
+  conversationPolicy("POST", "research/skills", "write"),
+  conversationPolicy("GET", "watches", "read"),
+  conversationPolicy("POST", "watches", "write"),
+  conversationPolicy("POST", `watches/${workId}/cancel`, "write"),
+  conversationPolicy("GET", "focus-items", "read"),
+  conversationPolicy("POST", "focus-items", "write"),
+  conversationPolicy("POST", `focus-items/${workId}/transition`, "write"),
+  conversationPolicy("POST", "handoffs", "write"),
+  conversationPolicy("GET", `handoffs/${workId}`, "read"),
+  conversationPolicy("GET", "policies/active-behavior", "read"),
+  conversationPolicy("PUT", "policies/active-behavior", "write"),
+  conversationPolicy("GET", "review-events", "read"),
+  conversationPolicy("POST", "review-events", "write"),
+  conversationPolicy("POST", "imports/preview", "write", { maxBodyBytes: 12_000_000 }),
+  conversationPolicy("POST", "imports", "write", { maxBodyBytes: 12_000_000 }),
+  conversationPolicy("POST", `imports/${workId}/rollback`, "write"),
+  conversationPolicy("POST", "backups", "write"),
+  conversationPolicy("GET", "backups/attachments/[a-f0-9]{64}", "read"),
+  conversationPolicy("GET", "media/assets", "read"),
+  conversationPolicy("GET", `media/assets/${workId}`, "read"),
+  conversationPolicy("GET", `media/assets/${workId}/attachment`, "read"),
+  conversationPolicy("POST", "media/assets/import", "write"),
+  conversationPolicy("DELETE", `media/assets/${workId}`, "write"),
+  conversationPolicy("POST", `media/assets/${workId}/restore`, "write"),
+  conversationPolicy("POST", "media/cards/render", "write"),
+  conversationPolicy("GET", "speech/config", "read"),
+  conversationPolicy("PUT", "speech/config", "write"),
+  conversationPolicy("GET", "speech/status", "read"),
+  conversationPolicy("POST", "speech/transcriptions", "write"),
+  conversationPolicy("GET", "bilibili/accounts", "read"),
+  conversationPolicy("POST", "bilibili/accounts/link", "operate"),
+  conversationPolicy("POST", "bilibili/link-status", "operate"),
+  conversationPolicy("GET", "bilibili/connections", "read"),
+  conversationPolicy("GET", "bilibili/operations/by-idempotency-key", "read"),
+  conversationPolicy("GET", `bilibili/connections/${workId}/read-operations`, "read"),
+  conversationPolicy("POST", `bilibili/connections/${workId}/reads/${workId}`, "operate"),
+  conversationPolicy("POST", `bilibili/connections/${workId}/writes/${workId}`, "operate"),
+  conversationPolicy("GET", `operations/${workId}`, "read"),
+];
+
 /** One policy owns admission, workspace checks, body checks, limits and rewrites. */
 export const navigatorProxyPolicies: readonly NavigatorProxyPolicy[] = [
+  policy("POST", "conversation-assistant/turns", "operate", {
+    workspace: "host",
+    maxBodyBytes: 96 * 1024,
+    validateBody: conversationTurnBodyViolation,
+  }),
   policy("GET", "navigator/active-route", "read"),
   policy("POST", "navigator/active-route", "operate"),
   policy("GET", `navigator/harness/workspaces/(${id})/sessions`, "read", { workspace: "path" }),
@@ -66,6 +162,7 @@ export const navigatorProxyPolicies: readonly NavigatorProxyPolicy[] = [
   policy("POST", `navigator/tasks/${taskId}/cancel`, "operate", { workspace: "host", upstream: "tasks" }),
   policy("GET", "navigator/approvals", "read", { workspace: "host", upstream: "approvals" }),
   policy("POST", `navigator/approvals/${id}/resolve`, "operate", { workspace: "host", upstream: "approvals" }),
+  ...conversationWorkPolicies,
   policy("GET", `workspaces/(${workId})/work/approvals(?:/${workId})?`, "read", { workspace: "path" }),
   policy("POST", `workspaces/(${workId})/work/approvals/${workId}/resolve`, "operate", { workspace: "path" }),
   policy("GET", `workspaces/(${workId})/work/inputs(?:/${workId})?`, "read", { workspace: "path" }),
