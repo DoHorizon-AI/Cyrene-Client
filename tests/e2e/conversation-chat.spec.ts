@@ -17,6 +17,7 @@ async function mountConversationChat(page: Page) {
   const entry = `/@fs/${resolve("tests/fixtures/product-state.tsx").replaceAll("\\", "/")}`;
   await page.route("**/src/main.tsx", route => route.fulfill({ contentType: "text/javascript", body: `import ${JSON.stringify(entry)};` }));
   const calls: Array<{ method: string; path: string; body: unknown; idempotencyKey?: string; csrf?: string }> = [];
+  let binding: Record<string, unknown> | null = null;
   await page.route("**/api/v1/**", async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
     const body = request.postDataJSON() as unknown;
@@ -24,6 +25,13 @@ async function mountConversationChat(page: Page) {
     const reply = (value: unknown, status = 200) => route.fulfill({ json: value, status });
     if (path === "/api/v1/auth/session") return reply({ authenticated: true, state: "AUTHENTICATED", sessionId: "paired-session", expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "paired-csrf", refreshed: false });
     if (path === "/api/v1/system/status") return reply({ service: "Navigator", status: "OK", version: "fixture", workspaceId: "local", authenticated: true, proxyPrefixes: [], credentials: { active: 0, revoked: 0 }, observedAt: new Date().toISOString() });
+    if (path.endsWith("/work/conversation-memory/personas/binding") && method === "GET") return reply({ binding, availablePersonaIds: ["calm"] });
+    if (path.endsWith("/work/conversation-memory/personas") && method === "GET") return reply({ items: [{ id: "calm", name: "Calm", description: "", prompt: "Be concise.", enabled: true, conversationIds: [], version: 1, createdAt: 1000, updatedAt: 1000 }] });
+    if (path.endsWith("/work/conversation-memory/personas/binding") && method === "PUT") {
+      const input = body as Record<string, unknown>;
+      binding = { conversationId: input["conversationId"], conversationKind: input["conversationKind"], personaId: input["personaId"], version: 1, createdAt: 1000, updatedAt: 1000 };
+      return reply({ binding, duplicate: false });
+    }
     if (path === "/api/v1/conversation-assistant/turns" && method === "POST") return reply({ conversationId, taskId: "task-1", sessionId: "session-1", status: "queued", eventsUrl: "/api/v1/tasks/task-1/events?after=0", statusUrl: "/api/v1/tasks/task-1/status" }, 202);
     if (path === "/api/v1/navigator/tasks/task-1/events") return route.fulfill({ status: 200, contentType: "text/event-stream", body: "id: 1\nevent: status\ndata: {\"type\":\"status\",\"status\":\"completed\"}\n\n" });
     if (path === "/api/v1/navigator/tasks/task-1") return reply({ id: "task-1", workspaceId: "local", sessionId: "session-1", prompt: "Test turn", status: "completed", createdAt: 1000, startedAt: 1000, endedAt: 1100, output: "I will keep replies concise.", reasoning: "", error: null, durationMs: 100, sequence: 1, title: "Private conversation", description: null, metadata: {} });
@@ -37,6 +45,10 @@ async function mountConversationChat(page: Page) {
 test("SIMULATED conversation page submits one direct/private ingress and reads Work messages", async ({ page }) => {
   const { calls } = await mountConversationChat(page);
   await page.getByLabel("Conversation ID", { exact: true }).fill(conversationId);
+  const personaSelector = page.getByRole("combobox", { name: "Conversation persona" });
+  await expect(personaSelector.locator("option", { hasText: "Calm" })).toBeAttached();
+  await personaSelector.selectOption("calm");
+  await expect(page.locator('[role="status"]')).toContainText("Persona binding saved");
   await page.getByLabel("Message", { exact: true }).fill("Please keep answers concise.");
   await page.getByRole("button", { name: "Send private message" }).click();
   await expect(page.getByText("I will keep replies concise.", { exact: true }).first()).toBeVisible();
@@ -47,6 +59,9 @@ test("SIMULATED conversation page submits one direct/private ingress and reads W
   expect(submit?.body).toEqual({ conversationId, text: "Please keep answers concise." });
   expect(submit?.idempotencyKey).toMatch(/^[\x21-\x7e]{1,200}$/);
   expect(submit?.csrf).toBe("paired-csrf");
+  const personaBinding = calls.find(call => call.method === "PUT" && call.path.endsWith("/work/conversation-memory/personas/binding"));
+  expect(personaBinding?.body).toEqual({ conversationId, conversationKind: "direct", personaId: "calm", expectedVersion: 0 });
+  expect(calls.some(call => call.method === "GET" && call.path.endsWith("/work/conversation-memory/personas/binding"))).toBe(true);
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/work/conversation-memory/messages"))).toBe(false);
   expect(calls.some(call => call.method === "GET" && call.path === "/api/v1/navigator/tasks/task-1")).toBe(true);
   expect(calls.some(call => call.method === "GET" && call.path === "/api/v1/navigator/tasks/task-1/events")).toBe(true);

@@ -6,25 +6,31 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Button, PageHeader, Panel, StateBlock, StatusPill } from "./components";
-import { newConversationMemoryKey, type ConversationMessage, type ConversationTurnAdmission, type NavigatorApi, type NavigatorTaskRecord } from "./api";
+import { newConversationMemoryKey, type ConversationMessage, type ConversationPersona, type ConversationPersonaBindingView, type ConversationTurnAdmission, type NavigatorApi, type NavigatorTaskRecord } from "./api";
 import { assistantEventLabel, readAssistantTaskEvents } from "./task-event-stream";
 import { useI18n } from "./i18n";
 import { errorMessage } from "./pages/shared";
 import "./conversation-assistant.css";
 
-type Props = { api: NavigatorApi; workspaceId: string; canOperate: boolean };
+type Props = { api: NavigatorApi; workspaceId: string; canOperate: boolean; canWrite: boolean };
 type PendingTurn = { conversationId: string; text: string; idempotencyKey: string };
 
 /**
  * Render a private Web chat backed by the dedicated conversation admission API.
  * 中文：通过专用对话入口展示由 Navigator 持久化的私聊消息与任务回执。
  */
-export function ConversationChatPage({ api, workspaceId, canOperate }: Props) {
+export function ConversationChatPage({ api, workspaceId, canOperate, canWrite }: Props) {
   const { t } = useI18n();
   const [hostWorkspaceId, setHostWorkspaceId] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const [workspaceError, setWorkspaceError] = useState("");
   const [conversationId, setConversationId] = useState(() => `web-${newConversationMemoryKey()}`);
+  const [personaBinding, setPersonaBinding] = useState<ConversationPersonaBindingView | null>(null);
+  const [personas, setPersonas] = useState<ConversationPersona[]>([]);
+  const [personaLoading, setPersonaLoading] = useState(false);
+  const [personaSaving, setPersonaSaving] = useState(false);
+  const [personaError, setPersonaError] = useState("");
+  const [personaNotice, setPersonaNotice] = useState("");
   const [text, setText] = useState("");
   const [pendingTurn, setPendingTurn] = useState<PendingTurn | null>(null);
   const [admission, setAdmission] = useState<ConversationTurnAdmission | null>(null);
@@ -37,9 +43,77 @@ export function ConversationChatPage({ api, workspaceId, canOperate }: Props) {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [messagesError, setMessagesError] = useState("");
   const streamController = useRef<AbortController | null>(null);
+  const personaRequest = useRef(0);
+  const personaController = useRef<AbortController | null>(null);
   const cursorRef = useRef(0);
   const aligned = !!workspaceId && hostWorkspaceId === workspaceId;
   const mayOperate = canOperate && aligned;
+  const mayBindPersona = canWrite && aligned;
+
+  const loadPersonaBinding = useCallback(async () => {
+    const scope = conversationId.trim();
+    const requestId = ++personaRequest.current;
+    personaController.current?.abort();
+    if (!aligned || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(scope)) {
+      setPersonaBinding(null);
+      setPersonas([]);
+      setPersonaError("");
+      setPersonaNotice("");
+      setPersonaLoading(false);
+      return;
+    }
+    setPersonaLoading(true);
+    setPersonaError("");
+    setPersonaNotice("");
+    const controller = new AbortController();
+    personaController.current = controller;
+    try {
+      const [binding, configuredPersonas] = await Promise.all([
+        api.getConversationPersonaBinding(workspaceId, { conversationId: scope, conversationKind: "direct" }, controller.signal),
+        api.getConversationPersonas(workspaceId, scope, controller.signal),
+      ]);
+      if (requestId !== personaRequest.current) return;
+      const available = new Set(binding.availablePersonaIds);
+      setPersonaBinding(binding);
+      setPersonas(configuredPersonas.filter((persona) => persona.enabled && available.has(persona.id)));
+    } catch (reason) {
+      if (requestId === personaRequest.current && !controller.signal.aborted) {
+        setPersonaBinding(null);
+        setPersonas([]);
+        setPersonaError(errorMessage(reason));
+      }
+    } finally {
+      if (requestId === personaRequest.current) setPersonaLoading(false);
+    }
+  }, [api, aligned, conversationId, workspaceId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadPersonaBinding(); }, 180);
+    return () => { window.clearTimeout(timer); personaRequest.current++; personaController.current?.abort(); };
+  }, [loadPersonaBinding]);
+
+  const bindPersona = async (personaId: string) => {
+    if (!mayBindPersona || personaSaving || personaLoading) return;
+    const binding = personaBinding?.binding ?? null;
+    const selectedPersonaId = personaId || null;
+    if ((binding?.personaId ?? null) === selectedPersonaId) return;
+    setPersonaSaving(true);
+    setPersonaError("");
+    setPersonaNotice("");
+    try {
+      const result = await api.putConversationPersonaBinding(workspaceId, {
+        conversationId: conversationId.trim(),
+        conversationKind: "direct",
+        personaId: selectedPersonaId,
+        expectedVersion: binding?.version ?? 0,
+      });
+      setPersonaBinding((current) => current ? { ...current, binding: result.binding } : current);
+      setPersonaNotice(result.duplicate ? t("Persona binding was already applied.") : t("Persona binding saved. New turns will use the selected persona."));
+    } catch (reason) {
+      setPersonaError(errorMessage(reason));
+      await loadPersonaBinding();
+    } finally { setPersonaSaving(false); }
+  };
 
   useEffect(() => {
     let active = true;
@@ -123,12 +197,16 @@ export function ConversationChatPage({ api, workspaceId, canOperate }: Props) {
 
   const newConversation = () => {
     streamController.current?.abort();
+    personaController.current?.abort();
+    setPersonaBinding(null); setPersonas([]); setPersonaError(""); setPersonaNotice("");
     const nextId = `web-${newConversationMemoryKey()}`;
     setConversationId(nextId); setMessages([]); setMessagesError(""); setAdmission(null); setTask(null); setTaskEvents([]);
     setPendingTurn(null); setText(""); setError(""); cursorRef.current = 0; setEventCursor(0);
   };
 
   const changeConversationId = (value: string) => {
+    personaController.current?.abort();
+    setPersonaBinding(null); setPersonas([]); setPersonaError(""); setPersonaNotice("");
     setConversationId(value); setMessages([]); setMessagesError(""); setAdmission(null); setTask(null); setTaskEvents([]);
     cursorRef.current = 0; setEventCursor(0); setError("");
   };
@@ -157,11 +235,24 @@ export function ConversationChatPage({ api, workspaceId, canOperate }: Props) {
           <label>{t("Conversation ID")}<input value={conversationId} onChange={(event) => changeConversationId(event.target.value)} disabled={busy || streaming || !!pendingTurn} maxLength={200} autoComplete="off" /></label>
           <Button type="button" onClick={newConversation} disabled={busy || streaming || !!pendingTurn}>{t("New private conversation")}</Button>
         </div>
-        <p className="conversation-assistant__help">{t("The host binds the conversation-assistant profile, direct kind, and private visibility. Persona and actor identity are not accepted from this form.")}</p>
+        <div className="conversation-assistant__scope conversation-assistant__persona-scope">
+          <label>{t("Conversation persona")}
+            <select value={personaBinding?.binding?.personaId ?? ""} onChange={(event) => void bindPersona(event.target.value)} disabled={!mayBindPersona || personaLoading || personaSaving || !!personaError}>
+              <option value="">{t("Default conversation assistant")}</option>
+              {personaBinding?.binding?.personaId && !personas.some((persona) => persona.id === personaBinding.binding?.personaId) && <option value={personaBinding.binding.personaId}>{personaBinding.binding.personaId} · {t("Unavailable persona")}</option>}
+              {personas.map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
+            </select>
+          </label>
+          <Button type="button" onClick={() => void loadPersonaBinding()} disabled={!aligned || personaLoading || personaSaving}>{personaLoading ? t("Loading...") : t("Refresh persona")}</Button>
+        </div>
+        {personaError && <p role="alert" className="dh-notice dh-notice--danger">{t("Persona binding unavailable")}: {personaError}</p>}
+        {personaNotice && <p role="status" className="dh-notice">{personaNotice}</p>}
+        {!canWrite && <p className="dh-notice product-readonly">{t("Changing the conversation persona requires products.write.")}</p>}
+        <p className="conversation-assistant__help">{t("The host binds the conversation-assistant profile, direct kind, and private visibility. This selector saves an actor-owned persona binding; turn requests never include persona prompts or actor identity.")}</p>
       </Panel>
       <Panel title={t("Messages in this conversation")} meta={<Button onClick={() => void loadMessages()} disabled={!aligned || streaming}>{t("Refresh messages")}</Button>}>
         {messagesError ? <StateBlock kind="error" title={t("Conversation messages unavailable")} detail={messagesError} /> : messages.length ? <ul className="conversation-assistant__list">{messages.map((message) => <li key={message.id}>
-          <div><strong>{message.role}</strong><p>{message.content}</p><small>{t("Event")}: {message.eventId} · {t("Visibility")}: {message.scope.visibility} · {message.scope.conversationId}</small>
+          <div><strong>{message.role}</strong><p>{message.content}</p><small>{t("Event")}: {message.eventId} · {t("Visibility")}: {message.scope.visibility} · {t("Persona")}: {message.scope.personaId ?? t("Default conversation assistant")} · {message.scope.conversationId}</small>
             {message.sourceRefs.length > 0 && <small>{t("Used memory sources")}: {message.sourceRefs.map((source) => `${source.memoryId ?? t("source")} v${source.memoryVersion ?? "?"}`).join(", ")}</small>}
           </div>
         </li>)}</ul> : <StateBlock kind="empty" title={t("No stored conversation messages")} detail={t("Send a private turn to create a real ingress event and read its Work projection here.")} />}
