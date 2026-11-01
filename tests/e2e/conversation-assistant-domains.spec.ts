@@ -49,12 +49,12 @@ async function mountAssistantDomains(page: Page) {
     if (path.endsWith("/conversation-memory/graph/changesets") && method === "GET") return reply({ items: changeset ? [changeset] : [] });
     if (path.endsWith("/conversation-memory/graph/proposals") && method === "POST") {
       const input = body as Record<string, unknown>;
-      changeset = { id: "graph-change-1", ...input, digest: "abc123", state: "proposed", version: 1, providerReceipt: null, providerStatus: "unavailable", providerApplied: false, createdAt: 1300, updatedAt: 1300 };
+      changeset = { id: "graph-change-1", ...input, digest: "b".repeat(64), state: "proposed", version: 1, providerReceipt: null, providerStatus: "unavailable", providerApplied: false, createdAt: 1300, updatedAt: 1300 };
       return reply({ changeset, duplicate: false });
     }
     if (path.endsWith("/conversation-memory/graph/query") && method === "POST") return reply({ code: "GRAPH_PROVIDER_UNAVAILABLE", detail: "Graph query provider is unavailable." }, 503);
     if (path.endsWith("/conversation-memory/graph/changesets/graph-change-1/apply") && method === "POST") {
-      changeset = { ...changeset!, state: "projected", version: 2, providerReceipt: { requestDigest: "abc123", readbackDigest: "abc123", nodeCount: 1, edgeCount: 0, appliedAt: 1400 }, providerStatus: "applied", providerApplied: true, updatedAt: 1400 };
+      changeset = { ...changeset!, state: "projected", version: 2, providerReceipt: { requestDigest: "b".repeat(64), readbackDigest: "b".repeat(64), nodeCount: 1, edgeCount: 0, appliedAt: 1400 }, providerStatus: "applied", providerApplied: true, updatedAt: 1400 };
       return reply({ changeset });
     }
     return reply({ code: "NOT_FOUND", detail: `No fixture route for ${method} ${path}.` }, 404);

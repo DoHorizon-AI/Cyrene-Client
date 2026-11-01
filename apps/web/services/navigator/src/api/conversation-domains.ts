@@ -206,6 +206,8 @@ function parseGraphEdge(value: unknown): GraphEdge {
 function parseChangeset(value: unknown): GraphChangeset {
   const row = requireRecord(value, "graph changeset");
   const state = choice(row, "state", ["proposed", "projected"], "graph changeset");
+  const digest = requireString(row, "digest", "graph changeset");
+  if (!/^[a-f0-9]{64}$/.test(digest)) throw new NavigatorContractError("Navigator returned an invalid graph changeset digest.");
   const providerStatus = choice(row, "providerStatus", ["unavailable", "applied"], "graph changeset");
   const providerApplied = requireBoolean(row, "providerApplied", "graph changeset");
   const receiptValue = row["providerReceipt"];
@@ -214,12 +216,12 @@ function parseChangeset(value: unknown): GraphChangeset {
     return { requestDigest: requireString(receipt, "requestDigest", "graph provider receipt"), readbackDigest: requireString(receipt, "readbackDigest", "graph provider receipt"), nodeCount: requireNumber(receipt, "nodeCount", "graph provider receipt"), edgeCount: requireNumber(receipt, "edgeCount", "graph provider receipt"), appliedAt: requireNumber(receipt, "appliedAt", "graph provider receipt") };
   })();
   if (state === "proposed" && (providerStatus !== "unavailable" || providerApplied || providerReceipt !== null)) throw new NavigatorContractError("Navigator returned an invalid unapplied graph state.");
-  if (state === "projected" && (providerStatus !== "applied" || !providerApplied || providerReceipt === null || providerReceipt.requestDigest !== row["digest"] || providerReceipt.readbackDigest !== row["digest"])) throw new NavigatorContractError("Navigator returned an invalid graph readback receipt.");
+  if (state === "projected" && (providerStatus !== "applied" || !providerApplied || providerReceipt === null || providerReceipt.requestDigest !== digest || providerReceipt.readbackDigest !== digest)) throw new NavigatorContractError("Navigator returned an invalid graph readback receipt.");
   return {
     id: requireString(row, "id", "graph changeset"), idempotencyKey: requireString(row, "idempotencyKey", "graph changeset"),
     conversationId: requireString(row, "conversationId", "graph changeset"), conversationKind: nullableChoice(row, "conversationKind", ["direct", "group", "channel"], "graph changeset"),
     personaId: nullableString(row, "personaId", "graph changeset"), nodes: recordArray(row["nodes"], "graph nodes").map(parseGraphNode),
-    edges: recordArray(row["edges"], "graph edges").map(parseGraphEdge), digest: requireString(row, "digest", "graph changeset"),
+    edges: recordArray(row["edges"], "graph edges").map(parseGraphEdge), digest,
     state, version: requireNumber(row, "version", "graph changeset"), providerStatus, providerApplied, providerReceipt,
     createdAt: requireNumber(row, "createdAt", "graph changeset"), updatedAt: requireNumber(row, "updatedAt", "graph changeset"),
   };

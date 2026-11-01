@@ -20,7 +20,7 @@ const profile = {
 };
 const changeset = {
   id: "changeset-1", idempotencyKey: "graph-key", conversationId: "chat-1", conversationKind: "direct", personaId: null, nodes: [{ id: "person-1", label: "Person", sourceMessageIds: ["message-1"] }],
-  edges: [], digest: "abc123", state: "proposed", version: 1, providerReceipt: null, providerStatus: "unavailable", providerApplied: false, createdAt: 1000, updatedAt: 1000,
+  edges: [], digest: "b".repeat(64), state: "proposed", version: 1, providerReceipt: null, providerStatus: "unavailable", providerApplied: false, createdAt: 1000, updatedAt: 1000,
 };
 
 function response(value: unknown, status = 200): Response {
