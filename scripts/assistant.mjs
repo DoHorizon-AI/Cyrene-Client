@@ -9,16 +9,42 @@ import { createServer } from 'node:net';
 import { loadEnv } from 'vite';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-Object.assign(process.env, loadEnv('development', root, ''));
 const { values } = parseArgs({ options: {
   port: { type: 'string', default: '5180' },
   'navigator-port': { type: 'string', default: '8100' },
+  'persistence-port': { type: 'string', default: '0' },
+  'control-port': { type: 'string' },
+  'workspace-id': { type: 'string' },
+  'organization-id': { type: 'string' },
+  'actor-id': { type: 'string' },
   'state-dir': { type: 'string' },
+  'principal-config': { type: 'string' },
+  'principal-token-env': { type: 'string', default: 'CYRENE_SESSION_TOKEN' },
+  'isolated-env': { type: 'boolean', default: false },
   'shutdown-stdin': { type: 'boolean', default: false },
 } });
-const ports = [values.port, values['navigator-port'], process.env.STUDIO_CONTROL_PORT ?? String(Number(values.port) + 100)].map(Number);
-if (ports.some(p => !Number.isSafeInteger(p) || p < 1 || p > 65535) || new Set(ports).size !== ports.length) throw new Error('Use three distinct ports between 1 and 65535');
-if (process.env.STUDIO_MODE && process.env.STUDIO_MODE !== 'local') throw new Error('The personal assistant launcher requires local mode');
+if (!values['isolated-env']) Object.assign(process.env, loadEnv('development', root, ''));
+const safeEnvironmentNames = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'TMP', 'TEMP', 'SYSTEMROOT', 'WINDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'UV_CACHE_DIR', 'CYRENE_NAVIGATOR_DIR', 'CYRENE_PYTHON', 'CYRENE_SESSION_TOKEN', 'CYRENE_EXCHANGE_URL', 'CYRENE_EXCHANGE_TOKEN', 'CYRENE_HARNESS_MODEL', 'CYRENE_ORGANIZATION_ID', 'STUDIO_WORKSPACE_ID'];
+const inheritedEnv = values['isolated-env']
+  ? Object.fromEntries(safeEnvironmentNames.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]]]))
+  : { ...process.env };
+const frontPort = Number(values.port), navigatorPort = Number(values['navigator-port']);
+const controlPort = Number(values['control-port'] ?? inheritedEnv.STUDIO_CONTROL_PORT ?? frontPort + 100);
+const persistencePort = Number(values['persistence-port']);
+const workspaceId = values['workspace-id'] ?? inheritedEnv.STUDIO_WORKSPACE_ID ?? 'local';
+const organizationId = values['organization-id'] ?? inheritedEnv.CYRENE_ORGANIZATION_ID ?? 'local';
+const actorId = values['actor-id'] ?? 'local-navigator';
+const ports = [frontPort, navigatorPort, controlPort, ...(persistencePort > 0 ? [persistencePort] : [])];
+if (ports.some(p => !Number.isSafeInteger(p) || p < 1 || p > 65535) || new Set(ports).size !== ports.length || !Number.isSafeInteger(persistencePort) || persistencePort < 0 || persistencePort > 65535) throw new Error('Use distinct frontend, Navigator, Control, and optional Persistence ports; persistence may be 0 for an ephemeral port');
+if (!values['isolated-env'] && inheritedEnv.STUDIO_MODE && inheritedEnv.STUDIO_MODE !== 'local') throw new Error('The personal assistant launcher requires local mode');
+if (values['isolated-env']) {
+  const exchangeUrl = inheritedEnv.CYRENE_EXCHANGE_URL;
+  if (!exchangeUrl || !inheritedEnv.CYRENE_EXCHANGE_TOKEN || !inheritedEnv.CYRENE_HARNESS_MODEL) throw new Error('Isolated mode requires explicit local CYRENE_EXCHANGE_URL, CYRENE_EXCHANGE_TOKEN, and CYRENE_HARNESS_MODEL environment values');
+  let parsedExchangeUrl;
+  try { parsedExchangeUrl = new URL(exchangeUrl); } catch { throw new Error('Isolated mode requires a loopback Exchange URL.'); }
+  if (parsedExchangeUrl.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(parsedExchangeUrl.hostname) || parsedExchangeUrl.username || parsedExchangeUrl.password || parsedExchangeUrl.pathname !== '/' || parsedExchangeUrl.search || parsedExchangeUrl.hash) throw new Error('Isolated mode only accepts a loopback Exchange origin without credentials or a path');
+  if (workspaceId !== 'local') throw new Error('Isolated mode is limited to the local workspace id');
+}
 for (const port of ports) {
   await new Promise((resolve, reject) => {
     const probe = createServer();
@@ -26,15 +52,21 @@ for (const port of ports) {
     probe.listen(port, '127.0.0.1', () => probe.close(resolve));
   });
 }
-const navigator = resolve(process.env.CYRENE_NAVIGATOR_DIR ?? join(root, '../Cyrene-Services/Cyrene-Navigator'));
+const navigator = resolve(inheritedEnv.CYRENE_NAVIGATOR_DIR ?? join(root, '../Cyrene-Services/Cyrene-Navigator'));
 await access(join(navigator, 'harness/dist/serve.js')).catch(() => { throw new Error('Build the pinned Navigator Harness first; see docs/navigator-assistant-integration.md'); });
-const stateDir = resolve(values['state-dir'] ?? process.env.CYRENE_NAVIGATOR_STATE_DIR ?? join(root, '.studio/navigator'));
+const stateDir = resolve(values['state-dir'] ?? inheritedEnv.CYRENE_NAVIGATOR_STATE_DIR ?? join(root, '.studio/navigator'));
 await mkdir(stateDir, { recursive: true });
+const isolatedEnvDir = join(stateDir, 'empty-env');
+if (values['isolated-env']) await mkdir(isolatedEnvDir, { recursive: true });
 const frontOrigin = `http://127.0.0.1:${ports[0]}`;
 const controlOrigin = `http://127.0.0.1:${ports[2]}`;
-const token = process.env.STUDIO_LOCAL_API_TOKEN || randomBytes(32).toString('hex');
-const common = { ...process.env, STUDIO_MODE: 'local', STUDIO_CONTROL_HOST: '127.0.0.1',
-  STUDIO_WORKSPACE_ID: process.env.STUDIO_WORKSPACE_ID ?? 'local', STUDIO_CONTROL_PORT: String(ports[2]),
+const token = values['isolated-env'] ? randomBytes(32).toString('hex') : inheritedEnv.STUDIO_LOCAL_API_TOKEN || randomBytes(32).toString('hex');
+const webEnvironment = { ...inheritedEnv };
+for (const name of ['CYRENE_SESSION_TOKEN', 'CYRENE_EXCHANGE_URL', 'CYRENE_EXCHANGE_TOKEN', 'CYRENE_HARNESS_MODEL']) delete webEnvironment[name];
+const common = { ...webEnvironment, STUDIO_MODE: 'local', STUDIO_CONTROL_HOST: '127.0.0.1',
+  STUDIO_CONTROL_PORT: String(ports[2]),
+  ...(values['isolated-env'] ? { STUDIO_ISOLATED_ENV: '1', STUDIO_ENV_DIR: isolatedEnvDir, STUDIO_CONTROL_DATA_DIR: join(stateDir, 'control') } : {}),
+  STUDIO_WORKSPACE_ID: workspaceId,
   STUDIO_PUBLIC_ORIGINS: frontOrigin, STUDIO_NAVIGATOR_URL: `http://127.0.0.1:${ports[1]}`,
   STUDIO_LOCAL_API_TOKEN: token,
 };
@@ -91,20 +123,28 @@ try {
   }
   if (!closing) {
     const virtualPython = join(navigator, process.platform === 'win32' ? '.venv/Scripts/python.exe' : '.venv/bin/python');
-    let file = process.env.CYRENE_PYTHON, prefix = [];
+    let file = inheritedEnv.CYRENE_PYTHON, prefix = [];
     if (!file) {
       try { await access(virtualPython); file = virtualPython; }
       catch { file = 'uv'; prefix = ['run', '--project', navigator, 'python']; }
     }
-    const env = { ...common, CYRENE_MCP_URL: controlOrigin + '/studio-mcp', CYRENE_MCP_TOKEN: token,
+    const env = { ...common,
+      ...(inheritedEnv.CYRENE_SESSION_TOKEN ? { CYRENE_SESSION_TOKEN: inheritedEnv.CYRENE_SESSION_TOKEN } : {}),
+      ...(inheritedEnv.CYRENE_EXCHANGE_URL ? { CYRENE_EXCHANGE_URL: inheritedEnv.CYRENE_EXCHANGE_URL } : {}),
+      ...(inheritedEnv.CYRENE_EXCHANGE_TOKEN ? { CYRENE_EXCHANGE_TOKEN: inheritedEnv.CYRENE_EXCHANGE_TOKEN } : {}),
+      ...(inheritedEnv.CYRENE_HARNESS_MODEL ? { CYRENE_HARNESS_MODEL: inheritedEnv.CYRENE_HARNESS_MODEL } : {}),
+      CYRENE_MCP_URL: controlOrigin + '/studio-mcp', CYRENE_MCP_TOKEN: token,
       CYRENE_PERSONAL_RUNTIMES_ENABLED: 'true',
       CYRENE_WORKSPACE_ID: common.STUDIO_WORKSPACE_ID,
-      PYTHONPATH: [join(navigator, 'src'), process.env.PYTHONPATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'),
-      DSH_HOME: process.env.DSH_HOME ?? join(stateDir, 'harness'),
+      PYTHONPATH: [join(navigator, 'src'), inheritedEnv.PYTHONPATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'),
+      DSH_HOME: values['isolated-env'] ? join(stateDir, 'harness') : process.env.DSH_HOME ?? join(stateDir, 'harness'),
     };
-    const child = start(file, [...prefix, join(navigator, 'scripts/serve-local.py'), '--state-dir', stateDir,
-      '--host', '127.0.0.1', '--port', String(ports[1]), '--public-url', frontOrigin,
-      '--workspace-id', common.STUDIO_WORKSPACE_ID, '--insecure-http', '--shutdown-stdin'], navigator, env, ['pipe', 'pipe', 'inherit']);
+    const navigatorArgs = [...prefix, join(navigator, 'scripts/serve-local.py'), '--state-dir', stateDir,
+      '--host', '127.0.0.1', '--port', String(ports[1]), '--persistence-port', String(persistencePort), '--public-url', frontOrigin,
+      '--workspace-id', common.STUDIO_WORKSPACE_ID, '--organization-id', organizationId, '--actor-id', actorId,
+      '--principal-token-env', values['principal-token-env'], '--insecure-http', '--shutdown-stdin'];
+    if (values['principal-config']) navigatorArgs.push('--principal-config', resolve(values['principal-config']));
+    const child = start(file, navigatorArgs, navigator, env, ['pipe', 'pipe', 'inherit']);
     navigatorChild = child;
     const lines = createInterface({ input: child.stdout });
     lines.on('line', line => {
