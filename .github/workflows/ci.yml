@@ -53,6 +53,8 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: .test-deps/navigator/pyproject.toml
+      - name: Verify Container Apps deployment is manual-only
+        run: python tests/test_deploy_workflow_triggers.py
       - name: Install pinned Navigator Web Host dependencies
         working-directory: .test-deps/navigator
         run: python -m pip install --disable-pip-version-check -e .
