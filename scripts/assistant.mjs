@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createServer } from 'node:net';
 import { loadEnv } from 'vite';
+import {
+  createNavigatorChildEnvironment,
+  prepareAssistantEnvironment,
+} from './assistant-environment.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { values } = parseArgs({ options: {
@@ -24,10 +28,11 @@ const { values } = parseArgs({ options: {
   'shutdown-stdin': { type: 'boolean', default: false },
 } });
 if (!values['isolated-env']) Object.assign(process.env, loadEnv('development', root, ''));
-const safeEnvironmentNames = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'TMP', 'TEMP', 'SYSTEMROOT', 'WINDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'UV_CACHE_DIR', 'CYRENE_NAVIGATOR_DIR', 'CYRENE_PYTHON', 'CYRENE_SESSION_TOKEN', 'CYRENE_EXCHANGE_URL', 'CYRENE_EXCHANGE_TOKEN', 'CYRENE_HARNESS_MODEL', 'CYRENE_ORGANIZATION_ID', 'STUDIO_WORKSPACE_ID'];
-const inheritedEnv = values['isolated-env']
-  ? Object.fromEntries(safeEnvironmentNames.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]]]))
-  : { ...process.env };
+const {
+  inheritedEnvironment: inheritedEnv,
+  sharedEnvironment: webEnvironment,
+  navigatorFactoryEnvironment,
+} = prepareAssistantEnvironment(process.env, values['isolated-env']);
 const frontPort = Number(values.port), navigatorPort = Number(values['navigator-port']);
 const controlPort = Number(values['control-port'] ?? inheritedEnv.STUDIO_CONTROL_PORT ?? frontPort + 100);
 const persistencePort = Number(values['persistence-port']);
@@ -61,8 +66,6 @@ if (values['isolated-env']) await mkdir(isolatedEnvDir, { recursive: true });
 const frontOrigin = `http://127.0.0.1:${ports[0]}`;
 const controlOrigin = `http://127.0.0.1:${ports[2]}`;
 const token = values['isolated-env'] ? randomBytes(32).toString('hex') : inheritedEnv.STUDIO_LOCAL_API_TOKEN || randomBytes(32).toString('hex');
-const webEnvironment = { ...inheritedEnv };
-for (const name of ['CYRENE_SESSION_TOKEN', 'CYRENE_EXCHANGE_URL', 'CYRENE_EXCHANGE_TOKEN', 'CYRENE_HARNESS_MODEL']) delete webEnvironment[name];
 const common = { ...webEnvironment, STUDIO_MODE: 'local', STUDIO_CONTROL_HOST: '127.0.0.1',
   STUDIO_CONTROL_PORT: String(ports[2]),
   ...(values['isolated-env'] ? { STUDIO_ISOLATED_ENV: '1', STUDIO_ENV_DIR: isolatedEnvDir, STUDIO_CONTROL_DATA_DIR: join(stateDir, 'control') } : {}),
@@ -128,11 +131,7 @@ try {
       try { await access(virtualPython); file = virtualPython; }
       catch { file = 'uv'; prefix = ['run', '--project', navigator, 'python']; }
     }
-    const env = { ...common,
-      ...(inheritedEnv.CYRENE_SESSION_TOKEN ? { CYRENE_SESSION_TOKEN: inheritedEnv.CYRENE_SESSION_TOKEN } : {}),
-      ...(inheritedEnv.CYRENE_EXCHANGE_URL ? { CYRENE_EXCHANGE_URL: inheritedEnv.CYRENE_EXCHANGE_URL } : {}),
-      ...(inheritedEnv.CYRENE_EXCHANGE_TOKEN ? { CYRENE_EXCHANGE_TOKEN: inheritedEnv.CYRENE_EXCHANGE_TOKEN } : {}),
-      ...(inheritedEnv.CYRENE_HARNESS_MODEL ? { CYRENE_HARNESS_MODEL: inheritedEnv.CYRENE_HARNESS_MODEL } : {}),
+    const env = { ...createNavigatorChildEnvironment(common, inheritedEnv, navigatorFactoryEnvironment),
       CYRENE_MCP_URL: controlOrigin + '/studio-mcp', CYRENE_MCP_TOKEN: token,
       CYRENE_PERSONAL_RUNTIMES_ENABLED: 'true',
       CYRENE_WORKSPACE_ID: common.STUDIO_WORKSPACE_ID,
