@@ -25,6 +25,7 @@ const factoryEnvironment: Record<string, string> = {
 
 const navigatorFeatureEnvironment: Record<string, string> = {
   CYRENE_CONVERSATION_ASSISTANT_ENABLED: "true",
+  CYRENE_HARNESS_MODEL_SOURCE: "exchange",
 };
 
 const navigatorOnlyEnvironment = { ...factoryEnvironment, ...navigatorFeatureEnvironment };
