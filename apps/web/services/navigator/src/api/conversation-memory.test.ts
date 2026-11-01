@@ -59,14 +59,14 @@ describe("conversation memory Work API", () => {
   it("sends corrections, deletion, and source revocation through the paired session", async () => {
     const calls: Array<{ path: string; method: string; headers: Headers; body: unknown }> = [];
     const api = new NavigatorApi(async (input, init) => {
-      const path = String(input), method = (init?.method ?? "GET").toUpperCase();
+      const path = String(input), pathname = path.split("?", 1)[0] ?? path, method = (init?.method ?? "GET").toUpperCase();
       const headers = new Headers(init?.headers);
       const body = typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined;
       calls.push({ path, method, headers, body });
       if (path === "/api/v1/auth/session") return response({ authenticated: true, state: "AUTHENTICATED", sessionId: "session-1", expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "csrf-1", refreshed: false });
       if (path.endsWith("/conversation-memory/memories") && method === "POST") return response({ memory, duplicate: false });
-      if (path.endsWith("/conversation-memory/memories/memory-1") && method === "PATCH") return response({ memory: { ...memory, version: 2, text: "Prefers short answers.", updatedAt: 2000 } });
-      if (path.endsWith("/conversation-memory/memories/memory-1") && method === "DELETE") return response({ deleted: true, authorizationEpoch: 5 });
+      if (pathname.endsWith("/conversation-memory/memories/memory-1") && method === "PATCH") return response({ memory: { ...memory, version: 2, text: "Prefers short answers.", updatedAt: 2000 } });
+      if (pathname.endsWith("/conversation-memory/memories/memory-1") && method === "DELETE") return response({ deleted: true, authorizationEpoch: 5, duplicate: false });
       if (path.endsWith("/conversation-memory/sources/message-1/revoke")) return response({ sourceId: "message-1", authorizationEpoch: 6, invalidatedCount: 1 });
       if (path.endsWith("/conversation-memory/sources/message-1/grants") && method === "POST") return response({ grant, authorizationEpoch: 5, duplicate: false });
       if (path.endsWith("/conversation-memory/sources/message-1/grants/grant-1") && method === "DELETE") return response({ revoked: true, authorizationEpoch: 6 });
@@ -78,8 +78,8 @@ describe("conversation memory Work API", () => {
       idempotencyKey: "memory-request-1", conversationId: "chat-1", conversationKind: "direct", kind: "preference", text: memory.text,
       sourceMessageIds: ["message-1"], visibility: "private",
     });
-    const updated = await api.updateConversationMemory("workspace-1", "memory-1", { text: "Prefers short answers.", validUntil: 3000 });
-    const deleted = await api.deleteConversationMemory("workspace-1", "memory-1");
+    const updated = await api.updateConversationMemory("workspace-1", "memory-1", { expectedVersion: 1, text: "Prefers short answers.", validUntil: 3000 });
+    const deleted = await api.deleteConversationMemory("workspace-1", "memory-1", 2);
     const revoked = await api.revokeConversationMemorySource("workspace-1", "message-1");
     const createdGrant = await api.createConversationMemorySourceGrant("workspace-1", "message-1", { visibility: "conversation", targetConversationId: "chat-2" });
     const revokedGrant = await api.revokeConversationMemorySourceGrant("workspace-1", "message-1", "grant-1");
@@ -95,7 +95,8 @@ describe("conversation memory Work API", () => {
     expect(writes.every((call) => call.headers.get("X-CSRF-Token") === "csrf-1")).toBe(true);
     expect(writes[0]?.headers.get("Idempotency-Key")).toBe("memory-request-1");
     expect(writes[0]?.body).toMatchObject({ conversationId: "chat-1", sourceMessageIds: ["message-1"] });
-    expect(writes[1]?.body).toEqual({ text: "Prefers short answers.", validUntil: 3000 });
+    expect(writes[1]?.body).toEqual({ expectedVersion: 1, text: "Prefers short answers.", validUntil: 3000 });
+    expect(writes[2]?.path).toContain("?expectedVersion=2");
     expect(writes.find((call) => call.method === "POST" && call.path.endsWith("/grants"))?.body).toEqual({ visibility: "conversation", targetConversationId: "chat-2" });
   });
 

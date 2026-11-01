@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CatalystDataToolsPanel } from "../../apps/web/services/catalyst/src/CatalystDataToolsPanel";
 import { ConversationMemoryPage } from "../../apps/web/services/navigator/src/conversation-memory";
+import { ConversationAssistantPage } from "../../apps/web/services/navigator/src/conversation-assistant";
 import { WorkAssistantPage } from "../../apps/web/services/navigator/src/work-assistant";
 import { NavigatorApi } from "../../apps/web/services/navigator/src/api";
 import { ControlledLocaleProvider } from "../../apps/web/services/navigator/src/i18n";
@@ -9,6 +10,7 @@ import { ControlledLocaleProvider } from "../../apps/web/services/navigator/src/
 const api = new NavigatorApi();
 const catalyst = new URLSearchParams(location.search).get("fixture") === "catalyst";
 const conversationMemory = new URLSearchParams(location.search).get("fixture") === "conversation-memory";
+const conversationAssistant = new URLSearchParams(location.search).get("fixture") === "conversation-assistant";
 
 function WorkAssistantFixture() {
   const initialWorkspace = new URLSearchParams(location.search).get("workspace") ?? "local";
@@ -26,6 +28,12 @@ function ConversationMemoryFixture() {
   return <ConversationMemoryPage api={api} workspaceId="local" canWrite={!readOnly} />;
 }
 
+function ConversationAssistantFixture() {
+  const readOnly = new URLSearchParams(location.search).get("readonly") === "1";
+  useEffect(() => { void api.getSession().catch(() => undefined); }, []);
+  return <ConversationAssistantPage api={api} workspaceId="local" canWrite={!readOnly} />;
+}
+
 createRoot(document.getElementById("root")!).render(<ControlledLocaleProvider locale="en-US" setLocale={() => {}}>{catalyst
   ? <CatalystDataToolsPanel datasets={[{ id: "dataset-1", name: "Fixture" }]} transport={{ requestProductResponse: (path, init) => fetch(path, init) }} />
-  : conversationMemory ? <ConversationMemoryFixture /> : <WorkAssistantFixture />}</ControlledLocaleProvider>);
+  : conversationAssistant ? <ConversationAssistantFixture /> : conversationMemory ? <ConversationMemoryFixture /> : <WorkAssistantFixture />}</ControlledLocaleProvider>);

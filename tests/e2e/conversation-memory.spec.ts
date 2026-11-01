@@ -12,7 +12,7 @@ const originalMessage = {
   status: "active", revokedAt: null, sourceRefs: [], scope,
 };
 
-async function mountConversationMemory(page: Page, options: { provider?: "ready" | "unavailable"; readOnly?: boolean } = {}) {
+async function mountConversationMemory(page: Page, options: { provider?: "ready" | "unavailable"; readOnly?: boolean; hostWorkspace?: string } = {}) {
   const entry = `/@fs/${resolve("tests/fixtures/product-state.tsx").replaceAll("\\", "/")}`;
   await page.route("**/src/main.tsx", route => route.fulfill({ contentType: "text/javascript", body: `import ${JSON.stringify(entry)};` }));
   let memory: FixtureMemory = {
@@ -23,14 +23,14 @@ async function mountConversationMemory(page: Page, options: { provider?: "ready"
   let sourceStatus: "active" | "revoked" = "active";
   let memoryDeleted = false;
   let grants: Array<{ id: string; visibility: "conversation" | "workspace"; targetConversationId: string | null; expiresAt: number | null; createdAt: number; status: "active" | "revoked" }> = [];
-  const calls: Array<{ method: string; path: string; body: unknown; csrf: string | undefined; idempotencyKey: string | undefined }> = [];
+  const calls: Array<{ method: string; path: string; query: Record<string, string>; body: unknown; csrf: string | undefined; idempotencyKey: string | undefined }> = [];
   await page.route("**/api/v1/**", async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
     const body = request.postDataJSON() as unknown;
-    calls.push({ method, path, body, csrf: request.headers()["x-csrf-token"], idempotencyKey: request.headers()["idempotency-key"] });
+    calls.push({ method, path, query: Object.fromEntries(url.searchParams.entries()), body, csrf: request.headers()["x-csrf-token"], idempotencyKey: request.headers()["idempotency-key"] });
     const reply = (json: unknown, status = 200) => route.fulfill({ json, status });
     if (path === "/api/v1/auth/session") return reply({ authenticated: true, state: "AUTHENTICATED", sessionId: "paired-session", expiresAt: null, refreshExpiresAt: null, refreshable: true, csrfToken: "paired-csrf", refreshed: false });
-    if (path === "/api/v1/system/status") return reply({ service: "Navigator", status: "OK", version: "fixture", workspaceId: "local", authenticated: true, proxyPrefixes: [], credentials: { active: 0, revoked: 0 }, observedAt: new Date().toISOString() });
+    if (path === "/api/v1/system/status") return reply({ service: "Navigator", status: "OK", version: "fixture", workspaceId: options.hostWorkspace ?? "local", authenticated: true, proxyPrefixes: [], credentials: { active: 0, revoked: 0 }, observedAt: new Date().toISOString() });
     if (path.endsWith("/conversation-memory/overview")) return reply({ authorizationEpoch: 4, counts: { messages: 1, memories: memoryDeleted ? 0 : 1, sources: 1 }, capabilities: { memoryProvider: options.provider ?? "ready", summarizer: "unavailable" } });
     if (path.endsWith("/conversation-memory/messages") && method === "GET") return reply({ items: [originalMessage], nextCursor: null });
     if (path.endsWith("/conversation-memory/memories/query") && method === "POST") return reply({ items: sourceStatus === "active" && !memoryDeleted ? [{ memoryId: memory.id, version: memory.version, kind: memory.kind, text: memory.text, sourceMessageIds: memory.sourceMessageIds, sourceRefs: [], scope, score: 0.94, stale: false }] : [], authorizationEpoch: sourceStatus === "active" ? 4 : 5 });
@@ -41,7 +41,7 @@ async function mountConversationMemory(page: Page, options: { provider?: "ready"
       return reply({ memory: addedMemory, duplicate: false });
     }
     if (path.endsWith("/conversation-memory/memories/memory-1") && method === "PATCH") {
-      const patch = body as Record<string, unknown>;
+      const { expectedVersion: _expectedVersion, ...patch } = body as Record<string, unknown>;
       memory = { ...memory, ...patch, version: memory.version + 1, updatedAt: 2000 };
       return reply({ memory });
     }
@@ -116,10 +116,12 @@ test("SIMULATED browser flow searches, corrects, revokes, and deletes attributed
 
   await expect(page.getByText("No memories in this scope", { exact: true })).toBeVisible();
   expect(calls.some(call => call.method === "PATCH" && call.path.endsWith("/memories/memory-1"))).toBe(true);
+  expect(calls.find(call => call.method === "PATCH" && call.path.endsWith("/memories/memory-1"))?.body).toMatchObject({ expectedVersion: 1 });
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/sources/message-1/grants"))).toBe(true);
   expect(calls.some(call => call.method === "DELETE" && call.path.endsWith("/sources/message-1/grants/grant-1"))).toBe(true);
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/sources/message-1/revoke"))).toBe(true);
   expect(calls.some(call => call.method === "DELETE" && call.path.endsWith("/memories/memory-1"))).toBe(true);
+  expect(calls.find(call => call.method === "DELETE" && call.path.endsWith("/memories/memory-1"))?.query).toMatchObject({ expectedVersion: "2" });
   const writes = calls.filter(call => call.method !== "GET" && call.path.startsWith("/api/v1/workspaces/"));
   expect(writes.every(call => call.csrf === "paired-csrf")).toBe(true);
   expect(writes.every(call => call.path.includes("/work/conversation-memory/"))).toBe(true);
@@ -140,4 +142,11 @@ test("SIMULATED read-only session cannot mutate memory or source authorization",
   await expect(page.getByRole("button", { name: "Revoke source", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Grant sharing", exact: true })).toBeDisabled();
   expect(calls.some(call => call.method !== "GET" && call.path.startsWith("/api/v1/workspaces/"))).toBe(false);
+});
+
+test("SIMULATED workspace mismatch blocks conversation memory reads and writes", async ({ page }) => {
+  const { calls } = await mountConversationMemory(page, { hostWorkspace: "different-workspace" });
+  await expect(page.getByRole("alert")).toContainText("Selected workspace does not match");
+  expect(calls.some(call => call.method !== "GET" && call.path.startsWith("/api/v1/workspaces/"))).toBe(false);
+  expect(calls.some(call => call.path.includes("/work/conversation-memory/"))).toBe(false);
 });

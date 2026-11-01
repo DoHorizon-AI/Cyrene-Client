@@ -9,10 +9,16 @@ import { ExchangeApi } from "./api/exchange";
 import { AssistantApi } from "./api/assistant";
 import { WorkApi } from "./api/work";
 import { ConversationMemoryApi } from "./api/conversation-memory";
+import { ConversationDomainsApi } from "./api/conversation-domains";
+import { ConversationOperationsApi } from "./api/conversation-operations";
+import { ConversationPeripheralApi } from "./api/conversation-peripheral";
 
 export * from "./api/types";
 export * from "./api/errors";
 export * from "./api/conversation-memory";
+export * from "./api/conversation-domains";
+export * from "./api/conversation-operations";
+export * from "./api/conversation-peripheral";
 export { NAVIGATOR_PROXY_PATHS } from "./api/constants";
 export { makeIdempotencyKey } from "./api/requests";
 
@@ -26,6 +32,9 @@ export class NavigatorApi extends NavigatorTransport {
   private readonly assistantApi = new AssistantApi(this);
   private readonly workApi = new WorkApi(this);
   private readonly conversationMemoryApi = new ConversationMemoryApi(this);
+  private readonly conversationDomainsApi = new ConversationDomainsApi(this);
+  private readonly conversationOperationsApi = new ConversationOperationsApi(this);
+  private readonly conversationPeripheralApi = new ConversationPeripheralApi(this);
 
   getSystemStatus(...args: Parameters<HostApi["getSystemStatus"]>): ReturnType<HostApi["getSystemStatus"]> {
     return this.hostApi.getSystemStatus(...args);
@@ -301,5 +310,229 @@ export class NavigatorApi extends NavigatorTransport {
 
   revokeConversationMemorySourceGrant(...args: Parameters<ConversationMemoryApi["revokeSourceGrant"]>): ReturnType<ConversationMemoryApi["revokeSourceGrant"]> {
     return this.conversationMemoryApi.revokeSourceGrant(...args);
+  }
+
+  getConversationPersonas(...args: Parameters<ConversationDomainsApi["getPersonas"]>): ReturnType<ConversationDomainsApi["getPersonas"]> {
+    return this.conversationDomainsApi.getPersonas(...args);
+  }
+
+  putConversationPersona(...args: Parameters<ConversationDomainsApi["putPersona"]>): ReturnType<ConversationDomainsApi["putPersona"]> {
+    return this.conversationDomainsApi.putPersona(...args);
+  }
+
+  createProfileCandidate(...args: Parameters<ConversationDomainsApi["createProfileCandidate"]>): ReturnType<ConversationDomainsApi["createProfileCandidate"]> {
+    return this.conversationDomainsApi.createProfileCandidate(...args);
+  }
+
+  listProfileCandidates(...args: Parameters<ConversationDomainsApi["listProfileCandidates"]>): ReturnType<ConversationDomainsApi["listProfileCandidates"]> {
+    return this.conversationDomainsApi.listProfileCandidates(...args);
+  }
+
+  listConversationProfiles(...args: Parameters<ConversationDomainsApi["listConversationProfiles"]>): ReturnType<ConversationDomainsApi["listConversationProfiles"]> {
+    return this.conversationDomainsApi.listConversationProfiles(...args);
+  }
+
+  activateProfileCandidate(...args: Parameters<ConversationDomainsApi["activateProfileCandidate"]>): ReturnType<ConversationDomainsApi["activateProfileCandidate"]> {
+    return this.conversationDomainsApi.activateProfileCandidate(...args);
+  }
+
+  rollbackConversationProfile(...args: Parameters<ConversationDomainsApi["rollbackProfile"]>): ReturnType<ConversationDomainsApi["rollbackProfile"]> {
+    return this.conversationDomainsApi.rollbackProfile(...args);
+  }
+
+  createGraphProposal(...args: Parameters<ConversationDomainsApi["createGraphProposal"]>): ReturnType<ConversationDomainsApi["createGraphProposal"]> {
+    return this.conversationDomainsApi.createGraphProposal(...args);
+  }
+
+  listGraphChangesets(...args: Parameters<ConversationDomainsApi["listGraphChangesets"]>): ReturnType<ConversationDomainsApi["listGraphChangesets"]> {
+    return this.conversationDomainsApi.listGraphChangesets(...args);
+  }
+
+  applyGraphChangeset(...args: Parameters<ConversationDomainsApi["applyGraphChangeset"]>): ReturnType<ConversationDomainsApi["applyGraphChangeset"]> {
+    return this.conversationDomainsApi.applyGraphChangeset(...args);
+  }
+
+  queryConversationGraph(...args: Parameters<ConversationDomainsApi["queryGraph"]>): ReturnType<ConversationDomainsApi["queryGraph"]> {
+    return this.conversationDomainsApi.queryGraph(...args);
+  }
+
+  createMaintenanceJob(...args: Parameters<ConversationOperationsApi["createMaintenanceJob"]>): ReturnType<ConversationOperationsApi["createMaintenanceJob"]> {
+    return this.conversationOperationsApi.createMaintenanceJob(...args);
+  }
+
+  listMaintenanceJobs(...args: Parameters<ConversationOperationsApi["listMaintenanceJobs"]>): ReturnType<ConversationOperationsApi["listMaintenanceJobs"]> {
+    return this.conversationOperationsApi.listMaintenanceJobs(...args);
+  }
+
+  getMaintenanceJob(...args: Parameters<ConversationOperationsApi["getMaintenanceJob"]>): ReturnType<ConversationOperationsApi["getMaintenanceJob"]> {
+    return this.conversationOperationsApi.getMaintenanceJob(...args);
+  }
+
+  checkpointMaintenanceJob(...args: Parameters<ConversationOperationsApi["checkpointMaintenanceJob"]>): ReturnType<ConversationOperationsApi["checkpointMaintenanceJob"]> {
+    return this.conversationOperationsApi.checkpointMaintenanceJob(...args);
+  }
+
+  cancelMaintenanceJob(...args: Parameters<ConversationOperationsApi["cancelMaintenanceJob"]>): ReturnType<ConversationOperationsApi["cancelMaintenanceJob"]> {
+    return this.conversationOperationsApi.cancelMaintenanceJob(...args);
+  }
+
+  createResearchNote(...args: Parameters<ConversationOperationsApi["createResearchNote"]>): ReturnType<ConversationOperationsApi["createResearchNote"]> {
+    return this.conversationOperationsApi.createResearchNote(...args);
+  }
+
+  listResearchNotes(...args: Parameters<ConversationOperationsApi["listResearchNotes"]>): ReturnType<ConversationOperationsApi["listResearchNotes"]> {
+    return this.conversationOperationsApi.listResearchNotes(...args);
+  }
+
+  createVerifiedConversationSkill(...args: Parameters<ConversationOperationsApi["createVerifiedSkill"]>): ReturnType<ConversationOperationsApi["createVerifiedSkill"]> {
+    return this.conversationOperationsApi.createVerifiedSkill(...args);
+  }
+
+  listVerifiedConversationSkills(...args: Parameters<ConversationOperationsApi["listVerifiedSkills"]>): ReturnType<ConversationOperationsApi["listVerifiedSkills"]> {
+    return this.conversationOperationsApi.listVerifiedSkills(...args);
+  }
+
+  createConversationWatch(...args: Parameters<ConversationOperationsApi["createWatch"]>): ReturnType<ConversationOperationsApi["createWatch"]> {
+    return this.conversationOperationsApi.createWatch(...args);
+  }
+
+  listConversationWatches(...args: Parameters<ConversationOperationsApi["listWatches"]>): ReturnType<ConversationOperationsApi["listWatches"]> {
+    return this.conversationOperationsApi.listWatches(...args);
+  }
+
+  cancelConversationWatch(...args: Parameters<ConversationOperationsApi["cancelWatch"]>): ReturnType<ConversationOperationsApi["cancelWatch"]> {
+    return this.conversationOperationsApi.cancelWatch(...args);
+  }
+
+  createConversationFocusItem(...args: Parameters<ConversationOperationsApi["createFocusItem"]>): ReturnType<ConversationOperationsApi["createFocusItem"]> {
+    return this.conversationOperationsApi.createFocusItem(...args);
+  }
+
+  listConversationFocusItems(...args: Parameters<ConversationOperationsApi["listFocusItems"]>): ReturnType<ConversationOperationsApi["listFocusItems"]> {
+    return this.conversationOperationsApi.listFocusItems(...args);
+  }
+
+  transitionConversationFocusItem(...args: Parameters<ConversationOperationsApi["transitionFocusItem"]>): ReturnType<ConversationOperationsApi["transitionFocusItem"]> {
+    return this.conversationOperationsApi.transitionFocusItem(...args);
+  }
+
+  createConversationHandoff(...args: Parameters<ConversationOperationsApi["createHandoff"]>): ReturnType<ConversationOperationsApi["createHandoff"]> {
+    return this.conversationOperationsApi.createHandoff(...args);
+  }
+
+  getConversationHandoff(...args: Parameters<ConversationOperationsApi["getHandoff"]>): ReturnType<ConversationOperationsApi["getHandoff"]> {
+    return this.conversationOperationsApi.getHandoff(...args);
+  }
+
+  getActiveBehaviorPolicy(...args: Parameters<ConversationOperationsApi["getActiveBehaviorPolicy"]>): ReturnType<ConversationOperationsApi["getActiveBehaviorPolicy"]> {
+    return this.conversationOperationsApi.getActiveBehaviorPolicy(...args);
+  }
+
+  putActiveBehaviorPolicy(...args: Parameters<ConversationOperationsApi["putActiveBehaviorPolicy"]>): ReturnType<ConversationOperationsApi["putActiveBehaviorPolicy"]> {
+    return this.conversationOperationsApi.putActiveBehaviorPolicy(...args);
+  }
+
+  createConversationReviewEvent(...args: Parameters<ConversationOperationsApi["createReviewEvent"]>): ReturnType<ConversationOperationsApi["createReviewEvent"]> {
+    return this.conversationOperationsApi.createReviewEvent(...args);
+  }
+
+  listConversationReviewEvents(...args: Parameters<ConversationOperationsApi["listReviewEvents"]>): ReturnType<ConversationOperationsApi["listReviewEvents"]> {
+    return this.conversationOperationsApi.listReviewEvents(...args);
+  }
+
+  previewConversationImport(...args: Parameters<ConversationOperationsApi["previewConversationImport"]>): ReturnType<ConversationOperationsApi["previewConversationImport"]> {
+    return this.conversationOperationsApi.previewConversationImport(...args);
+  }
+
+  applyConversationImport(...args: Parameters<ConversationOperationsApi["applyConversationImport"]>): ReturnType<ConversationOperationsApi["applyConversationImport"]> {
+    return this.conversationOperationsApi.applyConversationImport(...args);
+  }
+
+  rollbackConversationImport(...args: Parameters<ConversationOperationsApi["rollbackConversationImport"]>): ReturnType<ConversationOperationsApi["rollbackConversationImport"]> {
+    return this.conversationOperationsApi.rollbackConversationImport(...args);
+  }
+
+  searchConversationMediaAssets(...args: Parameters<ConversationPeripheralApi["searchMediaAssets"]>): ReturnType<ConversationPeripheralApi["searchMediaAssets"]> {
+    return this.conversationPeripheralApi.searchMediaAssets(...args);
+  }
+
+  getConversationMediaAsset(...args: Parameters<ConversationPeripheralApi["getMediaAsset"]>): ReturnType<ConversationPeripheralApi["getMediaAsset"]> {
+    return this.conversationPeripheralApi.getMediaAsset(...args);
+  }
+
+  importConversationMediaAsset(...args: Parameters<ConversationPeripheralApi["importMediaAsset"]>): ReturnType<ConversationPeripheralApi["importMediaAsset"]> {
+    return this.conversationPeripheralApi.importMediaAsset(...args);
+  }
+
+  deleteConversationMediaAsset(...args: Parameters<ConversationPeripheralApi["deleteMediaAsset"]>): ReturnType<ConversationPeripheralApi["deleteMediaAsset"]> {
+    return this.conversationPeripheralApi.deleteMediaAsset(...args);
+  }
+
+  restoreConversationMediaAsset(...args: Parameters<ConversationPeripheralApi["restoreMediaAsset"]>): ReturnType<ConversationPeripheralApi["restoreMediaAsset"]> {
+    return this.conversationPeripheralApi.restoreMediaAsset(...args);
+  }
+
+  renderConversationMediaCard(...args: Parameters<ConversationPeripheralApi["renderMediaCard"]>): ReturnType<ConversationPeripheralApi["renderMediaCard"]> {
+    return this.conversationPeripheralApi.renderMediaCard(...args);
+  }
+
+  downloadConversationMediaAsset(...args: Parameters<ConversationPeripheralApi["downloadMediaAsset"]>): ReturnType<ConversationPeripheralApi["downloadMediaAsset"]> {
+    return this.conversationPeripheralApi.downloadMediaAsset(...args);
+  }
+
+  getSpeechConfig(...args: Parameters<ConversationPeripheralApi["getSpeechConfig"]>): ReturnType<ConversationPeripheralApi["getSpeechConfig"]> {
+    return this.conversationPeripheralApi.getSpeechConfig(...args);
+  }
+
+  putSpeechConfig(...args: Parameters<ConversationPeripheralApi["putSpeechConfig"]>): ReturnType<ConversationPeripheralApi["putSpeechConfig"]> {
+    return this.conversationPeripheralApi.putSpeechConfig(...args);
+  }
+
+  getSpeechStatus(...args: Parameters<ConversationPeripheralApi["getSpeechStatus"]>): ReturnType<ConversationPeripheralApi["getSpeechStatus"]> {
+    return this.conversationPeripheralApi.getSpeechStatus(...args);
+  }
+
+  transcribeWorkAttachment(...args: Parameters<ConversationPeripheralApi["transcribeAttachment"]>): ReturnType<ConversationPeripheralApi["transcribeAttachment"]> {
+    return this.conversationPeripheralApi.transcribeAttachment(...args);
+  }
+
+  getBilibiliAccounts(...args: Parameters<ConversationPeripheralApi["getBilibiliAccounts"]>): ReturnType<ConversationPeripheralApi["getBilibiliAccounts"]> {
+    return this.conversationPeripheralApi.getBilibiliAccounts(...args);
+  }
+
+  getBilibiliConnections(...args: Parameters<ConversationPeripheralApi["getBilibiliConnections"]>): ReturnType<ConversationPeripheralApi["getBilibiliConnections"]> {
+    return this.conversationPeripheralApi.getBilibiliConnections(...args);
+  }
+
+  beginBilibiliLink(...args: Parameters<ConversationPeripheralApi["beginBilibiliLink"]>): ReturnType<ConversationPeripheralApi["beginBilibiliLink"]> {
+    return this.conversationPeripheralApi.beginBilibiliLink(...args);
+  }
+
+  getBilibiliLinkStatus(...args: Parameters<ConversationPeripheralApi["getBilibiliLinkStatus"]>): ReturnType<ConversationPeripheralApi["getBilibiliLinkStatus"]> {
+    return this.conversationPeripheralApi.getBilibiliLinkStatus(...args);
+  }
+
+  listBilibiliReadOperations(...args: Parameters<ConversationPeripheralApi["listBilibiliReadOperations"]>): ReturnType<ConversationPeripheralApi["listBilibiliReadOperations"]> {
+    return this.conversationPeripheralApi.listBilibiliReadOperations(...args);
+  }
+
+  runBilibiliRead(...args: Parameters<ConversationPeripheralApi["runBilibiliRead"]>): ReturnType<ConversationPeripheralApi["runBilibiliRead"]> {
+    return this.conversationPeripheralApi.runBilibiliRead(...args);
+  }
+
+  runBilibiliWrite(...args: Parameters<ConversationPeripheralApi["runBilibiliWrite"]>): ReturnType<ConversationPeripheralApi["runBilibiliWrite"]> {
+    return this.conversationPeripheralApi.runBilibiliWrite(...args);
+  }
+
+  getWorkOperationReceipt(...args: Parameters<ConversationPeripheralApi["getWorkOperation"]>): ReturnType<ConversationPeripheralApi["getWorkOperation"]> {
+    return this.conversationPeripheralApi.getWorkOperation(...args);
+  }
+
+  createConversationBackup(...args: Parameters<ConversationPeripheralApi["createActorBackup"]>): ReturnType<ConversationPeripheralApi["createActorBackup"]> {
+    return this.conversationPeripheralApi.createActorBackup(...args);
+  }
+
+  downloadConversationBackup(...args: Parameters<ConversationPeripheralApi["downloadActorBackup"]>): ReturnType<ConversationPeripheralApi["downloadActorBackup"]> {
+    return this.conversationPeripheralApi.downloadActorBackup(...args);
   }
 }

@@ -21,6 +21,7 @@ export type RouteId =
   | "settings"
   | "chat"
   | "assistant"
+  | "conversation-assistant"
   | "conversation-memory"
   | "installer";
 
@@ -107,6 +108,12 @@ export const ROUTES: readonly RouteDefinition[] = [
     label: "Conversation memory",
     path: "/conversation-memory",
     description: "Conversation sources, memory, and sharing authorization",
+  },
+  {
+    id: "conversation-assistant",
+    label: "Conversation assistant",
+    path: "/conversation-assistant",
+    description: "Memory, profiles, graph, and proactive conversation tools",
   },
   {
     id: "settings",

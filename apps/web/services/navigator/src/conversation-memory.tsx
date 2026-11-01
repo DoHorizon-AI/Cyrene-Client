@@ -245,6 +245,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     const originalExpiry = selectedMemory.validUntil;
     if (originalExpiry !== null && !editValidUntil) { setPageError(t("The current Work API cannot clear an existing expiry; choose a new expiry or keep the current value.")); return; }
     const patch = {
+      expectedVersion: selectedMemory.version,
       ...(editText.trim() !== selectedMemory.text ? { text: editText.trim() } : {}),
       ...(expiry !== null && expiry !== originalExpiry ? { validUntil: expiry } : {}),
     };
@@ -264,7 +265,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     if (!mayWrite || busy || !window.confirm(t("Delete this memory? Its source messages remain available for audit."))) return;
     setBusy(`memory-delete:${memory.id}`); setPageError(""); setNotice("");
     try {
-      const result = await api.deleteConversationMemory(workspaceId, memory.id);
+      const result = await api.deleteConversationMemory(workspaceId, memory.id, memory.version);
       setMatches(null);
       setSelectedMemoryId("");
       setNotice(`${t("Memory deleted. Authorization epoch")}: ${result.authorizationEpoch}`);

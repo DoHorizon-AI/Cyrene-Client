@@ -426,13 +426,14 @@ export class ConversationMemoryApi {
   }
 
   /** Correct the text or expiry of one selected memory. */
-  updateMemory(workspaceId: string, memoryId: string, input: { text?: string; validUntil?: number }): Promise<{ memory: ConversationMemory }> {
+  updateMemory(workspaceId: string, memoryId: string, input: { expectedVersion: number; text?: string; validUntil?: number }): Promise<{ memory: ConversationMemory }> {
     return this.transport.requestJson(workPath(workspaceId, `conversation-memory/memories/${workId(memoryId)}`), jsonRequest("PATCH", input), parseMemoryPatchReceipt);
   }
 
   /** Remove a memory through its owning Work service. */
-  deleteMemory(workspaceId: string, memoryId: string): Promise<{ deleted: true; authorizationEpoch: number }> {
-    return this.transport.requestJson(workPath(workspaceId, `conversation-memory/memories/${workId(memoryId)}`), { method: "DELETE" }, parseDeletedMemory);
+  deleteMemory(workspaceId: string, memoryId: string, expectedVersion: number): Promise<{ deleted: true; authorizationEpoch: number }> {
+    const query = new URLSearchParams({ expectedVersion: String(expectedVersion) });
+    return this.transport.requestJson(workPath(workspaceId, `conversation-memory/memories/${workId(memoryId)}?${query}`), { method: "DELETE" }, parseDeletedMemory);
   }
 
   /** Read source authorization rows scoped to the requested conversation. */
