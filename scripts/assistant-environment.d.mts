@@ -7,11 +7,11 @@
 export type AssistantEnvironment = Record<string, string | undefined>;
 
 export const ISOLATED_ENVIRONMENT_ALLOWLIST: readonly string[];
-export const NAVIGATOR_FACTORY_ENVIRONMENT_NAMES: readonly string[];
+export const NAVIGATOR_ONLY_ENVIRONMENT_NAMES: readonly string[];
 export function createNavigatorChildEnvironment(
   sharedEnvironment: AssistantEnvironment,
   inheritedEnvironment: AssistantEnvironment,
-  navigatorFactoryEnvironment: AssistantEnvironment,
+  navigatorOnlyEnvironment: AssistantEnvironment,
 ): AssistantEnvironment;
 export function prepareAssistantEnvironment(
   source: AssistantEnvironment,
@@ -19,5 +19,5 @@ export function prepareAssistantEnvironment(
 ): {
   inheritedEnvironment: AssistantEnvironment;
   sharedEnvironment: AssistantEnvironment;
-  navigatorFactoryEnvironment: AssistantEnvironment;
+  navigatorOnlyEnvironment: AssistantEnvironment;
 };

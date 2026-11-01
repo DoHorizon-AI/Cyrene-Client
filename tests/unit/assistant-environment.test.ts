@@ -8,7 +8,7 @@ import { expect, it } from "vitest";
 import {
   createNavigatorChildEnvironment,
   ISOLATED_ENVIRONMENT_ALLOWLIST,
-  NAVIGATOR_FACTORY_ENVIRONMENT_NAMES,
+  NAVIGATOR_ONLY_ENVIRONMENT_NAMES,
   prepareAssistantEnvironment,
 } from "../../scripts/assistant-environment.mjs";
 
@@ -23,6 +23,12 @@ const factoryEnvironment: Record<string, string> = {
   CYRENE_NAVIGATOR_EMBEDDING_QUERY_PREFIX: "query: ",
 };
 
+const navigatorFeatureEnvironment: Record<string, string> = {
+  CYRENE_CONVERSATION_ASSISTANT_ENABLED: "true",
+};
+
+const navigatorOnlyEnvironment = { ...factoryEnvironment, ...navigatorFeatureEnvironment };
+
 const localCredentials: Record<string, string> = {
   CYRENE_SESSION_TOKEN: "local-session-token",
   CYRENE_EXCHANGE_URL: "http://127.0.0.1:18682",
@@ -30,12 +36,12 @@ const localCredentials: Record<string, string> = {
   CYRENE_HARNESS_MODEL: "local-qwen",
 };
 
-it("forwards only the eight explicit Navigator factory bindings and drops unknown isolated variables", () => {
+it("forwards exact Navigator-only config and drops unknown isolated variables", () => {
   const input = {
     PATH: "/task/node/bin",
     STUDIO_WORKSPACE_ID: "local",
     ...localCredentials,
-    ...factoryEnvironment,
+    ...navigatorOnlyEnvironment,
     AWS_SECRET_ACCESS_KEY: "must-not-forward",
     DATABASE_URL: "postgres://production",
     CYRENE_NAVIGATOR_PRODUCTION_PROFILE: "must-not-forward",
@@ -44,14 +50,14 @@ it("forwards only the eight explicit Navigator factory bindings and drops unknow
   const navigatorChildEnvironment = createNavigatorChildEnvironment(
     prepared.sharedEnvironment,
     prepared.inheritedEnvironment,
-    prepared.navigatorFactoryEnvironment,
+    prepared.navigatorOnlyEnvironment,
   );
 
-  expect(NAVIGATOR_FACTORY_ENVIRONMENT_NAMES).toEqual(Object.keys(factoryEnvironment));
-  expect(prepared.navigatorFactoryEnvironment).toEqual(factoryEnvironment);
-  expect(prepared.inheritedEnvironment).toMatchObject({ ...factoryEnvironment, ...localCredentials });
-  expect(navigatorChildEnvironment).toMatchObject({ ...factoryEnvironment, ...localCredentials });
-  for (const name of Object.keys(factoryEnvironment)) expect(prepared.sharedEnvironment).not.toHaveProperty(name);
+  expect(NAVIGATOR_ONLY_ENVIRONMENT_NAMES).toEqual(Object.keys(navigatorOnlyEnvironment));
+  expect(prepared.navigatorOnlyEnvironment).toEqual(navigatorOnlyEnvironment);
+  expect(prepared.inheritedEnvironment).toMatchObject({ ...navigatorOnlyEnvironment, ...localCredentials });
+  expect(navigatorChildEnvironment).toMatchObject({ ...navigatorOnlyEnvironment, ...localCredentials });
+  for (const name of Object.keys(navigatorOnlyEnvironment)) expect(prepared.sharedEnvironment).not.toHaveProperty(name);
   for (const name of Object.keys(localCredentials)) expect(prepared.sharedEnvironment).not.toHaveProperty(name);
   for (const name of ["AWS_SECRET_ACCESS_KEY", "DATABASE_URL", "CYRENE_NAVIGATOR_PRODUCTION_PROFILE"]) {
     expect(ISOLATED_ENVIRONMENT_ALLOWLIST).not.toContain(name);
@@ -62,18 +68,18 @@ it("forwards only the eight explicit Navigator factory bindings and drops unknow
   expect(prepared.sharedEnvironment).toMatchObject({ PATH: "/task/node/bin", STUDIO_WORKSPACE_ID: "local" });
 });
 
-it("keeps Navigator factory bindings out of Vite and Control in non-isolated mode too", () => {
-  const prepared = prepareAssistantEnvironment({ ...localCredentials, ...factoryEnvironment, STUDIO_MODE: "local" }, false);
+it("keeps Navigator-only config out of Vite and Control in non-isolated mode too", () => {
+  const prepared = prepareAssistantEnvironment({ ...localCredentials, ...navigatorOnlyEnvironment, STUDIO_MODE: "local" }, false);
   const navigatorChildEnvironment = createNavigatorChildEnvironment(
     prepared.sharedEnvironment,
     prepared.inheritedEnvironment,
-    prepared.navigatorFactoryEnvironment,
+    prepared.navigatorOnlyEnvironment,
   );
 
-  expect(prepared.inheritedEnvironment).toMatchObject(factoryEnvironment);
-  expect(prepared.navigatorFactoryEnvironment).toEqual(factoryEnvironment);
-  expect(navigatorChildEnvironment).toMatchObject({ ...factoryEnvironment, ...localCredentials });
-  for (const name of [...Object.keys(factoryEnvironment), ...Object.keys(localCredentials)]) {
+  expect(prepared.inheritedEnvironment).toMatchObject(navigatorOnlyEnvironment);
+  expect(prepared.navigatorOnlyEnvironment).toEqual(navigatorOnlyEnvironment);
+  expect(navigatorChildEnvironment).toMatchObject({ ...navigatorOnlyEnvironment, ...localCredentials });
+  for (const name of [...Object.keys(navigatorOnlyEnvironment), ...Object.keys(localCredentials)]) {
     expect(prepared.sharedEnvironment).not.toHaveProperty(name);
   }
 });

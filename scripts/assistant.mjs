@@ -31,7 +31,7 @@ if (!values['isolated-env']) Object.assign(process.env, loadEnv('development', r
 const {
   inheritedEnvironment: inheritedEnv,
   sharedEnvironment: webEnvironment,
-  navigatorFactoryEnvironment,
+  navigatorOnlyEnvironment,
 } = prepareAssistantEnvironment(process.env, values['isolated-env']);
 const frontPort = Number(values.port), navigatorPort = Number(values['navigator-port']);
 const controlPort = Number(values['control-port'] ?? inheritedEnv.STUDIO_CONTROL_PORT ?? frontPort + 100);
@@ -131,7 +131,7 @@ try {
       try { await access(virtualPython); file = virtualPython; }
       catch { file = 'uv'; prefix = ['run', '--project', navigator, 'python']; }
     }
-    const env = { ...createNavigatorChildEnvironment(common, inheritedEnv, navigatorFactoryEnvironment),
+    const env = { ...createNavigatorChildEnvironment(common, inheritedEnv, navigatorOnlyEnvironment),
       CYRENE_MCP_URL: controlOrigin + '/studio-mcp', CYRENE_MCP_TOKEN: token,
       CYRENE_PERSONAL_RUNTIMES_ENABLED: 'true',
       CYRENE_WORKSPACE_ID: common.STUDIO_WORKSPACE_ID,

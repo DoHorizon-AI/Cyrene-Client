@@ -18,9 +18,10 @@ export const ISOLATED_ENVIRONMENT_ALLOWLIST = Object.freeze([
   "CYRENE_NAVIGATOR_EMBEDDING_DIMENSIONS",
   "CYRENE_NAVIGATOR_EMBEDDING_DOCUMENT_PREFIX",
   "CYRENE_NAVIGATOR_EMBEDDING_QUERY_PREFIX",
+  "CYRENE_CONVERSATION_ASSISTANT_ENABLED",
 ]);
 
-export const NAVIGATOR_FACTORY_ENVIRONMENT_NAMES = Object.freeze([
+export const NAVIGATOR_ONLY_ENVIRONMENT_NAMES = Object.freeze([
   "CYRENE_NAVIGATOR_MODEL_PROVIDER_CONNECTION_REF",
   "CYRENE_NAVIGATOR_MEMORY_PROVIDER_CONNECTION_REF",
   "CYRENE_NAVIGATOR_KNOWLEDGE_GRAPH_CONNECTION_REF",
@@ -29,6 +30,7 @@ export const NAVIGATOR_FACTORY_ENVIRONMENT_NAMES = Object.freeze([
   "CYRENE_NAVIGATOR_EMBEDDING_DIMENSIONS",
   "CYRENE_NAVIGATOR_EMBEDDING_DOCUMENT_PREFIX",
   "CYRENE_NAVIGATOR_EMBEDDING_QUERY_PREFIX",
+  "CYRENE_CONVERSATION_ASSISTANT_ENABLED",
 ]);
 
 const NAVIGATOR_CREDENTIAL_ENVIRONMENT_NAMES = Object.freeze([
@@ -51,14 +53,14 @@ export function prepareAssistantEnvironment(source, isolated) {
     ? pickEnvironment(source, ISOLATED_ENVIRONMENT_ALLOWLIST)
     : { ...source };
   const sharedEnvironment = { ...inheritedEnvironment };
-  for (const name of [...NAVIGATOR_FACTORY_ENVIRONMENT_NAMES, ...NAVIGATOR_CREDENTIAL_ENVIRONMENT_NAMES]) {
+  for (const name of [...NAVIGATOR_ONLY_ENVIRONMENT_NAMES, ...NAVIGATOR_CREDENTIAL_ENVIRONMENT_NAMES]) {
     delete sharedEnvironment[name];
   }
 
   return {
     inheritedEnvironment,
     sharedEnvironment,
-    navigatorFactoryEnvironment: pickEnvironment(inheritedEnvironment, NAVIGATOR_FACTORY_ENVIRONMENT_NAMES),
+    navigatorOnlyEnvironment: pickEnvironment(inheritedEnvironment, NAVIGATOR_ONLY_ENVIRONMENT_NAMES),
   };
 }
 
@@ -66,8 +68,8 @@ export function prepareAssistantEnvironment(source, isolated) {
  * Add Navigator credentials and provider bindings to the shared base only for its child.
  * Shared Vite and Control environments remain unchanged.
  */
-export function createNavigatorChildEnvironment(sharedEnvironment, inheritedEnvironment, navigatorFactoryEnvironment) {
-  const navigatorEnvironment = { ...sharedEnvironment, ...navigatorFactoryEnvironment };
+export function createNavigatorChildEnvironment(sharedEnvironment, inheritedEnvironment, navigatorOnlyEnvironment) {
+  const navigatorEnvironment = { ...sharedEnvironment, ...navigatorOnlyEnvironment };
   for (const name of NAVIGATOR_CREDENTIAL_ENVIRONMENT_NAMES) {
     if (inheritedEnvironment[name]) navigatorEnvironment[name] = inheritedEnvironment[name];
   }
