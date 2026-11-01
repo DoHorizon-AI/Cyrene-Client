@@ -40,8 +40,8 @@ describe("conversation memory Work API", () => {
     });
 
     const overview = await api.getConversationMemoryOverview("workspace-1");
-    const messages = await api.getConversationMessages("workspace-1", { conversationId: "chat-1", limit: 20 });
-    const memories = await api.listConversationMemories("workspace-1", { conversationId: "chat-1", personaId: "persona-1" });
+    const messages = await api.getConversationMessages("workspace-1", { conversationId: "chat-1", conversationKind: "direct", limit: 20 });
+    const memories = await api.listConversationMemories("workspace-1", { conversationId: "chat-1", conversationKind: "direct", personaId: "persona-1" });
     const sources = await api.listConversationMemorySources("workspace-1", "chat-1");
 
     expect(overview.capabilities.memoryProvider).toBe("ready");
@@ -50,8 +50,8 @@ describe("conversation memory Work API", () => {
     expect(sources.items[0]?.status).toBe("active");
     expect(calls).toEqual([
       "/api/v1/workspaces/workspace-1/work/conversation-memory/overview",
-      "/api/v1/workspaces/workspace-1/work/conversation-memory/messages?conversationId=chat-1&limit=20",
-      "/api/v1/workspaces/workspace-1/work/conversation-memory/memories?limit=100&conversationId=chat-1&personaId=persona-1",
+      "/api/v1/workspaces/workspace-1/work/conversation-memory/messages?conversationId=chat-1&conversationKind=direct&limit=20",
+      "/api/v1/workspaces/workspace-1/work/conversation-memory/memories?limit=100&conversationId=chat-1&conversationKind=direct&personaId=persona-1",
       "/api/v1/workspaces/workspace-1/work/conversation-memory/sources?conversationId=chat-1",
     ]);
   });
@@ -101,10 +101,10 @@ describe("conversation memory Work API", () => {
 
   it("surfaces provider unavailability and rejects malformed owner DTOs", async () => {
     const unavailableApi = new NavigatorApi(async () => response({ code: "MEMORY_PROVIDER_UNAVAILABLE", detail: "No provider is configured." }, 503));
-    await expect(unavailableApi.queryConversationMemories("workspace-1", { conversationId: "chat-1", query: "concise" }))
+    await expect(unavailableApi.queryConversationMemories("workspace-1", { conversationId: "chat-1", conversationKind: "direct", query: "concise" }))
       .rejects.toMatchObject({ code: "MEMORY_PROVIDER_UNAVAILABLE", status: 503 });
 
     const malformedApi = new NavigatorApi(async () => response({ items: [{ ...message, scope: { ...scope, visibility: "public" } }], nextCursor: null }));
-    await expect(malformedApi.getConversationMessages("workspace-1", { conversationId: "chat-1" })).rejects.toBeInstanceOf(NavigatorContractError);
+    await expect(malformedApi.getConversationMessages("workspace-1", { conversationId: "chat-1", conversationKind: "direct" })).rejects.toBeInstanceOf(NavigatorContractError);
   });
 });

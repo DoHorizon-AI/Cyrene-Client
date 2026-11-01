@@ -394,23 +394,24 @@ export class ConversationMemoryApi {
   }
 
   /** Read one bounded page of owner-backed conversation messages. */
-  getMessages(workspaceId: string, input: { conversationId: string; limit?: number; cursor?: string }, signal?: AbortSignal): Promise<ConversationMessagesPage> {
-    const query = new URLSearchParams({ conversationId: workId(input.conversationId), limit: String(input.limit ?? 100) });
+  getMessages(workspaceId: string, input: { conversationId: string; conversationKind: ConversationKind; limit?: number; cursor?: string }, signal?: AbortSignal): Promise<ConversationMessagesPage> {
+    const query = new URLSearchParams({ conversationId: workId(input.conversationId), conversationKind: input.conversationKind, limit: String(input.limit ?? 100) });
     if (input.cursor) query.set("cursor", input.cursor);
     return this.transport.requestJson(workPath(workspaceId, `conversation-memory/messages?${query}`), { method: "GET", signal }, parseMessages);
   }
 
   /** Read owner-backed memory rows for the selected conversation scope. */
-  listMemories(workspaceId: string, input: { conversationId: string; personaId?: string; state?: string; limit?: number }, signal?: AbortSignal): Promise<ConversationMemoryList> {
+  listMemories(workspaceId: string, input: { conversationId: string; conversationKind: ConversationKind; personaId?: string; state?: string; limit?: number }, signal?: AbortSignal): Promise<ConversationMemoryList> {
     const query = new URLSearchParams({ limit: String(input.limit ?? 100) });
     query.set("conversationId", workId(input.conversationId));
+    query.set("conversationKind", input.conversationKind);
     if (input.personaId) query.set("personaId", workId(input.personaId));
     if (input.state) query.set("state", input.state);
     return this.transport.requestJson(workPath(workspaceId, `conversation-memory/memories?${query}`), { method: "GET", signal }, parseMemories);
   }
 
   /** Search via the configured memory provider; unavailable providers stay errors. */
-  queryMemories(workspaceId: string, input: { conversationId: string; personaId?: string; query: string; limit?: number }, signal?: AbortSignal): Promise<ConversationMemoryQueryResult> {
+  queryMemories(workspaceId: string, input: { conversationId: string; conversationKind: ConversationKind; personaId?: string; query: string; limit?: number }, signal?: AbortSignal): Promise<ConversationMemoryQueryResult> {
     const body = { ...input, conversationId: workId(input.conversationId), ...(input.personaId ? { personaId: workId(input.personaId) } : {}), limit: input.limit ?? 50 };
     return this.transport.requestJson(workPath(workspaceId, "conversation-memory/memories/query"), jsonRequest("POST", body, true), parseMemoryMatches);
   }

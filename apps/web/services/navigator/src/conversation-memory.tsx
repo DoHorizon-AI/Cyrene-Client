@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button, PageHeader, Panel, StateBlock, StatusPill } from "./components";
-import { newConversationMemoryKey, type ConversationMemory, type ConversationMemoryKind, type ConversationMemoryMatch, type ConversationMemorySource, type ConversationMessage, type ConversationVisibility, type NavigatorApi } from "./api";
+import { newConversationMemoryKey, type ConversationKind, type ConversationMemory, type ConversationMemoryKind, type ConversationMemoryMatch, type ConversationMemorySource, type ConversationMessage, type ConversationVisibility, type NavigatorApi } from "./api";
 import { useI18n } from "./i18n";
 import { errorMessage } from "./pages/shared";
 import "./conversation-memory.css";
@@ -27,6 +27,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
   const [overview, setOverview] = useState<Awaited<ReturnType<NavigatorApi["getConversationMemoryOverview"]>> | null>(null);
   const [overviewError, setOverviewError] = useState("");
   const [conversationId, setConversationId] = useState("");
+  const [conversationKind, setConversationKind] = useState<ConversationKind>("direct");
   const [personaId, setPersonaId] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [busy, setBusy] = useState("");
@@ -65,6 +66,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
 
   const workspaceAligned = !!workspaceId && hostWorkspaceId === workspaceId;
   const selectedMemory = useMemo(() => memories.find((memory) => memory.id === selectedMemoryId) ?? null, [memories, selectedMemoryId]);
+  const scopedSources = useMemo(() => sources.filter((source) => source.scope.conversationId === conversationId.trim() && source.scope.conversationKind === conversationKind), [sources, conversationId, conversationKind]);
   const mayWrite = canWrite && workspaceAligned;
 
   useEffect(() => {
@@ -116,7 +118,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     }
     const [overviewResult, memoriesResult, sourcesResult] = await Promise.allSettled([
       api.getConversationMemoryOverview(workspaceId),
-      api.listConversationMemories(workspaceId, { conversationId: conversationId.trim(), ...(personaId.trim() ? { personaId: personaId.trim() } : {}), ...(memoryState ? { state: memoryState } : {}), limit: 100 }),
+      api.listConversationMemories(workspaceId, { conversationId: conversationId.trim(), conversationKind, ...(personaId.trim() ? { personaId: personaId.trim() } : {}), ...(memoryState ? { state: memoryState } : {}), limit: 100 }),
       api.listConversationMemorySources(workspaceId, conversationId.trim()),
     ]);
     if (requestId !== ownerRequest.current) return;
@@ -130,7 +132,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     if (sourcesResult.status === "fulfilled") { setSources(sourcesResult.value.items); setSourcesError(""); }
     else { setSources([]); setSourcesError(errorMessage(sourcesResult.reason)); }
     if ([overviewResult, memoriesResult, sourcesResult].every((result) => result.status === "rejected")) setPageError(t("Conversation memory services could not be read."));
-  }, [api, workspaceAligned, workspaceId, conversationId, personaId, memoryState, t]);
+  }, [api, workspaceAligned, workspaceId, conversationId, conversationKind, personaId, memoryState, t]);
 
   useEffect(() => {
     ownerRequest.current++;
@@ -141,7 +143,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     setSelectedMemoryId("");
     setSelectedMessageIds([]);
     setGrantSourceId("");
-  }, [workspaceId, conversationId, personaId, memoryState]);
+  }, [workspaceId, conversationId, conversationKind, personaId, memoryState]);
 
   useEffect(() => {
     messageRequest.current++;
@@ -170,7 +172,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     setBusy(cursor ? "messages-more" : "messages");
     if (!cursor) { setMessages([]); setMessagesCursor(null); }
     try {
-      const page = await api.getConversationMessages(workspaceId, { conversationId: selectedConversation, limit: PAGE_SIZE, ...(cursor ? { cursor } : {}) });
+      const page = await api.getConversationMessages(workspaceId, { conversationId: selectedConversation, conversationKind, limit: PAGE_SIZE, ...(cursor ? { cursor } : {}) });
       if (requestId !== messageRequest.current) return;
       setMessages((current) => cursor ? [...current, ...page.items.filter((item) => !current.some((existing) => existing.id === item.id))] : page.items);
       setMessagesCursor(page.nextCursor);
@@ -187,7 +189,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     const requestId = ++queryRequest.current;
     setBusy("query"); setQueryError(""); setMatches(null);
     try {
-      const result = await api.queryConversationMemories(workspaceId, { conversationId: conversationId.trim(), ...(personaId.trim() ? { personaId: personaId.trim() } : {}), query: query.trim(), limit: 50 });
+      const result = await api.queryConversationMemories(workspaceId, { conversationId: conversationId.trim(), conversationKind, ...(personaId.trim() ? { personaId: personaId.trim() } : {}), query: query.trim(), limit: 50 });
       if (requestId === queryRequest.current) setMatches(result.items);
     } catch (error) { if (requestId === queryRequest.current) setQueryError(errorMessage(error)); }
     finally { if (requestId === queryRequest.current) setBusy(""); }
@@ -201,6 +203,15 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
       setPageError(t("Load active source messages before creating a memory."));
       return;
     }
+    if (evidenceMessages.some((message) => message.scope.conversationKind !== conversationKind)) {
+      setPageError(t("Selected evidence does not match the conversation kind."));
+      return;
+    }
+    const evidencePersonaId = evidenceMessages[0]?.scope.personaId ?? null;
+    if (evidenceMessages.some((message) => message.scope.personaId !== evidencePersonaId) || (personaId.trim() && personaId.trim() !== evidencePersonaId)) {
+      setPageError(t("Selected evidence does not match the selected persona."));
+      return;
+    }
     setBusy("memory-create"); setPageError(""); setNotice("");
     const expiry = parseLocalDateTime(draftValidUntil);
     if (draftValidUntil && expiry === null) { setPageError(t("Enter a valid expiry time.")); setBusy(""); return; }
@@ -208,8 +219,8 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
       const result = await api.createConversationMemory(workspaceId, {
         idempotencyKey: memoryKey,
         conversationId: conversationId.trim(),
-        conversationKind: evidenceMessages[0]!.scope.conversationKind,
-        ...(personaId.trim() ? { personaId: personaId.trim() } : {}),
+        conversationKind,
+        ...(personaId.trim() ? { personaId: personaId.trim() } : evidencePersonaId ? { personaId: evidencePersonaId } : {}),
         kind: draftKind,
         text: draftText.trim(),
         sourceMessageIds: selectedMessageIds,
@@ -316,7 +327,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     let record = memories.find((memory) => memory.id === match.memoryId);
     if (!record) {
       try {
-        const result = await api.listConversationMemories(workspaceId, { conversationId: conversationId.trim(), ...(personaId.trim() ? { personaId: personaId.trim() } : {}), limit: 100 });
+        const result = await api.listConversationMemories(workspaceId, { conversationId: conversationId.trim(), conversationKind, ...(personaId.trim() ? { personaId: personaId.trim() } : {}), limit: 100 });
         setMemories(result.items);
         setMemoriesError("");
         record = result.items.find((memory) => memory.id === match.memoryId);
@@ -357,6 +368,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
       <Panel title={t("Conversation scope")} meta={overview ? <span>{t("Authorization epoch")}: {overview.authorizationEpoch}</span> : undefined}>
         <div className="conversation-memory__scope">
           <label>{t("Conversation ID")}<input value={conversationId} onChange={(event) => setConversationId(event.target.value)} autoComplete="off" disabled={busy !== ""} /></label>
+          <label>{t("Conversation kind")}<select value={conversationKind} onChange={(event) => setConversationKind(event.target.value as ConversationKind)} disabled={busy !== ""}><option value="direct">{t("Direct")}</option><option value="group">{t("Group")}</option><option value="channel">{t("Channel")}</option></select></label>
           <label>{t("Persona ID (optional)")}<input value={personaId} onChange={(event) => setPersonaId(event.target.value)} autoComplete="off" disabled={busy !== ""} /></label>
           <Button onClick={() => { setReloadKey((value) => value + 1); setMatches(null); }} disabled={!isReady || busy !== ""}>{t("Load scope")}</Button>
         </div>
@@ -401,15 +413,15 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
         <Panel id="conversation-memory-messages" title={t("Conversation messages")} meta={<Button onClick={() => void readMessages()} disabled={!isReady || !conversationId.trim() || busy !== ""}>{t("Read messages")}</Button>}>
           {messagesError ? <StateBlock kind="error" title={t("Messages unavailable")} detail={messagesError} /> : messages.length ? <>
             <ul className="conversation-memory__list conversation-memory__messages">{messages.map((message) => <li key={message.id}>
-              <label className="conversation-memory__source-select"><input type="checkbox" checked={selectedMessageIds.includes(message.id)} onChange={() => toggleSourceMessage(message.id)} disabled={!mayWrite || message.status === "revoked" || sources.some((source) => source.id === message.id && source.status === "revoked")} /><span>{t("Use as evidence")}</span></label>
+              <label className="conversation-memory__source-select"><input type="checkbox" checked={selectedMessageIds.includes(message.id)} onChange={() => toggleSourceMessage(message.id)} disabled={!mayWrite || message.status === "revoked" || scopedSources.some((source) => source.id === message.id && source.status === "revoked")} /><span>{t("Use as evidence")}</span></label>
               <div><strong>{message.role} · {message.scope.visibility} · {message.status}</strong><p>{message.content}</p><small>{message.id} · {t("Event")}: {message.eventId} · {formatEpoch(message.occurredAt, t)}</small>{message.sourceRefs.map((reference, index) => <small key={`${message.id}:${index}`}>{t("Derived from")}: {reference.memoryId ?? t("conversation source")}{reference.memoryVersion === null ? "" : ` v${reference.memoryVersion}`} · {reference.sourceMessageIds.join(", ")}</small>)}</div>
             </li>)}</ul>
             {messagesCursor && <Button onClick={() => void readMessages(messagesCursor)} disabled={busy !== ""} loading={busy === "messages-more"}>{t("Load more messages")}</Button>}
           </> : <StateBlock kind="empty" title={t("No conversation messages loaded")} detail={t("Enter a conversation ID and read messages from Navigator to choose source evidence.")} />}
         </Panel>
 
-        <Panel title={t("Authorized sources")} meta={<span>{sources.length}</span>}>
-          {sourcesError ? <StateBlock kind="error" title={t("Sources unavailable")} detail={sourcesError} /> : sources.length ? <ul className="conversation-memory__list">{sources.map((source) => <li key={source.id}>
+        <Panel title={t("Authorized sources")} meta={<span>{scopedSources.length}</span>}>
+          {sourcesError ? <StateBlock kind="error" title={t("Sources unavailable")} detail={sourcesError} /> : scopedSources.length ? <ul className="conversation-memory__list">{scopedSources.map((source) => <li key={source.id}>
             <div><strong>{source.role} · {source.status}</strong><small>{source.id} · {source.scope.visibility} · {source.scope.conversationId}</small><small>{t("Authorization epoch")}: {source.authorizationEpoch}{source.revokedAt !== null ? ` · ${t("Revoked")}: ${formatEpoch(source.revokedAt, t)}` : ""}</small>
               {source.grants.map((grant) => <div className="conversation-memory__grant" key={grant.id}><small>{grant.visibility === "workspace" ? t("Workspace") : `${t("Conversation")}: ${grant.targetConversationId}`} · {grant.status}{grant.expiresAt === null ? ` · ${t("No expiry")}` : ` · ${t("Expires")}: ${formatEpoch(grant.expiresAt, t)}`}</small><Button onClick={() => void revokeGrant(source, grant.id)} disabled={!mayWrite || !source.canManageGrants || source.status === "revoked" || grant.status === "revoked" || busy !== ""}>{grant.status === "revoked" ? t("Grant revoked") : t("Revoke grant")}</Button></div>)}
             </div>
@@ -438,7 +450,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
             </div>
             <label>{t("Valid until (optional)")}<input type="datetime-local" value={draftValidUntil} onChange={(event) => setDraftValidUntil(event.target.value)} /></label>
             <p className="conversation-memory__help">{selectedMessageIds.length ? `${selectedMessageIds.length} ${t("source messages selected")}` : t("Select one or more source messages above. A memory cannot be saved without provenance.")}</p>
-            <Button tone="primary" disabled={!mayWrite || !conversationId.trim() || !draftText.trim() || selectedMessageIds.length === 0 || selectedMessageIds.some((id) => sources.some((source) => source.id === id && source.status === "revoked")) || busy !== ""} loading={busy === "memory-create"}>{t("Save memory")}</Button>
+            <Button tone="primary" disabled={!mayWrite || !conversationId.trim() || !draftText.trim() || selectedMessageIds.length === 0 || selectedMessageIds.some((id) => scopedSources.some((source) => source.id === id && source.status === "revoked")) || busy !== ""} loading={busy === "memory-create"}>{t("Save memory")}</Button>
           </form>
         </Panel>
       </div>
