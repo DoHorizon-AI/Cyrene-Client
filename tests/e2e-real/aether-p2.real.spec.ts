@@ -107,7 +107,7 @@ test("REAL WSL Web turn persists an attributed memory and revocation removes it 
   const corrected = ((correctedReadback.body as { items?: MemoryRecord[] }).items ?? []).find((item) => item.id === createdMemory!.id);
   expect(corrected?.version).toBe(createdMemory!.version + 1);
 
-  const sourcesGrid = page.locator(".conversation-memory__grid").last();
+  const sourcesGrid = page.locator(".conversation-memory__grid").nth(1);
   const sourcesPanel = sourcesGrid.locator(".panel").filter({ has: page.getByRole("heading", { name: /Authorized sources|已授权来源/ }) });
   const sourceRow = sourcesPanel.locator(".conversation-memory__list > li").filter({ hasText: sourceMessageId! });
   await expect(sourceRow).toContainText("active");
