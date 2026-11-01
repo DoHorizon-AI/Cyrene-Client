@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Button, PageHeader, Panel, StateBlock, StatusPill } from "./components";
-import { newConversationMemoryKey, type ActorBackupAttachment, type ActiveBehaviorPolicy, type ConversationFocusItem, type ConversationFocusKind, type ConversationFocusState, type ConversationHandoff, type ConversationImportPreview, type ConversationImportResult, type ConversationKind, type ConversationMessage, type ConversationReviewEvent, type ConversationSourceReference, type ConversationWatch, type MaintenanceJob, type MaintenanceKind, type MaintenanceState, type NavigatorApi, type ResearchNote, type VerifiedConversationSkill } from "./api";
+import { newConversationMemoryKey, type ActorBackupArtifact, type ActiveBehaviorPolicy, type ConversationFocusItem, type ConversationFocusKind, type ConversationFocusState, type ConversationHandoff, type ConversationImportPreview, type ConversationImportResult, type ConversationKind, type ConversationMessage, type ConversationReviewEvent, type ConversationSourceReference, type ConversationWatch, type MaintenanceJob, type MaintenanceKind, type MaintenanceState, type NavigatorApi, type ResearchNote, type VerifiedConversationSkill } from "./api";
 import { useI18n } from "./i18n";
 import { errorMessage } from "./pages/shared";
 import "./conversation-assistant.css";
@@ -380,7 +380,7 @@ function ReviewImportPanel({ api, workspaceId, mayWrite }: { api: NavigatorApi; 
   const [previewBatchId, setPreviewBatchId] = useState(""), [previewSourceKind, setPreviewSourceKind] = useState("");
   const [appliedBatch, setAppliedBatch] = useState<ConversationImportResult | null>(null);
   const [rollbackBatchId, setRollbackBatchId] = useState("");
-  const [backup, setBackup] = useState<ActorBackupAttachment | null>(null);
+  const [backup, setBackup] = useState<ActorBackupArtifact | null>(null);
   const [backupError, setBackupError] = useState("");
   const [busy, setBusy] = useState(""), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -447,7 +447,7 @@ function ReviewImportPanel({ api, workspaceId, mayWrite }: { api: NavigatorApi; 
   const createBackup = async () => {
     if (!mayWrite || busy) return;
     setBusy("backup"); setError(""); setBackupError(""); setNotice(""); setBackup(null);
-    try { const saved = await api.createConversationBackup(workspaceId); setBackup(saved); setNotice(t("Actor-private backup attachment created.")); }
+    try { const saved = await api.createConversationBackup(workspaceId); setBackup(saved); setNotice(t("Actor-private backup created.")); }
     catch (reason) { setBackupError(errorMessage(reason)); }
     finally { setBusy(""); }
   };
@@ -455,9 +455,9 @@ function ReviewImportPanel({ api, workspaceId, mayWrite }: { api: NavigatorApi; 
     if (!backup || busy) return;
     setBusy("backup-download"); setBackupError("");
     try {
-      const blob = await api.downloadConversationBackup(workspaceId, backup.downloadPath, backup.attachment.sha256);
+      const blob = await api.downloadConversationBackup(workspaceId, backup.sha256, backup.size);
       const url = URL.createObjectURL(blob), anchor = document.createElement("a");
-      anchor.href = url; anchor.download = backup.attachment.name; anchor.click();
+      anchor.href = url; anchor.download = `cyrene-actor-backup-${backup.sha256}.json`; anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (reason) { setBackupError(errorMessage(reason)); }
     finally { setBusy(""); }
@@ -481,11 +481,11 @@ function ReviewImportPanel({ api, workspaceId, mayWrite }: { api: NavigatorApi; 
         </form>
       </Panel>
       <Panel title={t("Backup & restore")}>
-        <p className="conversation-assistant__help">{t("Backup bytes are stored as an actor-private Work attachment. Restoring a full backup is not exposed by the current Navigator API.")}</p>
+        <p className="conversation-assistant__help">{t("Backup bytes are stored as an actor-private Work artifact. Restoring a full backup is not exposed by the current Navigator API.")}</p>
         {backupError ? <StateBlock kind="error" title={t("Backup unavailable")} detail={backupError} /> : <Button tone="primary" onClick={() => void createBackup()} disabled={!mayWrite || busy !== ""} loading={busy === "backup"}>{t("Create backup")}</Button>}
-        {backup && <dl className="conversation-assistant__facts"><dt>{t("Attachment")}</dt><dd>{backup.attachment.name} · {backup.attachment.size} bytes</dd><dt>{t("SHA-256")}</dt><dd>{backup.attachment.sha256}</dd><dt>{t("Format")}</dt><dd>{backup.attachment.mediaType}</dd></dl>}
-        {backup && <Button onClick={() => void downloadBackup()} disabled={busy !== ""} loading={busy === "backup-download"}>{t("Download backup attachment")}</Button>}
-        <StateBlock kind="error" title={t("Restore endpoint unavailable")} detail={t("Navigator has not exposed a restore preview/apply/rollback route. The attachment remains downloadable; no restore is claimed.")} />
+        {backup && <dl className="conversation-assistant__facts"><dt>{t("Artifact")}</dt><dd>{backup.artifactId} · {backup.size} bytes</dd><dt>{t("SHA-256")}</dt><dd>{backup.sha256}</dd><dt>{t("Format")}</dt><dd>{backup.mimeType}</dd></dl>}
+        {backup && <Button onClick={() => void downloadBackup()} disabled={busy !== ""} loading={busy === "backup-download"}>{t("Download backup file")}</Button>}
+        <StateBlock kind="error" title={t("Restore endpoint unavailable")} detail={t("Navigator has not exposed a restore preview/apply/rollback route. The backup artifact remains downloadable; no restore is claimed.")} />
       </Panel>
     </div>
     <Panel title={t("Offline import dry-run")}>

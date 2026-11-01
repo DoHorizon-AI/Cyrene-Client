@@ -41,9 +41,12 @@ export interface ConversationMediaAssetRead {
   downloadPath: string;
 }
 
-export interface ActorBackupAttachment {
-  attachment: WorkAttachmentRef;
-  downloadPath: string;
+/** Flat Core-owned backup descriptor. 中文：由 Core 返回的扁平备份制品描述。 */
+export interface ActorBackupArtifact {
+  artifactId: string;
+  sha256: string;
+  size: number;
+  mimeType: string;
 }
 
 export interface SpeechConfig {
@@ -358,15 +361,23 @@ export class ConversationPeripheralApi {
     return this.transport.requestJson(workPath(workspaceId, `operations/${workId(operationId)}`), { method: "GET", signal }, parseOperationReceipt);
   }
 
-  createActorBackup(workspaceId: string): Promise<ActorBackupAttachment> {
-    const parse: ResponseParser<ActorBackupAttachment> = (value) => {
+  /** Request an actor-private backup without inventing attachment metadata. 中文：创建主体私有备份，不补造附件元数据。 */
+  createActorBackup(workspaceId: string): Promise<ActorBackupArtifact> {
+    const parse: ResponseParser<ActorBackupArtifact> = (value) => {
       const row = requireRecord(value, "actor backup receipt");
-      return { attachment: parseAttachment(row["attachment"]), downloadPath: requireString(row, "downloadPath", "actor backup receipt") };
+      const sha256 = requireString(row, "sha256", "actor backup receipt");
+      const size = requireNumber(row, "size", "actor backup receipt");
+      if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(size) || size < 0 || size > 10 * 1024 * 1024) {
+        throw new NavigatorContractError("Navigator returned an invalid actor backup artifact descriptor.");
+      }
+      return {
+        artifactId: requireString(row, "artifactId", "actor backup receipt"),
+        sha256,
+        size,
+        mimeType: requireString(row, "mimeType", "actor backup receipt"),
+      };
     };
-    return this.transport.requestJson(workPath(workspaceId, "conversation-memory/backups"), jsonRequest("POST", {}, true), parse).then((value) => {
-      if (value.attachment.workspaceId !== workspaceId) throw new NavigatorContractError("Navigator returned a backup attachment outside the selected workspace.");
-      return value;
-    });
+    return this.transport.requestJson(workPath(workspaceId, "conversation-memory/backups"), jsonRequest("POST", {}, true), parse);
   }
 
   downloadMediaAsset(workspaceId: string, assetId: string, downloadPath: string, expectedDigest: string): Promise<Blob> {
@@ -374,12 +385,16 @@ export class ConversationPeripheralApi {
     return this.downloadPrivateArtifact(downloadPath, expectedPrefix, expectedDigest);
   }
 
-  downloadActorBackup(workspaceId: string, downloadPath: string, expectedDigest: string): Promise<Blob> {
-    const expectedPrefix = workPath(workspaceId, `conversation-memory/backups/attachments/${expectedDigest}`);
-    return this.downloadPrivateArtifact(downloadPath, expectedPrefix, expectedDigest);
+  /** Read the same-scope artifact by digest and verify its exact size and SHA-256. 中文：按摘要读取同范围制品并核对字节数和 SHA-256。 */
+  downloadActorBackup(workspaceId: string, expectedDigest: string, expectedSize: number): Promise<Blob> {
+    if (!/^[a-f0-9]{64}$/.test(expectedDigest) || !Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > 10 * 1024 * 1024) {
+      throw new NavigatorContractError("Navigator returned an invalid private backup descriptor.");
+    }
+    const expectedPath = workPath(workspaceId, `conversation-memory/backups/attachments/${expectedDigest}`);
+    return this.downloadPrivateArtifact(expectedPath, expectedPath, expectedDigest, 10 * 1024 * 1024, expectedSize);
   }
 
-  private async downloadPrivateArtifact(downloadPath: string, expectedPath: string, expectedDigest: string): Promise<Blob> {
+  private async downloadPrivateArtifact(downloadPath: string, expectedPath: string, expectedDigest: string, maxBytes = 10_000_000, expectedSize?: number): Promise<Blob> {
     if (downloadPath !== expectedPath || !/^[a-f0-9]{64}$/.test(expectedDigest)) throw new NavigatorContractError("Navigator returned an invalid private artifact path.");
     const response = await this.transport.requestResponse(downloadPath, { method: "GET" });
     if (!response.ok) {
@@ -390,7 +405,8 @@ export class ConversationPeripheralApi {
     const advertisedDigest = response.headers.get("X-Content-SHA256");
     if (advertisedDigest !== expectedDigest) throw new NavigatorContractError("Private artifact digest header did not match its record.");
     const data = await response.arrayBuffer();
-    if (data.byteLength > 10_000_000) throw new NavigatorContractError("Private artifact exceeded the 10 MB download bound.");
+    if (data.byteLength > maxBytes) throw new NavigatorContractError("Private artifact exceeded the download size bound.");
+    if (expectedSize !== undefined && data.byteLength !== expectedSize) throw new NavigatorContractError("Private artifact size did not match its record.");
     if (!globalThis.crypto?.subtle) throw new NavigatorContractError("This browser cannot verify the private artifact digest.");
     const actualDigest = Array.from(new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", data)), (byte) => byte.toString(16).padStart(2, "0")).join("");
     if (actualDigest !== expectedDigest) throw new NavigatorContractError("Private artifact bytes did not match the recorded SHA-256 digest.");

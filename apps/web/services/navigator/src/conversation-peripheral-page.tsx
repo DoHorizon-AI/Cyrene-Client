@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button, PageHeader, Panel, StateBlock, StatusPill } from "./components";
-import { newConversationMemoryKey, type ActorBackupAttachment, type BilibiliAccount, type BilibiliLinkFlow, type BilibiliLinkStatus, type BilibiliOperationCatalog, type BilibiliReadOperationId, type BilibiliWriteOperationId, type ConversationMediaAsset, type ConversationMediaAssetRead, type NavigatorApi, type SpeechConfig, type SpeechStatus, type SpeechTranscription, type WorkAttachment, type WorkOperationReceipt } from "./api";
+import { newConversationMemoryKey, type BilibiliAccount, type BilibiliLinkFlow, type BilibiliLinkStatus, type BilibiliOperationCatalog, type BilibiliReadOperationId, type BilibiliWriteOperationId, type ConversationMediaAsset, type ConversationMediaAssetRead, type NavigatorApi, type SpeechConfig, type SpeechStatus, type SpeechTranscription, type WorkAttachment, type WorkOperationReceipt } from "./api";
 import { useI18n } from "./i18n";
 import { errorMessage } from "./pages/shared";
 import "./conversation-assistant.css";

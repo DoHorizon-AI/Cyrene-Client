@@ -9,6 +9,9 @@ import { createHash } from "node:crypto";
 import { NavigatorApi } from "../api";
 
 const digest = "a".repeat(64);
+const backupBytes = new TextEncoder().encode('{"schemaVersion":1}');
+const backupDigest = createHash("sha256").update(backupBytes).digest("hex");
+const backupArtifact = { artifactId: "artifact-backup-1", sha256: backupDigest, size: backupBytes.length, mimeType: "application/json" };
 const attachment = { id: digest, workspaceId: "workspace-1", sha256: digest, name: "voice.wav", mediaType: "audio/wav", size: 1024, createdAt: 1000 };
 const asset = { assetId: "asset-1", digest, mimeType: "image/png", byteSize: 1024, title: "Card", altText: "A card", tags: ["test"], width: 320, height: 180, createdAt: 1000, deletedAt: null };
 const assetWithoutOptionalMetadata = { ...asset, assetId: "asset-2", altText: null, width: null, height: null };
@@ -69,7 +72,10 @@ describe("conversation peripheral Work API", () => {
       if (path.endsWith("/bilibili/connections/connection-1/writes/bilibili.comment.create")) return response({ operation, duplicate: false }, 202);
       if (path.endsWith("/bilibili/operations/by-idempotency-key")) return response({ operation, duplicate: true });
       if (path.endsWith("/operations/operation-1")) return response({ operation });
-      if (path.endsWith("/conversation-memory/backups")) return response({ attachment: { ...attachment, mediaType: "application/json" }, downloadPath: `/api/v1/workspaces/workspace-1/work/conversation-memory/backups/attachments/${digest}` });
+      if (path.endsWith("/conversation-memory/backups") && method === "POST") return response(backupArtifact, 201);
+      if (path.endsWith(`/conversation-memory/backups/attachments/${backupDigest}`) && method === "GET") {
+        return new Response(backupBytes, { status: 200, headers: { "Content-Type": backupArtifact.mimeType, "X-Content-SHA256": backupDigest } });
+      }
       throw new Error(`Unexpected request: ${method} ${path}`);
     });
 
@@ -82,7 +88,11 @@ describe("conversation peripheral Work API", () => {
     expect((await api.runBilibiliWrite("workspace-1", "connection-1", "bilibili.comment.create", { idempotencyKey: "idem-1", arguments: { video_id: "BV1", content: "Hello", root_comment_id: "0", parent_comment_id: "0" } })).operation.status).toBe("uncertain");
     expect((await api.getBilibiliOperationByIdempotencyKey("workspace-1", "idem-1")).operation.id).toBe("operation-1");
     expect((await api.getWorkOperationReceipt("workspace-1", "operation-1")).operation.id).toBe("operation-1");
-    expect((await api.createConversationBackup("workspace-1")).attachment.sha256).toBe(digest);
+    expect(await api.createConversationBackup("workspace-1")).toEqual(backupArtifact);
+    const backupBlob = await api.downloadConversationBackup("workspace-1", backupDigest, backupBytes.length);
+    expect(await backupBlob.text()).toBe(new TextDecoder().decode(backupBytes));
+    await expect(api.downloadConversationBackup("workspace-1", backupDigest, backupBytes.length + 1)).rejects.toMatchObject({ name: "NavigatorContractError" });
+    expect(calls.some((call) => call.method === "GET" && call.path === `/api/v1/workspaces/workspace-1/work/conversation-memory/backups/attachments/${backupDigest}`)).toBe(true);
     expect(calls.find((call) => call.path.endsWith("/accounts/link"))?.body).toEqual({});
     expect(calls.find((call) => call.path.endsWith("/link-status"))?.body).toEqual({ loginFlowId: "flow-1" });
     expect(calls.find((call) => call.path.endsWith("/writes/bilibili.comment.create"))).toMatchObject({ path: expect.stringContaining("/connections/connection-1/"), body: { arguments: { video_id: "BV1" } }, idempotencyKey: "idem-1" });
