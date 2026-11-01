@@ -25,6 +25,7 @@ const factoryEnvironment: Record<string, string> = {
 
 const navigatorFeatureEnvironment: Record<string, string> = {
   CYRENE_CONVERSATION_ASSISTANT_ENABLED: "true",
+  CYRENE_EXECUTOR_MAX_CONCURRENT_TASKS: "2",
 };
 
 const navigatorOnlyEnvironment = { ...factoryEnvironment, ...navigatorFeatureEnvironment };
