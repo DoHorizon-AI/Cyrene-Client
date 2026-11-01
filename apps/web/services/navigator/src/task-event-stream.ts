@@ -55,7 +55,10 @@ export async function readAssistantTaskEvents(
         frameSize += line.length;
         if (frameSize > MAX_FRAME_CHARACTERS) throw new NavigatorContractError("Assistant task event exceeds the frame limit.");
         if (line === "") {
-          if (data.length) {
+          // Navigator's live stream opens with an unsequenced status snapshot before the
+          // sequenced persisted events. A frame without an id cannot be ordered, deduplicated
+          // or resumed, so it is ignored; the sequenced status event carries the same state.
+          if (data.length && eventId !== "") {
             const sequence = Number(eventId);
             let value: unknown;
             try { value = JSON.parse(data.join("\n")) as unknown; }
