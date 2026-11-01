@@ -77,3 +77,15 @@ export function createNavigatorChildEnvironment(sharedEnvironment, inheritedEnvi
   }
   return navigatorEnvironment;
 }
+
+/**
+ * Drop Navigator-only provider bindings and credentials from a front-end child environment.
+ * The dev launcher does not start Navigator, so Vite and Control must never inherit them.
+ */
+export function withoutNavigatorEnvironment(source) {
+  const shared = { ...source };
+  for (const name of [...NAVIGATOR_ONLY_ENVIRONMENT_NAMES, ...NAVIGATOR_CREDENTIAL_ENVIRONMENT_NAMES]) {
+    delete shared[name];
+  }
+  return shared;
+}
