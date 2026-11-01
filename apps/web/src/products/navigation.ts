@@ -7,6 +7,7 @@ export const productPages: { id: RouteId; zh: string; en: string }[] = [
   { id: "integrations", zh: "授权与云观测", en: "Authorization & cloud" },
   { id: "chat", zh: "模型对话", en: "Model chat" }, { id: "overview", zh: "服务状态", en: "Service status" }, { id: "settings", zh: "连接与凭据", en: "Connections & credentials" },
   { id: "conversation-chat", zh: "私聊入口", en: "Private conversation" },
+  { id: "conversation-memory", zh: "记忆管理", en: "Conversation memory" },
   { id: "assistant", zh: "工作助手", en: "Work assistant" },
   { id: "conversation-assistant", zh: "对话助手", en: "Conversation assistant" },
   { id: "installer", zh: "安装与组件", en: "Install & Components" },
