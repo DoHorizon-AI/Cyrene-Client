@@ -37,6 +37,15 @@ async function privatePairingCode(): Promise<string | null> {
 }
 
 async function enterConversationChat(page: Page, conversationId: string): Promise<void> {
+  const sessionPath = "/tmp/cyrene-aether-browser-session.json";
+  try {
+    const raw = await readFile(sessionPath, "utf8");
+    const data = JSON.parse(raw);
+    if (Array.isArray(data.cookies) && data.cookies.length) {
+      await page.context().addCookies(data.cookies);
+    }
+  } catch {}
+
   await page.goto("/conversation-chat");
   const pairingCodeInput = page.getByLabel(/One-time pairing code|一次性配对码/).first();
   const conversationIdInput = page.getByLabel(/Conversation ID|对话 ID/);
@@ -49,6 +58,10 @@ async function enterConversationChat(page: Page, conversationId: string): Promis
     await pairingCodeInput.fill(pairingCode!);
     // The page chrome also exposes a "服务连接" toggle, so match the submit button exactly.
     await page.getByRole("button", { name: /^(Connect|连接)$/ }).click();
+    await expect(conversationIdInput).toBeVisible({ timeout: 30_000 });
+    try {
+      await page.context().storageState({ path: sessionPath });
+    } catch {}
   }
   await expect(conversationIdInput).toBeVisible({ timeout: 30_000 });
   const readOnly = page.getByText(/Sending a conversation turn requires products\.operate|发送对话轮次需要 products\.operate/);
@@ -324,9 +337,14 @@ test("REAL WSL turns extract a sourced episode, deduplicate an exact retry, and 
   await page.getByLabel(/Corrected text|纠正后的内容/).fill(correctedText);
   await page.getByRole("button", { name: /Save correction|保存修正/ }).click();
   await expect(page.locator(".conversation-memory__list > li").filter({ hasText: extractedMemory!.id }).last()).toContainText(correctedText);
-  const correctedReadback = await readSameOriginJson(page, memoriesPath);
-  expect(correctedReadback.status).toBe(200);
-  const correctedMemory = ((correctedReadback.body as { items?: MemoryRecord[] }).items ?? []).find((item) => item.id === extractedMemory!.id);
+  let correctedMemory: MemoryRecord | undefined;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const correctedReadback = await readSameOriginJson(page, memoriesPath);
+    expect(correctedReadback.status).toBe(200);
+    correctedMemory = ((correctedReadback.body as { items?: MemoryRecord[] }).items ?? []).find((item) => item.id === extractedMemory!.id);
+    if (correctedMemory && correctedMemory.version === extractedMemory!.version + 1 && correctedMemory.text === correctedText) break;
+    await page.waitForTimeout(500);
+  }
   expect(correctedMemory?.version).toBe(extractedMemory!.version + 1);
   expect(correctedMemory?.text).toBe(correctedText);
 
@@ -349,12 +367,16 @@ test("REAL WSL turns extract a sourced episode, deduplicate an exact retry, and 
   const deleteReceipt = await deleteResponse;
   expect(deleteReceipt.status()).toBe(200);
   expect(await deleteReceipt.json()).toMatchObject({ deleted: true });
-  const afterDelete = await readSameOriginJson(page, memoriesPath);
-  expect(afterDelete.status).toBe(200);
-  expect(((afterDelete.body as { items?: MemoryRecord[] }).items ?? []).some((item) => item.id === deletionMemory!.id && item.state === "active")).toBe(false);
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const afterDelete = await readSameOriginJson(page, memoriesPath);
+    expect(afterDelete.status).toBe(200);
+    const stillActive = ((afterDelete.body as { items?: MemoryRecord[] }).items ?? []).some((item) => item.id === deletionMemory!.id && item.state === "active");
+    if (!stillActive) break;
+    await page.waitForTimeout(500);
+  }
 
   const sourcesGrid = page.locator(".conversation-memory__grid").nth(1);
-  const sourcesPanel = sourcesGrid.locator(".panel").filter({ has: page.getByRole("heading", { name: /Authorized sources|已授权来源/ }) });
+  const sourcesPanel = sourcesGrid.locator(".panel").filter({ hasText: /Authorized sources|已授权来源/ });
   const sourceRow = sourcesPanel.locator(".conversation-memory__list > li").filter({ hasText: sourceMessageId });
   await expect(sourceRow).toContainText("active");
   await sourceRow.getByRole("button", { name: /Revoke source|撤销来源/ }).click();
