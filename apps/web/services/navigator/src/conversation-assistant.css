@@ -1,0 +1,227 @@
+/* ---------------------------------------------------------------------------
+ * Module: src/conversation-assistant.css
+ * Role: Style the conversation capability tabs and domain forms.
+ * 中文：模块职责：设置对话能力分区导航与领域表单样式。
+ * --------------------------------------------------------------------------- */
+
+.product-workspace .conversation-assistant__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink-soft);
+}
+
+.product-workspace .conversation-assistant__tabs button {
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.product-workspace .conversation-assistant__tabs button[aria-selected="true"] {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: inset 0 -2px 0 var(--dh-orchid);
+}
+
+.product-workspace .conversation-assistant__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.product-workspace .conversation-assistant__grid > .panel {
+  min-width: 0;
+}
+
+.product-workspace .conversation-assistant__scope,
+.product-workspace .conversation-assistant__form,
+.product-workspace .conversation-assistant__filter {
+  display: grid;
+  gap: 10px;
+}
+
+.product-workspace .conversation-assistant__scope {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.5fr);
+  align-items: end;
+}
+
+.product-workspace .conversation-assistant__form-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.product-workspace .conversation-assistant__scope label,
+.product-workspace .conversation-assistant__form label,
+.product-workspace .conversation-assistant__filter label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.product-workspace .conversation-assistant__scope input,
+.product-workspace .conversation-assistant__scope select,
+.product-workspace .conversation-assistant__form input,
+.product-workspace .conversation-assistant__form select,
+.product-workspace .conversation-assistant__form textarea,
+.product-workspace .conversation-assistant__filter select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--ink-soft);
+  font: inherit;
+  font-size: 12px;
+}
+
+.product-workspace .conversation-assistant__form textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.product-workspace .conversation-assistant__form h3 {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.product-workspace .conversation-assistant__checkbox {
+  display: flex !important;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.product-workspace .conversation-assistant__checkbox input,
+.product-workspace .conversation-assistant__source-picker input {
+  width: auto;
+  accent-color: var(--dh-orchid);
+}
+
+.product-workspace .conversation-assistant__list {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.product-workspace .conversation-assistant__list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.product-workspace .conversation-assistant__list > li:last-child {
+  border-bottom: 0;
+}
+
+.product-workspace .conversation-assistant__list strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.product-workspace .conversation-assistant__list p {
+  margin: 4px 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.product-workspace .conversation-assistant__list small,
+.product-workspace .conversation-assistant__help {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.product-workspace .conversation-assistant__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.product-workspace .conversation-assistant__source-picker {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.product-workspace .conversation-assistant__source-picker > strong {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.product-workspace .conversation-assistant__source-picker label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+.product-workspace .conversation-assistant__source-picker label span,
+.product-workspace .conversation-assistant__source-picker label small {
+  grid-column: 2;
+  overflow-wrap: anywhere;
+}
+
+.product-workspace .conversation-assistant__source-picker label input {
+  grid-row: 1 / span 2;
+  grid-column: 1;
+  margin-top: 2px;
+}
+
+.product-workspace .conversation-assistant__json {
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--ink-soft);
+  font: 11px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 960px) {
+  .product-workspace .conversation-assistant__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .product-workspace .conversation-assistant__scope,
+  .product-workspace .conversation-assistant__form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .product-workspace .conversation-assistant__list > li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

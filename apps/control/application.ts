@@ -386,6 +386,8 @@ export function createControlApplication(options: ControlOptions) {
         res.statusCode = upstream.status;
         res.setHeader("cache-control", "no-store");
         res.setHeader("content-type", upstream.headers.get("content-type") ?? "application/json");
+        const contentSha256 = upstream.headers.get("x-content-sha256");
+        if (contentSha256 && /^[a-f0-9]{64}$/i.test(contentSha256)) res.setHeader("x-content-sha256", contentSha256.toLowerCase());
         if (directTarget) {
           for (const name of ["content-disposition", "etag", "last-modified", "content-range", "accept-ranges"]) {
             const value = upstream.headers.get(name); if (value) res.setHeader(name, value);

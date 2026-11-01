@@ -32,4 +32,18 @@ describe("assistant task event stream", () => {
     const response = new Response("id: nope\nevent: task.changed\ndata: {}\n\n", { headers: { "Content-Type": "text/event-stream" } });
     await expect(readAssistantTaskEvents(response, 0, new AbortController().signal, () => undefined)).rejects.toMatchObject({ name: "NavigatorContractError" });
   });
+
+  it("ignores the unsequenced live status snapshot before the persisted events", async () => {
+    const response = new Response([
+      "event: status", 'data: {"type":"status","status":"running"}', "",
+      "id: 3", "event: status", 'data: {"type":"status","status":"running"}', "",
+      "id: 10", "event: finish", 'data: {"type":"finish","status":"completed"}', "", "",
+    ].join("\n"), { headers: { "Content-Type": "text/event-stream" } });
+    const accepted: number[] = [];
+    const cursor = await readAssistantTaskEvents(response, 0, new AbortController().signal, event => {
+      accepted.push(event.sequence);
+    });
+    expect(accepted).toEqual([3, 10]);
+    expect(cursor).toBe(10);
+  });
 });

@@ -5,15 +5,17 @@ import { serverControlBridge } from "./tooling/server-control";
 import { pipelineControlBridge } from "./tooling/pipeline-control";
 
 export default defineConfig(({ mode }) => {
-  const target = admittedTarget(loadEnv(mode, process.cwd(), "").STUDIO_NAVIGATOR_URL);
+  const envDir = process.env.STUDIO_ISOLATED_ENV === "1" ? process.env.STUDIO_ENV_DIR ?? process.cwd() : process.cwd();
+  const fileEnvironment = process.env.STUDIO_ISOLATED_ENV === "1" ? {} : loadEnv(mode, envDir, "");
+  const target = admittedTarget(process.env.STUDIO_NAVIGATOR_URL ?? fileEnvironment.STUDIO_NAVIGATOR_URL);
   const control = admittedTarget(process.env.STUDIO_CONTROL_URL);
   if (control) {
     const proxy = Object.fromEntries(["/studio-", "/api"].map(prefix => [prefix, { target: control, changeOrigin: false, timeout: 35000, proxyTimeout: 35000 }]));
-    return { root: "apps/web", envDir: process.cwd(), resolve: { dedupe: ["react", "react-dom"] }, plugins: [react(), workspaceBoundary()], server: { host: "127.0.0.1", port: 5180, strictPort: true, proxy }, preview: { host: "127.0.0.1", proxy }, build: { outDir: "../../dist", emptyOutDir: true } };
+    return { root: "apps/web", envDir, resolve: { dedupe: ["react", "react-dom"] }, plugins: [react(), workspaceBoundary()], server: { host: "127.0.0.1", port: 5180, strictPort: true, proxy }, preview: { host: "127.0.0.1", proxy }, build: { outDir: "../../dist", emptyOutDir: true } };
   }
   const proxy = settingsProxy(target);
   return {
-    root: "apps/web", envDir: process.cwd(), resolve: { dedupe: ["react", "react-dom"] },
+    root: "apps/web", envDir, resolve: { dedupe: ["react", "react-dom"] },
     plugins: [react(), workspaceBoundary(), settingsBridge(target), serverControlBridge(process.env.STUDIO_CONTROL_DATA_DIR), pipelineControlBridge(process.env.STUDIO_CONTROL_DATA_DIR)],
     server: { host: "127.0.0.1", port: 5180, strictPort: true, proxy },
     preview: { host: "127.0.0.1", proxy },

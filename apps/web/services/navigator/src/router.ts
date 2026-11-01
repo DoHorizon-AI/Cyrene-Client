@@ -20,7 +20,10 @@ export type RouteId =
   | "integrations"
   | "settings"
   | "chat"
+  | "conversation-chat"
   | "assistant"
+  | "conversation-assistant"
+  | "conversation-memory"
   | "installer";
 
 /**
@@ -96,10 +99,28 @@ export const ROUTES: readonly RouteDefinition[] = [
     description: "Exchange model testing with active route",
   },
   {
+    id: "conversation-chat",
+    label: "Conversation chat",
+    path: "/conversation-chat",
+    description: "Private Web turns through the trusted conversation assistant",
+  },
+  {
     id: "assistant",
     label: "Work Assistant",
     path: "/assistant",
     description: "Tasks, approvals, memory, and host connectors",
+  },
+  {
+    id: "conversation-memory",
+    label: "Conversation memory",
+    path: "/conversation-memory",
+    description: "Conversation sources, memory, and sharing authorization",
+  },
+  {
+    id: "conversation-assistant",
+    label: "Conversation assistant",
+    path: "/conversation-assistant",
+    description: "Memory, profiles, graph, and proactive conversation tools",
   },
   {
     id: "settings",

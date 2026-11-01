@@ -1,0 +1,187 @@
+/* ---------------------------------------------------------------------------
+ * Module: src/conversation-memory.css
+ * Role: Present sourced memory and authorization controls across screen sizes.
+ * 中文：模块职责：适配不同屏幕展示带出处的记忆与授权操作。
+ * --------------------------------------------------------------------------- */
+
+.product-workspace .conversation-memory__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.product-workspace .conversation-memory__grid > .panel {
+  min-width: 0;
+}
+
+.product-workspace .conversation-memory__scope,
+.product-workspace .conversation-memory__form,
+.product-workspace .conversation-memory__filters {
+  display: grid;
+  gap: 10px;
+}
+
+.product-workspace .conversation-memory__scope {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: end;
+}
+
+.product-workspace .conversation-memory__form-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.product-workspace .conversation-memory__scope label,
+.product-workspace .conversation-memory__form label,
+.product-workspace .conversation-memory__filters label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.product-workspace .conversation-memory__scope input,
+.product-workspace .conversation-memory__scope select,
+.product-workspace .conversation-memory__form input,
+.product-workspace .conversation-memory__form select,
+.product-workspace .conversation-memory__form textarea,
+.product-workspace .conversation-memory__filters input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--ink-soft);
+  font-size: 12px;
+}
+
+.product-workspace .conversation-memory__form textarea {
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.product-workspace .conversation-memory__capabilities {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.product-workspace .conversation-memory__filters {
+  grid-template-columns: minmax(110px, 1fr) auto;
+  align-items: end;
+}
+
+.product-workspace .conversation-memory__list {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.product-workspace .conversation-memory__list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.product-workspace .conversation-memory__list > li:last-child {
+  border-bottom: 0;
+}
+
+.product-workspace .conversation-memory__list > li.is-selected {
+  padding-inline: 8px;
+  border-radius: 4px;
+  background: var(--dh-bg-hover);
+}
+
+.product-workspace .conversation-memory__list > li > div:first-of-type {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.product-workspace .conversation-memory__list strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.product-workspace .conversation-memory__list p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.product-workspace .conversation-memory__list small,
+.product-workspace .conversation-memory__help {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.product-workspace .conversation-memory__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.product-workspace .conversation-memory__grant {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 10px;
+  padding-top: 6px;
+}
+
+.product-workspace .conversation-memory__form .conversation-memory__help {
+  margin: 0;
+}
+
+.product-workspace .conversation-memory__messages > li {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.product-workspace .conversation-memory__source-select {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.product-workspace .conversation-memory__source-select input {
+  accent-color: var(--dh-orchid);
+}
+
+@media (max-width: 960px) {
+  .product-workspace .conversation-memory__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 620px) {
+  .product-workspace .conversation-memory__scope,
+  .product-workspace .conversation-memory__form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .product-workspace .conversation-memory__list > li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

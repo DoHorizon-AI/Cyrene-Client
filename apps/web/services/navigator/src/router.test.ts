@@ -26,6 +26,9 @@ describe("Navigator routes", () => {
     expect(routeForPath("/integrations")).toBe("integrations");
     expect(routeForPath("/chat")).toBe("chat");
     expect(routeForPath("/assistant")).toBe("assistant");
+  expect(routeForPath("/conversation-memory")).toBe("conversation-memory");
+  expect(routeForPath("/conversation-chat")).toBe("conversation-chat");
+    expect(routeForPath("/conversation-assistant")).toBe("conversation-assistant");
     expect(routeForPath("/settings")).toBe("settings");
   });
 
@@ -43,6 +46,9 @@ describe("Navigator routes", () => {
     expect(pathForRoute("integrations")).toBe("/integrations");
     expect(pathForRoute("chat")).toBe("/chat");
     expect(pathForRoute("assistant")).toBe("/assistant");
+  expect(pathForRoute("conversation-memory")).toBe("/conversation-memory");
+  expect(pathForRoute("conversation-chat")).toBe("/conversation-chat");
+    expect(pathForRoute("conversation-assistant")).toBe("/conversation-assistant");
     expect(pathForRoute("settings")).toBe("/settings");
   });
 });
