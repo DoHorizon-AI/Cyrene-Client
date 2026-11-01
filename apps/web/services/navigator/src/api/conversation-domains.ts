@@ -27,6 +27,7 @@ export interface ConversationPersona {
   updatedAt: number;
 }
 
+/** Actor-owned persona binding for one opaque conversation scope. 中文：单个对话范围的主体人格绑定。 */
 export interface ConversationPersonaBinding {
   conversationId: string;
   conversationKind: ConversationKind;
@@ -36,11 +37,13 @@ export interface ConversationPersonaBinding {
   updatedAt: number;
 }
 
+/** Server-authorized personas available for one scope and its current binding. 中文：服务端授权的人格选项与当前绑定。 */
 export interface ConversationPersonaBindingView {
   binding: ConversationPersonaBinding | null;
   availablePersonaIds: string[];
 }
 
+/** CAS result for a persona binding update. 中文：人格绑定 CAS 更新回执。 */
 export interface ConversationPersonaBindingReceipt {
   binding: ConversationPersonaBinding | null;
   duplicate: boolean;
@@ -290,11 +293,13 @@ export class ConversationDomainsApi {
     return this.transport.requestJson(workPath(workspaceId, `conversation-memory/personas${query}`), { method: "GET", signal }, parse);
   }
 
+  /** Read the binding and server-filtered options for one conversation. 中文：读取对话当前绑定及服务端过滤后的可选人格。 */
   getPersonaBinding(workspaceId: string, input: { conversationId: string; conversationKind: ConversationKind }, signal?: AbortSignal): Promise<ConversationPersonaBindingView> {
     const query = new URLSearchParams({ conversationId: workId(input.conversationId), conversationKind: input.conversationKind });
     return this.transport.requestJson(workPath(workspaceId, "conversation-memory/personas/binding?" + query), { method: "GET", signal }, parsePersonaBindingView);
   }
 
+  /** Save a persona binding with the caller's last observed version. 中文：按最近读取到的版本 CAS 保存人格绑定。 */
   putPersonaBinding(workspaceId: string, input: { conversationId: string; conversationKind: ConversationKind; personaId: string | null; expectedVersion: number }): Promise<ConversationPersonaBindingReceipt> {
     if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0) throw new NavigatorContractError("Invalid conversation persona binding version.");
     const body = {

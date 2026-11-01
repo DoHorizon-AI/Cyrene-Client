@@ -1,7 +1,7 @@
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Module: Navigator private conversation chat                         │
-// │ Role: Send Web turns through the trusted DSH ingress and read Work. │
-// │ 中文：模块职责：经可信 DSH 入口发送 Web 轮次并回读 Work 消息。      │
+// │ Role: Bind personas, send trusted Web turns, and read Work records.  │
+// │ 中文：模块职责：绑定人格、发送可信 Web 轮次并回读 Work 记录。     │
 // └─────────────────────────────────────────────────────────────────────┘
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
