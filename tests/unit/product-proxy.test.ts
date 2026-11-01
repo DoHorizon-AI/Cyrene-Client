@@ -232,6 +232,7 @@ it("allowlists scoped conversation Work routes and keeps trusted message/source 
     ["GET", "/api/v1/workspaces/local/work/conversation-memory/media/assets", "products.read"],
     ["POST", "/api/v1/workspaces/local/work/conversation-memory/media/assets/import", "products.write"],
     ["POST", "/api/v1/workspaces/local/work/conversation-memory/speech/transcriptions", "products.write"],
+    ["GET", "/api/v1/workspaces/local/work/conversation-memory/research/skills", "products.read"],
     ["POST", "/api/v1/workspaces/local/work/conversation-memory/bilibili/connections/conn-1/reads/bilibili.search", "products.operate"],
     ["POST", "/api/v1/workspaces/local/work/conversation-memory/bilibili/connections/conn-1/writes/bilibili.comment.create", "products.operate"],
     ["GET", "/api/v1/workspaces/local/work/conversation-memory/bilibili/operations/by-idempotency-key", "products.read"],
@@ -240,6 +241,7 @@ it("allowlists scoped conversation Work routes and keeps trusted message/source 
   for (const [method, path, permission] of cases) expect(productPermission(method, path), `${method} ${path}`).toBe(permission);
 
   expect(productPermission("POST", "/api/v1/workspaces/local/work/conversation-memory/messages")).toBeNull();
+  expect(productPermission("POST", "/api/v1/workspaces/local/work/conversation-memory/research/skills")).toBeNull();
   expect(productPermission("POST", "/api/v1/workspaces/local/work/conversation-memory/bilibili/operations/by-idempotency-key")).toBeNull();
   expect(productPermission("POST", "/api/v1/workspaces/local/work/conversation-memory/sources/authorize")).toBeNull();
   expect(productPermission("POST", "/api/v1/workspaces/local/work/conversation-memory/artifacts/authorize")).toBeNull();
@@ -278,6 +280,16 @@ it("admits only the fixed private conversation turn DTO and forwards it with ope
   const writerSave = await f.request("/api/v1/workspaces/local/work/conversation-memory/memories", { ...editor, "content-type": "application/json" }, "POST", '{"scope":"server-validated"}');
   expect(writerSave.status).toBe(200);
   expect(f.received.at(-1)?.url).toBe("/api/v1/workspaces/local/work/conversation-memory/memories");
+
+  const routedBeforeSkillWrite = f.received.length;
+  const skillWrite = await f.request(
+    "/api/v1/workspaces/local/work/conversation-memory/research/skills",
+    { ...editor, "content-type": "application/json" },
+    "POST",
+    JSON.stringify({ name: "forged", content: "not host-verified", operationReceiptId: "receipt-1", independentReadReceiptId: "receipt-2" }),
+  );
+  expect(skillWrite.status).toBe(403);
+  expect(f.received).toHaveLength(routedBeforeSkillWrite);
 
   const receiptLookup = await f.request("/api/v1/workspaces/local/work/conversation-memory/bilibili/operations/by-idempotency-key", { ...viewer, "idempotency-key": "bili-write-1" });
   expect(receiptLookup.status).toBe(200);

@@ -152,7 +152,6 @@ const parseMaintenanceEnvelope: ResponseParser<{ job: MaintenanceJob; duplicate:
 const parseMaintenanceView: ResponseParser<MaintenanceJob> = parseMaintenanceJob;
 const parseMaintenanceUpdate: ResponseParser<{ job: MaintenanceJob }> = (value) => ({ job: parseMaintenanceJob(requireRecord(value, "maintenance checkpoint receipt")["job"]) });
 const parseResearchNoteEnvelope: ResponseParser<{ note: ResearchNote; duplicate: boolean }> = (value) => { const row = requireRecord(value, "research note receipt"); return { note: parseResearchNote(row["note"]), duplicate: requireBoolean(row, "duplicate", "research note receipt") }; };
-const parseSkillEnvelope: ResponseParser<{ skill: VerifiedConversationSkill; duplicate: boolean }> = (value) => { const row = requireRecord(value, "verified skill receipt"); return { skill: parseSkill(row["skill"]), duplicate: requireBoolean(row, "duplicate", "verified skill receipt") }; };
 const parseWatchEnvelope: ResponseParser<{ watch: ConversationWatch; duplicate: boolean }> = (value) => { const row = requireRecord(value, "watch receipt"); return { watch: parseWatch(row["watch"]), duplicate: requireBoolean(row, "duplicate", "watch receipt") }; };
 const parseWatchUpdate: ResponseParser<{ watch: ConversationWatch }> = (value) => ({ watch: parseWatch(requireRecord(value, "watch update receipt")["watch"]) });
 const parseFocusEnvelope: ResponseParser<{ item: ConversationFocusItem; duplicate: boolean }> = (value) => { const row = requireRecord(value, "focus item receipt"); return { item: parseFocusItem(row["item"]), duplicate: requireBoolean(row, "duplicate", "focus item receipt") }; };
@@ -201,16 +200,6 @@ export class ConversationOperationsApi {
     const query = new URLSearchParams({ limit: String(input.limit ?? 100) }); if (input.conversationId) query.set("conversationId", workId(input.conversationId));
     const parse: ResponseParser<ResearchNote[]> = (value) => itemArray(value, "research notes").map(parseResearchNote);
     return this.transport.requestJson(workPath(workspaceId, `conversation-memory/research/notes?${query}`), { method: "GET", signal }, parse);
-  }
-  createVerifiedSkill(workspaceId: string, input: { idempotencyKey: string; name: string; content: string; sourceRefs: string[]; operationReceiptId: string; independentReadReceiptId: string; conversationId?: string; conversationKind?: ConversationKind; personaId?: string }): Promise<{ skill: VerifiedConversationSkill; duplicate: boolean }> {
-    const body = {
-      ...input,
-      sourceRefs: input.sourceRefs.map(workId),
-      operationReceiptId: workId(input.operationReceiptId),
-      independentReadReceiptId: workId(input.independentReadReceiptId),
-      ...(input.conversationId ? { conversationId: workId(input.conversationId), conversationKind: input.conversationKind ?? "direct", ...(input.personaId ? { personaId: workId(input.personaId) } : { personaId: null }) } : { conversationKind: "direct" as const, personaId: null }),
-    };
-    return this.transport.requestJson(workPath(workspaceId, "conversation-memory/research/skills"), jsonRequest("POST", body, input.idempotencyKey), parseSkillEnvelope);
   }
   listVerifiedSkills(workspaceId: string, limit = 100, signal?: AbortSignal): Promise<VerifiedConversationSkill[]> {
     const query = new URLSearchParams({ limit: String(limit) });

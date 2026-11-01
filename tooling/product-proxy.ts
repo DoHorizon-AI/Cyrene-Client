@@ -103,7 +103,6 @@ const conversationWorkPolicies: readonly NavigatorProxyPolicy[] = [
   conversationPolicy("GET", "research/notes", "read"),
   conversationPolicy("POST", "research/notes", "write"),
   conversationPolicy("GET", "research/skills", "read"),
-  conversationPolicy("POST", "research/skills", "write"),
   conversationPolicy("GET", "watches", "read"),
   conversationPolicy("POST", "watches", "write"),
   conversationPolicy("POST", `watches/${workId}/cancel`, "write"),

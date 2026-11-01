@@ -387,10 +387,6 @@ export class NavigatorApi extends NavigatorTransport {
     return this.conversationOperationsApi.listResearchNotes(...args);
   }
 
-  createVerifiedConversationSkill(...args: Parameters<ConversationOperationsApi["createVerifiedSkill"]>): ReturnType<ConversationOperationsApi["createVerifiedSkill"]> {
-    return this.conversationOperationsApi.createVerifiedSkill(...args);
-  }
-
   listVerifiedConversationSkills(...args: Parameters<ConversationOperationsApi["listVerifiedSkills"]>): ReturnType<ConversationOperationsApi["listVerifiedSkills"]> {
     return this.conversationOperationsApi.listVerifiedSkills(...args);
   }

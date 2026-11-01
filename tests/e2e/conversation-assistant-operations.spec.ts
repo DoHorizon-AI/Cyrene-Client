@@ -12,16 +12,22 @@ const sourceMessage = {
   id: "message-1", eventId: "event-1", role: "user", content: "The user prefers concise answers.", occurredAt: 1_800_000_000_000,
   status: "active", revokedAt: null, sourceRefs: [], scope: { conversationId: "chat-1", conversationKind: "direct", personaId: null, visibility: "private" },
 };
+const serverVerifiedSkill = {
+  id: "server-skill-1", idempotencyKey: "server-skill-key", conversationId: "chat-1", conversationKind: "direct", personaId: null,
+  name: "Server verified guide", content: "This guide was produced by Navigator after an independent effect readback.",
+  sourceRefs: [{ memoryId: null, memoryVersion: null, sourceMessageIds: ["message-1"] }],
+  operationReceiptId: "host-operation-1", independentReadReceiptId: "host-effect-readback-1",
+  verified: true, verifiedBy: "navigator-feature", verifiedAt: 2150, revision: 1, createdAt: 2150,
+};
 const backupBytes = "{}";
 const backupDigest = createHash("sha256").update(backupBytes).digest("hex");
 
-async function mountOperations(page: Page, options: { readbackTaskId?: string } = {}) {
+async function mountOperations(page: Page) {
   const entry = `/@fs/${resolve("tests/fixtures/product-state.tsx").replaceAll("\\", "/")}`;
   await page.route("**/src/main.tsx", route => route.fulfill({ contentType: "text/javascript", body: `import ${JSON.stringify(entry)};` }));
   const calls: Array<{ method: string; path: string; body: unknown; csrf?: string }> = [];
   let job: Record<string, unknown> | null = null;
   let note: Record<string, unknown> | null = null;
-  let skill: Record<string, unknown> | null = null;
   let watch: Record<string, unknown> | null = null;
   let focus: Record<string, unknown> | null = null;
   let reviewEvent: Record<string, unknown> | null = null;
@@ -48,14 +54,7 @@ async function mountOperations(page: Page, options: { readbackTaskId?: string } 
       note = { id: "note-1", ...input, sourceRefs: [{ memoryId: null, memoryVersion: null, sourceMessageIds: input["sourceRefs"] }], personaId: null, revision: 1, createdAt: 2100 };
       return reply({ note, duplicate: false }, 201);
     }
-    if (path.endsWith("/conversation-memory/research/skills") && method === "GET") return reply({ items: skill ? [skill] : [] });
-    if (path.endsWith("/operations/verify-receipt-1")) return reply({ operation: { id: "verify-receipt-1", idempotencyKey: "verify-key", operationType: "conversation.skill.verify", taskId: "task-1", target: null, scopeLock: null, request: {}, status: "verified", evidence: {}, createdAt: 2000, updatedAt: 2100 } });
-    if (path.endsWith("/operations/readback-receipt-1")) return reply({ operation: { id: "readback-receipt-1", idempotencyKey: "readback-key", operationType: "conversation.skill.readback", taskId: options.readbackTaskId ?? "task-1", target: null, scopeLock: null, request: {}, status: "verified", evidence: {}, createdAt: 2000, updatedAt: 2100 } });
-    if (path.endsWith("/conversation-memory/research/skills") && method === "POST") {
-      const input = body as Record<string, unknown>;
-      skill = { id: "skill-1", ...input, sourceRefs: [{ memoryId: null, memoryVersion: null, sourceMessageIds: input["sourceRefs"] }], operationReceiptId: input["operationReceiptId"], independentReadReceiptId: input["independentReadReceiptId"], conversationKind: "direct", personaId: null, verified: true, verifiedBy: "actor-1", verifiedAt: 2150, revision: 1, createdAt: 2150 };
-      return reply({ skill, duplicate: false }, 201);
-    }
+    if (path.endsWith("/conversation-memory/research/skills") && method === "GET") return reply({ items: [serverVerifiedSkill] });
     if (path.endsWith("/conversation-memory/watches") && method === "GET") return reply({ items: watch ? [watch] : [] });
     if (path.endsWith("/conversation-memory/watches") && method === "POST") {
       const input = body as Record<string, unknown>;
@@ -108,22 +107,9 @@ test("SIMULATED browser flow scopes maintenance, sources, lifecycle, and import 
   await expect(page.getByText("Research note saved", { exact: false })).toBeVisible();
   await expect(page.getByText("Conversation summary · rev 1")).toBeVisible();
 
-  await page.locator(".conversation-assistant__source-picker").getByRole("checkbox").check();
-  await page.getByLabel("Skill name").fill("Concise response guide");
-  await page.getByLabel("Skill content").fill("Keep answers concise and factual.");
-  await page.getByLabel("Verification operation receipt ID").fill("verify-receipt-1");
-  await page.getByLabel("Independent readback receipt ID").fill("readback-receipt-1");
-  const saveSkill = page.getByRole("button", { name: "Save verified skill" });
-  await expect(saveSkill).toBeDisabled();
-  await page.getByRole("button", { name: "Read verification receipt" }).click();
-  await expect(page.getByText("conversation.skill.verify · Status: verified", { exact: false })).toBeVisible();
-  await expect(saveSkill).toBeDisabled();
-  await page.getByRole("button", { name: "Read independent readback receipt" }).click();
-  await expect(page.getByText("conversation.skill.readback · Status: verified", { exact: false })).toBeVisible();
-  await expect(saveSkill).toBeEnabled();
-  await saveSkill.click();
-  await expect(page.getByText("Verified skill saved: Concise response guide")).toBeVisible();
-  await expect(page.getByText("Concise response guide · rev 1")).toBeVisible();
+  await expect(page.getByText("Server verified guide · rev 1")).toBeVisible();
+  await expect(page.getByText("Verified skill creation unavailable")).toBeVisible();
+  expect(await page.getByLabel("Verification operation receipt ID").count()).toBe(0);
 
   await page.locator(".conversation-assistant__source-picker").getByRole("checkbox").check();
   await page.getByLabel("Title", { exact: true }).last().fill("Follow up");
@@ -167,9 +153,8 @@ test("SIMULATED browser flow scopes maintenance, sources, lifecycle, and import 
 
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/maintenance/jobs") && (call.body as Record<string, unknown>)["conversationKind"] === "direct")).toBe(true);
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/research/notes"))).toBe(true);
-  expect(calls.some(call => call.method === "GET" && call.path.endsWith("/operations/verify-receipt-1"))).toBe(true);
-  expect(calls.some(call => call.method === "GET" && call.path.endsWith("/operations/readback-receipt-1"))).toBe(true);
-  expect(calls.find(call => call.method === "POST" && call.path.endsWith("/research/skills"))?.body).toMatchObject({ operationReceiptId: "verify-receipt-1", independentReadReceiptId: "readback-receipt-1" });
+  expect(calls.some(call => call.method === "GET" && call.path.endsWith("/research/skills"))).toBe(true);
+  expect(calls.some(call => call.method === "POST" && call.path.endsWith("/research/skills"))).toBe(false);
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/watches/watch-1/cancel"))).toBe(true);
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/focus-items/focus-1/transition"))).toBe(true);
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/imports/preview"))).toBe(true);
@@ -179,19 +164,16 @@ test("SIMULATED browser flow scopes maintenance, sources, lifecycle, and import 
   expect(calls.filter(call => call.method !== "GET").every(call => call.csrf === "paired-csrf")).toBe(true);
 });
 
-test("SIMULATED verified skill requires both receipts from the same Work task", async ({ page }) => {
-  await mountOperations(page, { readbackTaskId: "task-2" });
+test("SIMULATED verified skills are read-only until Navigator's trusted action producer completes", async ({ page }) => {
+  const { calls } = await mountOperations(page);
   await page.getByRole("tab", { name: "Operations & recovery" }).click();
   await page.getByRole("tab", { name: "Maintenance & Dream" }).click();
   await page.getByLabel("Conversation ID (optional)").fill("chat-1");
   await page.getByRole("tab", { name: "Research & watches" }).click();
-  await page.locator(".conversation-assistant__source-picker").getByRole("checkbox").check();
-  await page.getByLabel("Skill name").fill("Same task proof");
-  await page.getByLabel("Skill content").fill("A verified guide.");
-  await page.getByLabel("Verification operation receipt ID").fill("verify-receipt-1");
-  await page.getByLabel("Independent readback receipt ID").fill("readback-receipt-1");
-  await page.getByRole("button", { name: "Read verification receipt" }).click();
-  await page.getByRole("button", { name: "Read independent readback receipt" }).click();
-  await expect(page.getByRole("alert")).toContainText("Both receipts must belong to the same completed Work task.");
-  await expect(page.getByRole("button", { name: "Save verified skill" })).toBeDisabled();
+
+  await expect(page.getByText("Server verified guide · rev 1")).toBeVisible();
+  await expect(page.getByText("Verified skill creation unavailable")).toBeVisible();
+  expect(await page.getByLabel("Verification operation receipt ID").count()).toBe(0);
+  expect(await page.getByLabel("Independent readback receipt ID").count()).toBe(0);
+  expect(calls.some((call) => call.method === "POST" && call.path.endsWith("/research/skills"))).toBe(false);
 });
