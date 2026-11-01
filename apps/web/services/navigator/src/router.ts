@@ -20,6 +20,7 @@ export type RouteId =
   | "integrations"
   | "settings"
   | "chat"
+  | "conversation-chat"
   | "assistant"
   | "conversation-assistant"
   | "conversation-memory"
@@ -96,6 +97,12 @@ export const ROUTES: readonly RouteDefinition[] = [
     label: "Chat",
     path: "/chat",
     description: "Exchange model testing with active route",
+  },
+  {
+    id: "conversation-chat",
+    label: "Conversation chat",
+    path: "/conversation-chat",
+    description: "Private Web turns through the trusted conversation assistant",
   },
   {
     id: "assistant",

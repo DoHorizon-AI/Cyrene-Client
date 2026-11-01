@@ -12,6 +12,7 @@ import { ConversationMemoryApi } from "./api/conversation-memory";
 import { ConversationDomainsApi } from "./api/conversation-domains";
 import { ConversationOperationsApi } from "./api/conversation-operations";
 import { ConversationPeripheralApi } from "./api/conversation-peripheral";
+import { ConversationTurnsApi } from "./api/conversation-turns";
 
 export * from "./api/types";
 export * from "./api/errors";
@@ -19,6 +20,7 @@ export * from "./api/conversation-memory";
 export * from "./api/conversation-domains";
 export * from "./api/conversation-operations";
 export * from "./api/conversation-peripheral";
+export * from "./api/conversation-turns";
 export { NAVIGATOR_PROXY_PATHS } from "./api/constants";
 export { makeIdempotencyKey } from "./api/requests";
 
@@ -35,6 +37,7 @@ export class NavigatorApi extends NavigatorTransport {
   private readonly conversationDomainsApi = new ConversationDomainsApi(this);
   private readonly conversationOperationsApi = new ConversationOperationsApi(this);
   private readonly conversationPeripheralApi = new ConversationPeripheralApi(this);
+  private readonly conversationTurnsApi = new ConversationTurnsApi(this);
 
   getSystemStatus(...args: Parameters<HostApi["getSystemStatus"]>): ReturnType<HostApi["getSystemStatus"]> {
     return this.hostApi.getSystemStatus(...args);
@@ -526,6 +529,18 @@ export class NavigatorApi extends NavigatorTransport {
 
   getWorkOperationReceipt(...args: Parameters<ConversationPeripheralApi["getWorkOperation"]>): ReturnType<ConversationPeripheralApi["getWorkOperation"]> {
     return this.conversationPeripheralApi.getWorkOperation(...args);
+  }
+
+  submitConversationTurn(...args: Parameters<ConversationTurnsApi["submitTurn"]>): ReturnType<ConversationTurnsApi["submitTurn"]> {
+    return this.conversationTurnsApi.submitTurn(...args);
+  }
+
+  getConversationTurnTask(...args: Parameters<ConversationTurnsApi["getTask"]>): ReturnType<ConversationTurnsApi["getTask"]> {
+    return this.conversationTurnsApi.getTask(...args);
+  }
+
+  openConversationTurnTaskEvents(...args: Parameters<ConversationTurnsApi["openTaskEvents"]>): ReturnType<ConversationTurnsApi["openTaskEvents"]> {
+    return this.conversationTurnsApi.openTaskEvents(...args);
   }
 
   createConversationBackup(...args: Parameters<ConversationPeripheralApi["createActorBackup"]>): ReturnType<ConversationPeripheralApi["createActorBackup"]> {

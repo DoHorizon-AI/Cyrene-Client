@@ -15,7 +15,7 @@ const sourceMessage = {
 const backupBytes = "{}";
 const backupDigest = createHash("sha256").update(backupBytes).digest("hex");
 
-async function mountOperations(page: Page) {
+async function mountOperations(page: Page, options: { readbackTaskId?: string } = {}) {
   const entry = `/@fs/${resolve("tests/fixtures/product-state.tsx").replaceAll("\\", "/")}`;
   await page.route("**/src/main.tsx", route => route.fulfill({ contentType: "text/javascript", body: `import ${JSON.stringify(entry)};` }));
   const calls: Array<{ method: string; path: string; body: unknown; csrf?: string }> = [];
@@ -49,6 +49,8 @@ async function mountOperations(page: Page) {
       return reply({ note, duplicate: false }, 201);
     }
     if (path.endsWith("/conversation-memory/research/skills") && method === "GET") return reply({ items: skill ? [skill] : [] });
+    if (path.endsWith("/operations/verify-receipt-1")) return reply({ operation: { id: "verify-receipt-1", idempotencyKey: "verify-key", operationType: "conversation.skill.verify", taskId: "task-1", target: null, scopeLock: null, request: {}, status: "verified", evidence: {}, createdAt: 2000, updatedAt: 2100 } });
+    if (path.endsWith("/operations/readback-receipt-1")) return reply({ operation: { id: "readback-receipt-1", idempotencyKey: "readback-key", operationType: "conversation.skill.readback", taskId: options.readbackTaskId ?? "task-1", target: null, scopeLock: null, request: {}, status: "verified", evidence: {}, createdAt: 2000, updatedAt: 2100 } });
     if (path.endsWith("/conversation-memory/research/skills") && method === "POST") {
       const input = body as Record<string, unknown>;
       skill = { id: "skill-1", ...input, sourceRefs: [{ memoryId: null, memoryVersion: null, sourceMessageIds: input["sourceRefs"] }], operationReceiptId: input["operationReceiptId"], independentReadReceiptId: input["independentReadReceiptId"], conversationKind: "direct", personaId: null, verified: true, verifiedBy: "actor-1", verifiedAt: 2150, revision: 1, createdAt: 2150 };
@@ -111,7 +113,15 @@ test("SIMULATED browser flow scopes maintenance, sources, lifecycle, and import 
   await page.getByLabel("Skill content").fill("Keep answers concise and factual.");
   await page.getByLabel("Verification operation receipt ID").fill("verify-receipt-1");
   await page.getByLabel("Independent readback receipt ID").fill("readback-receipt-1");
-  await page.getByRole("button", { name: "Save verified skill" }).click();
+  const saveSkill = page.getByRole("button", { name: "Save verified skill" });
+  await expect(saveSkill).toBeDisabled();
+  await page.getByRole("button", { name: "Read verification receipt" }).click();
+  await expect(page.getByText("conversation.skill.verify · Status: verified", { exact: false })).toBeVisible();
+  await expect(saveSkill).toBeDisabled();
+  await page.getByRole("button", { name: "Read independent readback receipt" }).click();
+  await expect(page.getByText("conversation.skill.readback · Status: verified", { exact: false })).toBeVisible();
+  await expect(saveSkill).toBeEnabled();
+  await saveSkill.click();
   await expect(page.getByText("Verified skill saved: Concise response guide")).toBeVisible();
   await expect(page.getByText("Concise response guide · rev 1")).toBeVisible();
 
@@ -157,6 +167,8 @@ test("SIMULATED browser flow scopes maintenance, sources, lifecycle, and import 
 
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/maintenance/jobs") && (call.body as Record<string, unknown>)["conversationKind"] === "direct")).toBe(true);
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/research/notes"))).toBe(true);
+  expect(calls.some(call => call.method === "GET" && call.path.endsWith("/operations/verify-receipt-1"))).toBe(true);
+  expect(calls.some(call => call.method === "GET" && call.path.endsWith("/operations/readback-receipt-1"))).toBe(true);
   expect(calls.find(call => call.method === "POST" && call.path.endsWith("/research/skills"))?.body).toMatchObject({ operationReceiptId: "verify-receipt-1", independentReadReceiptId: "readback-receipt-1" });
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/watches/watch-1/cancel"))).toBe(true);
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/focus-items/focus-1/transition"))).toBe(true);
@@ -165,4 +177,21 @@ test("SIMULATED browser flow scopes maintenance, sources, lifecycle, and import 
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/imports"))).toBe(true);
   expect(calls.some(call => call.method === "POST" && call.path.endsWith("/imports/aether-batch-1/rollback"))).toBe(true);
   expect(calls.filter(call => call.method !== "GET").every(call => call.csrf === "paired-csrf")).toBe(true);
+});
+
+test("SIMULATED verified skill requires both receipts from the same Work task", async ({ page }) => {
+  await mountOperations(page, { readbackTaskId: "task-2" });
+  await page.getByRole("tab", { name: "Operations & recovery" }).click();
+  await page.getByRole("tab", { name: "Maintenance & Dream" }).click();
+  await page.getByLabel("Conversation ID (optional)").fill("chat-1");
+  await page.getByRole("tab", { name: "Research & watches" }).click();
+  await page.locator(".conversation-assistant__source-picker").getByRole("checkbox").check();
+  await page.getByLabel("Skill name").fill("Same task proof");
+  await page.getByLabel("Skill content").fill("A verified guide.");
+  await page.getByLabel("Verification operation receipt ID").fill("verify-receipt-1");
+  await page.getByLabel("Independent readback receipt ID").fill("readback-receipt-1");
+  await page.getByRole("button", { name: "Read verification receipt" }).click();
+  await page.getByRole("button", { name: "Read independent readback receipt" }).click();
+  await expect(page.getByRole("alert")).toContainText("Both receipts must belong to the same completed Work task.");
+  await expect(page.getByRole("button", { name: "Save verified skill" })).toBeDisabled();
 });

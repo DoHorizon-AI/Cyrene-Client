@@ -26,7 +26,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
   const [workspaceError, setWorkspaceError] = useState("");
   const [overview, setOverview] = useState<Awaited<ReturnType<NavigatorApi["getConversationMemoryOverview"]>> | null>(null);
   const [overviewError, setOverviewError] = useState("");
-  const [conversationId, setConversationId] = useState("");
+  const [conversationId, setConversationId] = useState(() => new URLSearchParams(window.location.search).get("conversationId") ?? "");
   const [conversationKind, setConversationKind] = useState<ConversationKind>("direct");
   const [personaId, setPersonaId] = useState("");
   const [reloadKey, setReloadKey] = useState(0);

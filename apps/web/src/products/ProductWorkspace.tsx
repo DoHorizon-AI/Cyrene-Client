@@ -7,6 +7,7 @@ import { ChatPage, DatasetsPage, DeploymentsPage, GatewayPage, ModelsPage, Overv
 import { WorkAssistantPage } from "../../services/navigator/src/work-assistant";
 import { ConversationMemoryPage } from "../../services/navigator/src/conversation-memory";
 import { ConversationAssistantPage } from "../../services/navigator/src/conversation-assistant";
+import { ConversationChatPage } from "../../services/navigator/src/conversation-chat";
 import { EchoWorkbench } from "../../services/echo/src/EchoWorkbench";
 import { ControlledLocaleProvider } from "../../services/navigator/src/i18n";
 import type { RouteId } from "../../services/navigator/src/router";
@@ -62,6 +63,7 @@ function ProductSession({ route }: { route: RouteId }) {
         sessionScope={[actorId, workspaceId, scopes.join(","), session?.sessionId ?? ""].join("\u0000")}
       />;
       case "chat": return <ChatPage api={api} />;
+      case "conversation-chat": return <ConversationChatPage api={api} workspaceId={workspaceId} canOperate={scopes.includes("products.operate")} />;
       case "assistant": return <WorkAssistantPage api={api} workspaceId={workspaceId} canOperate={scopes.includes("products.operate")} canWrite={scopes.includes("products.write")} />;
       case "conversation-memory": return <ConversationMemoryPage api={api} workspaceId={workspaceId} canWrite={scopes.includes("products.write")} />;
       case "conversation-assistant": return <ConversationAssistantPage api={api} workspaceId={workspaceId} canWrite={scopes.includes("products.write")} />;

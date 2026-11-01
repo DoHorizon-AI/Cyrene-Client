@@ -11,6 +11,7 @@ import { NavigatorApi } from "../api";
 const digest = "a".repeat(64);
 const attachment = { id: digest, workspaceId: "workspace-1", sha256: digest, name: "voice.wav", mediaType: "audio/wav", size: 1024, createdAt: 1000 };
 const asset = { assetId: "asset-1", digest, mimeType: "image/png", byteSize: 1024, title: "Card", altText: "A card", tags: ["test"], width: 320, height: 180, createdAt: 1000, deletedAt: null };
+const assetWithoutOptionalMetadata = { ...asset, assetId: "asset-2", altText: null, width: null, height: null };
 const account = { profileRef: "profile-1", provider: "bilibili", identityRef: "identity-1", targetScope: { actor: "actor-1" }, authStatus: "ready", externalSubject: "uid-1", displayName: "Test account", authMode: "oauth", accessMode: "actor_owned", expiresAt: 2_000, credentialRevision: 3 };
 const operation = { id: "operation-1", idempotencyKey: "idem-1", operationType: "tool.provider.v1:bilibili.comment.create", request: {}, status: "uncertain", evidence: { replay: "NOT_REPLAYED" }, createdAt: 1000, updatedAt: 1000 };
 
@@ -25,7 +26,7 @@ describe("conversation peripheral Work API", () => {
       const path = String(input), method = (init?.method ?? "GET").toUpperCase();
       const body = typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined;
       calls.push({ path, method, body });
-      if (path.includes("/media/assets?") && method === "GET") return response({ items: [asset], nextCursor: null });
+      if (path.includes("/media/assets?") && method === "GET") return response({ items: [asset, assetWithoutOptionalMetadata], nextCursor: null });
       if (path.endsWith("/media/assets/import")) return response(asset, 201);
       if (path.endsWith("/media/assets/asset-1") && method === "GET") return response({ asset, attachment, downloadPath: `/api/v1/workspaces/workspace-1/work/conversation-memory/media/assets/asset-1/attachment` });
       if (path.endsWith("/media/assets/asset-1") && method === "DELETE") return response({ assetId: "asset-1", deleted: true });
@@ -38,7 +39,9 @@ describe("conversation peripheral Work API", () => {
       throw new Error(`Unexpected request: ${method} ${path}`);
     });
 
-    expect((await api.searchConversationMediaAssets("workspace-1", { query: "card", limit: 20 })).items[0]?.assetId).toBe("asset-1");
+    const assets = await api.searchConversationMediaAssets("workspace-1", { query: "card", limit: 20 });
+    expect(assets.items[0]?.assetId).toBe("asset-1");
+    expect(assets.items[1]).toMatchObject({ assetId: "asset-2", altText: null, width: null, height: null });
     expect((await api.importConversationMediaAsset("workspace-1", { attachmentDigest: digest, title: "Card" })).title).toBe("Card");
     expect((await api.getConversationMediaAsset("workspace-1", "asset-1")).attachment.sha256).toBe(digest);
     expect((await api.deleteConversationMediaAsset("workspace-1", "asset-1")).deleted).toBe(true);

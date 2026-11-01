@@ -166,9 +166,9 @@ function parseAsset(value: unknown): ConversationMediaAsset {
   return {
     assetId: requireString(row, "assetId", "conversation media asset"), digest: requireString(row, "digest", "conversation media asset"),
     mimeType: requireString(row, "mimeType", "conversation media asset"), byteSize: requireNumber(row, "byteSize", "conversation media asset"),
-    title: requireString(row, "title", "conversation media asset"), altText: requireString(row, "altText", "conversation media asset"),
-    tags: stringArray(row["tags"], "media asset tags"), width: requireNumber(row, "width", "conversation media asset"),
-    height: requireNumber(row, "height", "conversation media asset"), createdAt: requireNumber(row, "createdAt", "conversation media asset"),
+    title: requireString(row, "title", "conversation media asset"), altText: nullableString(row, "altText", "conversation media asset"),
+    tags: stringArray(row["tags"], "media asset tags"), width: nullableNumber(row, "width", "conversation media asset"),
+    height: nullableNumber(row, "height", "conversation media asset"), createdAt: requireNumber(row, "createdAt", "conversation media asset"),
     deletedAt: nullableNumber(row, "deletedAt", "conversation media asset"),
   };
 }

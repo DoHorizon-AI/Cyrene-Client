@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Button, PageHeader, Panel, StateBlock, StatusPill } from "./components";
-import { newConversationMemoryKey, type ActorBackupAttachment, type ActiveBehaviorPolicy, type ConversationFocusItem, type ConversationFocusKind, type ConversationFocusState, type ConversationHandoff, type ConversationImportPreview, type ConversationImportResult, type ConversationKind, type ConversationMessage, type ConversationReviewEvent, type ConversationSourceReference, type ConversationWatch, type MaintenanceJob, type MaintenanceKind, type MaintenanceState, type NavigatorApi, type ResearchNote, type VerifiedConversationSkill } from "./api";
+import { newConversationMemoryKey, type ActorBackupAttachment, type ActiveBehaviorPolicy, type ConversationFocusItem, type ConversationFocusKind, type ConversationFocusState, type ConversationHandoff, type ConversationImportPreview, type ConversationImportResult, type ConversationKind, type ConversationMessage, type ConversationReviewEvent, type ConversationSourceReference, type ConversationWatch, type MaintenanceJob, type MaintenanceKind, type MaintenanceState, type NavigatorApi, type ResearchNote, type VerifiedConversationSkill, type WorkOperationReceipt } from "./api";
 import { useI18n } from "./i18n";
 import { errorMessage } from "./pages/shared";
 import "./conversation-assistant.css";
@@ -176,6 +176,7 @@ function ResearchPanel({ api, workspaceId, mayWrite, conversationId, setConversa
   const [notes, setNotes] = useState<ResearchNote[]>([]), [skills, setSkills] = useState<VerifiedConversationSkill[]>([]), [watches, setWatches] = useState<ConversationWatch[]>([]);
   const [title, setTitle] = useState(""), [content, setContent] = useState(""), [skillName, setSkillName] = useState(""), [skillContent, setSkillContent] = useState("");
   const [skillVerifyReceiptId, setSkillVerifyReceiptId] = useState(""), [skillReadbackReceiptId, setSkillReadbackReceiptId] = useState("");
+  const [skillVerifyReceipt, setSkillVerifyReceipt] = useState<WorkOperationReceipt | null>(null), [skillReadbackReceipt, setSkillReadbackReceipt] = useState<WorkOperationReceipt | null>(null);
   const [watchTitle, setWatchTitle] = useState(""), [watchCondition, setWatchCondition] = useState(""), [watchNextCheck, setWatchNextCheck] = useState("");
   const [busy, setBusy] = useState(""), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [noteKey, setNoteKey] = useState(newConversationMemoryKey), [skillKey, setSkillKey] = useState(newConversationMemoryKey), [watchKey, setWatchKey] = useState(newConversationMemoryKey);
@@ -200,8 +201,28 @@ function ResearchPanel({ api, workspaceId, mayWrite, conversationId, setConversa
   const consistentPersona = selected.length > 0 && selected.every((message) => message.scope.personaId === selected[0]?.scope.personaId);
   const personaMatchesEvidence = !personaId.trim() || personaId.trim() === (selected[0]?.scope.personaId ?? "");
   const evidenceMatchesScope = selected.length > 0 && selected.every((message) => message.scope.conversationId === conversationId.trim() && message.scope.conversationKind === conversationKind);
+  const skillVerifyReceiptReady = skillReceiptMatches(skillVerifyReceipt, skillVerifyReceiptId, "conversation.skill.verify");
+  const skillReadbackReceiptReady = skillReceiptMatches(skillReadbackReceipt, skillReadbackReceiptId, "conversation.skill.readback");
+  const skillReceiptsShareTask = typeof skillVerifyReceipt?.operation.taskId === "string"
+    && skillVerifyReceipt.operation.taskId === skillReadbackReceipt?.operation.taskId;
+  const skillReceiptsReady = skillVerifyReceiptReady && skillReadbackReceiptReady && skillReceiptsShareTask;
   const visibleNotes = notes.filter((note) => note.conversationId === conversationId.trim() && note.conversationKind === conversationKind && (!personaId.trim() || note.personaId === personaId.trim()));
   const visibleWatches = watches.filter((watch) => watch.conversationId === conversationId.trim() && watch.conversationKind === conversationKind && (!personaId.trim() || watch.personaId === personaId.trim()));
+  const readSkillReceipt = async (kind: "verify" | "readback") => {
+    const id = (kind === "verify" ? skillVerifyReceiptId : skillReadbackReceiptId).trim();
+    if (!mayWrite || !id || busy) return;
+    setBusy(`receipt:${kind}`); setError(""); setNotice("");
+    try {
+      const result = await api.getWorkOperationReceipt(workspaceId, id);
+      if (result.operation.id !== id) throw new Error(t("Navigator returned a different receipt than requested."));
+      if (kind === "verify") setSkillVerifyReceipt(result);
+      else setSkillReadbackReceipt(result);
+    } catch (reason) {
+      if (kind === "verify") setSkillVerifyReceipt(null);
+      else setSkillReadbackReceipt(null);
+      setError(errorMessage(reason));
+    } finally { setBusy(""); }
+  };
   const createNote = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!mayWrite || !conversationId.trim() || !title.trim() || !content.trim() || !evidenceMatchesScope || !consistentPersona || !personaMatchesEvidence || busy) return;
@@ -214,12 +235,12 @@ function ResearchPanel({ api, workspaceId, mayWrite, conversationId, setConversa
   };
   const createSkill = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!mayWrite || conversationKind !== "direct" || !skillName.trim() || !skillContent.trim() || !skillVerifyReceiptId.trim() || !skillReadbackReceiptId.trim() || !selected.length || !selected.every((message) => message.scope.conversationKind === "direct" && message.scope.personaId === null) || busy) return;
-    if (!window.confirm(t("Submit this sourced skill with both Work verification receipts? Navigator checks that each receipt belongs to a completed task and matches the skill content."))) return;
+    if (!mayWrite || conversationKind !== "direct" || !skillName.trim() || !skillContent.trim() || !skillReceiptsReady || !selected.length || !selected.every((message) => message.scope.conversationKind === "direct" && message.scope.personaId === null) || busy) return;
+    if (!window.confirm(t("Submit this sourced skill with both Work verification receipts? Navigator checks that each receipt belongs to the same completed task and matches the skill content."))) return;
     setBusy("skill"); setError(""); setNotice("");
     try {
-      const result = await api.createVerifiedConversationSkill(workspaceId, { idempotencyKey: skillKey, conversationId: conversationId.trim(), conversationKind: "direct", name: skillName.trim(), content: skillContent.trim(), sourceRefs: selected.map((message) => message.id), operationReceiptId: skillVerifyReceiptId.trim(), independentReadReceiptId: skillReadbackReceiptId.trim() });
-      setSkillKey(newConversationMemoryKey()); setSkillName(""); setSkillContent(""); setSkillVerifyReceiptId(""); setSkillReadbackReceiptId(""); setSelectedSources([]); setNotice(`${t("Verified skill saved")}: ${result.skill.name}`); await load();
+      const result = await api.createVerifiedConversationSkill(workspaceId, { idempotencyKey: skillKey, conversationId: conversationId.trim(), conversationKind: "direct", name: skillName.trim(), content: skillContent.trim(), sourceRefs: selected.map((message) => message.id), operationReceiptId: skillVerifyReceipt!.operation.id, independentReadReceiptId: skillReadbackReceipt!.operation.id });
+      setSkillKey(newConversationMemoryKey()); setSkillName(""); setSkillContent(""); setSkillVerifyReceiptId(""); setSkillReadbackReceiptId(""); setSkillVerifyReceipt(null); setSkillReadbackReceipt(null); setSelectedSources([]); setNotice(`${t("Verified skill saved")}: ${result.skill.name}`); await load();
     } catch (reason) { setError(errorMessage(reason)); }
     finally { setBusy(""); }
   };
@@ -257,7 +278,21 @@ function ResearchPanel({ api, workspaceId, mayWrite, conversationId, setConversa
       </Panel>
       <Panel title={t("Verified skills")} meta={<span>{skills.length}</span>}>
         {skills.length ? <ul className="conversation-assistant__list">{skills.map((skill) => <li key={skill.id}><div><strong>{skill.name} · rev {skill.revision}</strong><p>{skill.content}</p><small>{t("Verified by")}: {skill.verifiedBy} · {t("Sources")}: {formatSourceRefs(skill.sourceRefs)}</small><small>{t("Verification receipt")}: {skill.operationReceiptId} · {t("Independent read receipt")}: {skill.independentReadReceiptId}</small></div><StatusPill value={skill.verified ? "verified" : "unverified"} /></li>)}</ul> : <StateBlock kind="empty" title={t("No verified skills")} detail={t("Navigator has not returned verified skills for this actor.")} />}
-        <form className="conversation-assistant__form" onSubmit={(event) => void createSkill(event)}><h3>{t("Submit verified skill")}</h3><label>{t("Skill name")}<input value={skillName} onChange={(event) => setSkillName(event.target.value)} disabled={!mayWrite || busy !== ""} /></label><label>{t("Skill content")}<textarea rows={3} value={skillContent} onChange={(event) => setSkillContent(event.target.value)} disabled={!mayWrite || busy !== ""} /></label><label>{t("Verification operation receipt ID")}<input value={skillVerifyReceiptId} onChange={(event) => setSkillVerifyReceiptId(event.target.value)} disabled={!mayWrite || busy !== ""} /></label><label>{t("Independent readback receipt ID")}<input value={skillReadbackReceiptId} onChange={(event) => setSkillReadbackReceiptId(event.target.value)} disabled={!mayWrite || busy !== ""} /></label><p className="conversation-assistant__help">{t("Skills require two verified Work receipts tied to a completed actor-private task. Navigator checks the content digest and independent readback; Client cannot mark skills verified by itself.")}</p><p className="conversation-assistant__help">{t("Skills can be verified only from neutral direct-message sources.")}</p><Button tone="primary" disabled={!mayWrite || conversationKind !== "direct" || !skillName.trim() || !skillContent.trim() || !skillVerifyReceiptId.trim() || !skillReadbackReceiptId.trim() || !selected.length || !selected.every((message) => message.scope.conversationKind === "direct" && message.scope.personaId === null) || busy !== ""} loading={busy === "skill"}>{t("Save verified skill")}</Button></form>
+        <form className="conversation-assistant__form" onSubmit={(event) => void createSkill(event)}>
+          <h3>{t("Submit verified skill")}</h3>
+          <label>{t("Skill name")}<input value={skillName} onChange={(event) => { setSkillName(event.target.value); setSkillVerifyReceipt(null); setSkillReadbackReceipt(null); }} disabled={!mayWrite || busy !== ""} /></label>
+          <label>{t("Skill content")}<textarea rows={3} value={skillContent} onChange={(event) => { setSkillContent(event.target.value); setSkillVerifyReceipt(null); setSkillReadbackReceipt(null); }} disabled={!mayWrite || busy !== ""} /></label>
+          <label>{t("Verification operation receipt ID")}<input value={skillVerifyReceiptId} onChange={(event) => { setSkillVerifyReceiptId(event.target.value); setSkillVerifyReceipt(null); }} disabled={!mayWrite || busy !== ""} /></label>
+          <Button type="button" onClick={() => void readSkillReceipt("verify")} disabled={!mayWrite || !skillVerifyReceiptId.trim() || busy !== ""} loading={busy === "receipt:verify"}>{t("Read verification receipt")}</Button>
+          {skillVerifyReceipt && <p role="status" className="conversation-assistant__help">{skillVerifyReceipt.operation.operationType} · {t("Status")}: {skillVerifyReceipt.operation.status}{skillVerifyReceiptReady ? ` · ${t("Receipt matches the verification requirement")}` : ` · ${t("Receipt is not a verified skill verification operation")}`}</p>}
+          <label>{t("Independent readback receipt ID")}<input value={skillReadbackReceiptId} onChange={(event) => { setSkillReadbackReceiptId(event.target.value); setSkillReadbackReceipt(null); }} disabled={!mayWrite || busy !== ""} /></label>
+          <Button type="button" onClick={() => void readSkillReceipt("readback")} disabled={!mayWrite || !skillReadbackReceiptId.trim() || busy !== ""} loading={busy === "receipt:readback"}>{t("Read independent readback receipt")}</Button>
+          {skillReadbackReceipt && <p role="status" className="conversation-assistant__help">{skillReadbackReceipt.operation.operationType} · {t("Status")}: {skillReadbackReceipt.operation.status}{skillReadbackReceiptReady ? ` · ${t("Receipt matches the independent readback requirement")}` : ` · ${t("Receipt is not a verified independent skill readback operation")}`}</p>}
+          {skillVerifyReceiptReady && skillReadbackReceiptReady && !skillReceiptsShareTask && <p role="alert" className="conversation-assistant__help">{t("Both receipts must belong to the same completed Work task.")}</p>}
+          <p className="conversation-assistant__help">{t("Skills require two verified Work receipts tied to the same completed actor-private task. Navigator checks that each receipt belongs to the same completed task and matches the skill content; Client cannot mark skills verified by itself.")}</p>
+          <p className="conversation-assistant__help">{t("Skills can be verified only from neutral direct-message sources.")}</p>
+          <Button tone="primary" disabled={!mayWrite || conversationKind !== "direct" || !skillName.trim() || !skillContent.trim() || !skillReceiptsReady || !selected.length || !selected.every((message) => message.scope.conversationKind === "direct" && message.scope.personaId === null) || busy !== ""} loading={busy === "skill"}>{t("Save verified skill")}</Button>
+        </form>
       </Panel>
       <Panel title={t("Watches")} meta={<span>{visibleWatches.length}</span>}>
         {visibleWatches.length ? <ul className="conversation-assistant__list">{visibleWatches.map((watch) => <li key={watch.id}><div><strong>{watch.title} · {watch.state}</strong><p>{watch.condition}</p><small>{watch.id} · v{watch.version} · {t("Next check")}: {formatEpoch(watch.nextCheckAt, t)}</small></div><Button tone="danger" onClick={() => void cancelWatch(watch)} disabled={!mayWrite || watch.state !== "active" || busy !== ""}>{watch.state === "active" ? t("Stop watch") : t("Stopped")}</Button></li>)}</ul> : <StateBlock kind="empty" title={t("No watches")} detail={t("Navigator has not returned watches for this actor.")} />}
@@ -526,6 +561,12 @@ function formatSourceRefs(refs: ConversationSourceReference[]): string {
     const messages = ref.sourceMessageIds.join(", ");
     return [memory, messages].filter(Boolean).join(" → ");
   }).filter(Boolean).join(" · ");
+}
+
+function skillReceiptMatches(receipt: WorkOperationReceipt | null, inputId: string, expectedType: string): boolean {
+  return receipt?.operation.id === inputId.trim()
+    && receipt.operation.operationType === expectedType
+    && receipt.operation.status === "verified";
 }
 
 function parseLocalDateTime(value: string): number | null {
