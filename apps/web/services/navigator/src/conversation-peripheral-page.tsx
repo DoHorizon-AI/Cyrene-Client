@@ -254,12 +254,14 @@ const WRITE_TOOL_SPECS: Record<BilibiliWriteOperationId, { label: string; fields
   "bilibili.dm.send": { label: "Send direct message", fields: ["peer_user_id", "content"], required: ["peer_user_id", "content"], example: { peer_user_id: "", content: "" } },
 };
 
+/** Keep only the receipt lookup reference in this tab; never persist tool arguments or message content. */
 type PendingBilibiliWriteIntent = { operationId: BilibiliWriteOperationId; idempotencyKey: string };
 
 function pendingBilibiliWriteStorageKey(workspaceId: string): string {
   return "cyrene:bilibili-pending-write:" + workspaceId;
 }
 
+/** Recover the server receipt lookup key after navigation or a page reload. */
 function readPendingBilibiliWriteIntent(workspaceId: string): PendingBilibiliWriteIntent | null {
   try {
     const raw = globalThis.sessionStorage.getItem(pendingBilibiliWriteStorageKey(workspaceId));
@@ -273,6 +275,7 @@ function readPendingBilibiliWriteIntent(workspaceId: string): PendingBilibiliWri
   } catch { return null; }
 }
 
+/** Persist or clear the non-authoritative receipt lookup reference for this tab. */
 function savePendingBilibiliWriteIntent(workspaceId: string, intent: PendingBilibiliWriteIntent | null): boolean {
   try {
     const key = pendingBilibiliWriteStorageKey(workspaceId);
