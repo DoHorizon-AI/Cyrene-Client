@@ -37,15 +37,6 @@ async function privatePairingCode(): Promise<string | null> {
 }
 
 async function enterConversationChat(page: Page, conversationId: string): Promise<void> {
-  const sessionPath = "/tmp/cyrene-aether-browser-session.json";
-  try {
-    const raw = await readFile(sessionPath, "utf8");
-    const data = JSON.parse(raw);
-    if (Array.isArray(data.cookies) && data.cookies.length) {
-      await page.context().addCookies(data.cookies);
-    }
-  } catch {}
-
   await page.goto("/conversation-chat");
   const pairingCodeInput = page.getByLabel(/One-time pairing code|一次性配对码/).first();
   const conversationIdInput = page.getByLabel(/Conversation ID|对话 ID/);
@@ -58,10 +49,6 @@ async function enterConversationChat(page: Page, conversationId: string): Promis
     await pairingCodeInput.fill(pairingCode!);
     // The page chrome also exposes a "服务连接" toggle, so match the submit button exactly.
     await page.getByRole("button", { name: /^(Connect|连接)$/ }).click();
-    await expect(conversationIdInput).toBeVisible({ timeout: 30_000 });
-    try {
-      await page.context().storageState({ path: sessionPath });
-    } catch {}
   }
   await expect(conversationIdInput).toBeVisible({ timeout: 30_000 });
   const readOnly = page.getByText(/Sending a conversation turn requires products\.operate|发送对话轮次需要 products\.operate/);
@@ -145,7 +132,18 @@ function longSummaryInput(turn: number, marker: string): string {
     + " Reply briefly.";
 }
 
-test("REAL WSL Web turn recalls an attributed memory and revocation removes it from the next turn", async ({ page }) => {
+test.describe.serial("Aether P2 real browser acceptance", () => {
+  let page: Page;
+
+  test.beforeAll(async ({ browser }) => {
+    page = await browser.newPage();
+  });
+
+  test.afterAll(async () => {
+    await page?.close();
+  });
+
+  test("REAL WSL Web turn recalls an attributed memory and revocation removes it from the next turn", async () => {
   page.on("dialog", dialog => dialog.accept());
   const conversationId = `aether-real-${randomUUID().replaceAll("-", "")}`;
   const marker = `AETHER${randomUUID().replaceAll("-", "").slice(0, 12).toUpperCase()}`;
@@ -250,7 +248,7 @@ test("REAL WSL Web turn recalls an attributed memory and revocation removes it f
   expect(latestAssistant?.sourceRefs.some((ref) => ref.memoryId === createdMemory!.id || ref.sourceMessageIds.includes(sourceMessageId!))).toBe(false);
 });
 
-test("REAL WSL turns extract a sourced episode, deduplicate an exact retry, and support memory lifecycle", async ({ page }) => {
+test("REAL WSL turns extract a sourced episode, deduplicate an exact retry, and support memory lifecycle", async () => {
   // NOT_RUN under the default local profile: sixteen real turns plus a model-written summary
   // exceed the 30s provider stream deadline of the 0.5B CPU model, and the host projects that
   // failure into the same safe code as a delivery hold. Enable with CYRENE_AETHER_LONG_MEMORY=1
@@ -400,4 +398,5 @@ test("REAL WSL turns extract a sourced episode, deduplicate an exact retry, and 
   const finalTask = await readSameOriginJson(page, "/api/v1/navigator/tasks/" + encodeURIComponent(finalTurn.admission.taskId));
   expect(finalTask.status).toBe(200);
   expect((finalTask.body as { status?: string }).status).toBe("completed");
+});
 });
