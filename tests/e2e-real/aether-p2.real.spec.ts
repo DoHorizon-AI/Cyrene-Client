@@ -55,7 +55,7 @@ async function sendTurn(page: Page, message: string): Promise<void> {
   await expect(page.getByText(/completed/i).first()).toBeVisible({ timeout: 180_000 });
 }
 
-test("REAL WSL Web turn persists an attributed memory and revocation removes it from the next turn", async ({ page }) => {
+test("REAL WSL Web turn recalls an attributed memory and revocation removes it from the next turn", async ({ page }) => {
   page.on("dialog", dialog => dialog.accept());
   const conversationId = `aether-real-${randomUUID().replaceAll("-", "")}`;
   const marker = `AETHER${randomUUID().replaceAll("-", "").slice(0, 12).toUpperCase()}`;
@@ -96,6 +96,21 @@ test("REAL WSL Web turn persists an attributed memory and revocation removes it 
   await page.getByRole("button", { name: /Search|搜索/ }).click();
   await expect(page.getByText(memoryText, { exact: true }).first()).toBeVisible({ timeout: 60_000 });
 
+  const messagesQuery = new URLSearchParams({ conversationId, conversationKind: "direct", limit: "100" });
+  const beforeRecall = await readSameOriginJson(page, `${workBase}/messages?${messagesQuery}`);
+  expect(beforeRecall.status).toBe(200);
+  const priorAssistantIds = new Set(((beforeRecall.body as { items?: MessageRecord[] }).items ?? []).filter((item) => item.role === "assistant").map((item) => item.id));
+  await enterConversationChat(page, conversationId);
+  await sendTurn(page, "What reply style did I ask you to remember? Use currently authorized saved preference; if none exists, say none.");
+  const recalledMessages = await readSameOriginJson(page, `${workBase}/messages?${messagesQuery}`);
+  expect(recalledMessages.status).toBe(200);
+  const recalledAssistant = ((recalledMessages.body as { items?: MessageRecord[] }).items ?? [])
+    .filter((item) => item.role === "assistant" && !priorAssistantIds.has(item.id))
+    .sort((a, b) => b.occurredAt - a.occurredAt)[0];
+  expect(recalledAssistant?.sourceRefs.some((ref) => ref.memoryId === createdMemory!.id
+    && ref.memoryVersion === createdMemory!.version && ref.sourceMessageIds.includes(sourceMessageId!))).toBe(true);
+  await page.getByRole("link", { name: /Open memory controls|打开记忆管理/ }).click();
+
   const memoryRow = page.locator(".conversation-memory__list > li").filter({ hasText: createdMemory!.id }).last();
   await memoryRow.getByRole("button", { name: /Correct|纠错/ }).click();
   await page.getByLabel(/Corrected text|修正后的文本/).fill(correctedText);
@@ -126,7 +141,6 @@ test("REAL WSL Web turn persists an attributed memory and revocation removes it 
 
   await enterConversationChat(page, conversationId);
   await sendTurn(page, "Use only currently authorized saved memory for my reply style. If no authorized preference remains, say that no preference is available.");
-  const messagesQuery = new URLSearchParams({ conversationId, conversationKind: "direct", limit: "100" });
   const messageReadback = await readSameOriginJson(page, `${workBase}/messages?${messagesQuery}`);
   expect(messageReadback.status).toBe(200);
   const messageItems = (messageReadback.body as { items?: MessageRecord[] }).items ?? [];
