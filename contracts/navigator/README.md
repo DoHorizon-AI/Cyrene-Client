@@ -2,7 +2,7 @@
 
 Navigator's canonical machine-readable contract for Client's durable Work API is
 `contracts/product/v1/work.openapi.json`, pinned by `source.json` to commit
-`2eea41df68099012aa093b1f40d22445a4396abf`. That exact Navigator commit does not publish
+`ed2a648d5420d807695ab934389e2d25e902011b`. That exact Navigator commit does not publish
 `executor.openapi.json`; the Client does not treat an older executor snapshot as current
 authority. Generated `WorkSchemas` come only from the pinned Work OpenAPI.
 
@@ -32,18 +32,29 @@ Navigator working-tree file. It also requires the pin to be reachable from fresh
 newlines so Windows and Linux produce the same bytes.
 
 `WorkSchemas` covers durable tasks, approvals, inputs, memory, attachments, connectors,
-and notifications. The browser proxy applies its own permission and workspace checks in
+notifications, and conversation-memory projections including actor-owned persona bindings.
+The browser proxy applies its own permission and workspace checks in
 addition to Navigator source validation.
+
+Persona binding GET/PUT require `products.read`/`products.write` respectively; Control
+also checks CSRF for writes. Navigator owns actor isolation, persona eligibility, and
+`expectedVersion` CAS. This snapshot follows the published pin, not unmerged Navigator
+working-tree changes.
 
 ---
 <!-- Chinese Translation / 中文翻译 -->
 
 Navigator 当前供 Client 消费的持久 Work API 机器可读契约为
 `contracts/product/v1/work.openapi.json`，准确来源固定在 `source.json` 中的
-`2eea41df68099012aa093b1f40d22445a4396abf`。该提交没有发布 `executor.openapi.json`，
+`ed2a648d5420d807695ab934389e2d25e902011b`。该提交没有发布 `executor.openapi.json`，
 因此 Client 不会把旧 executor 快照当作当前权威。生成的 `WorkSchemas` 只来自固定的
 Work OpenAPI。
 
 Harness executor 的 HTTP 传输类型由 Client 手工声明，并根据同一 Navigator 提交中的
 `harness/src/executor.ts` 与 `harness/src/work-state-client.ts` 校验；这些不是生成的
 OpenAPI 类型。更新前先 fetch 并审查准确的 Navigator develop SHA，再运行生成器。
+
+快照覆盖对话记忆投影和主体拥有的人格绑定。Control 对 binding 的 GET/PUT 分别要求
+`products.read`/`products.write`，写入同时校验 Control CSRF；Navigator 仍负责主体隔离、
+人格可用性和 `expectedVersion` CAS。快照以已发布的固定提交为准，不包含 Navigator
+工作树内尚未合并的改动。
