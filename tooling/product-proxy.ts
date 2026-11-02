@@ -86,6 +86,8 @@ const conversationWorkPolicies: readonly NavigatorProxyPolicy[] = [
   conversationPolicy("DELETE", `sources/${workId}/grants/${workId}`, "write"),
   conversationPolicy("GET", "personas", "read"),
   conversationPolicy("PUT", "personas", "write"),
+  conversationPolicy("GET", "personas/binding", "read"),
+  conversationPolicy("PUT", "personas/binding", "write"),
   conversationPolicy("GET", "profile-candidates", "read"),
   conversationPolicy("POST", "profile-candidates", "write"),
   conversationPolicy("GET", "profiles", "read"),

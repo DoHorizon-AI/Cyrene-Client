@@ -8,11 +8,17 @@ import { admittedLoopbackTarget, directProductUpstreamPath, navigatorProxyPolicy
 const cleanup: (() => Promise<void>)[] = [];
 const renewalSessionId = "00000000-0000-4000-8000-000000000001";
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-async function fixture() {
+async function fixture(respond?: (method: string, url: string, body: string) => { status: number; body: unknown } | undefined) {
   const received: { url: string; body: string; authorization?: string; productAuthorization?: string; workspaceId?: string; cookie?: string; csrf?: string; accept?: string; lastEventId?: string; idempotencyKey?: string }[] = [];
   const upstream = createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const part of req) chunks.push(part);
     received.push({ url: req.url!, body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization, productAuthorization: req.headers["x-cyrene-product-authorization"] as string | undefined, workspaceId: req.headers["x-cyrene-workspace-id"] as string | undefined, cookie: req.headers.cookie, csrf: req.headers["x-csrf-token"] as string | undefined, accept: req.headers.accept, lastEventId: req.headers["last-event-id"] as string | undefined, idempotencyKey: req.headers["idempotency-key"] as string | undefined });
+    const reply = respond?.(req.method ?? "GET", req.url!, received.at(-1)!.body);
+    if (reply) {
+      res.writeHead(reply.status, { "content-type": "application/json" });
+      res.end(JSON.stringify(reply.body));
+      return;
+    }
     if (req.url?.endsWith("/conversation-memory/media/assets/asset-1/attachment")) {
       res.writeHead(200, { "content-type": "image/png", "x-content-sha256": "a".repeat(64) });
       res.end("private-image-bytes");
@@ -297,6 +303,54 @@ it("admits only the fixed private conversation turn DTO and forwards it with ope
 
   const trustedOnly = await f.request("/api/v1/workspaces/local/work/conversation-memory/messages", { ...operator, "content-type": "application/json" }, "POST", '{"eventId":"forbidden"}');
   expect(trustedOnly.status).toBe(403);
+});
+
+it("forwards only authorized persona binding reads and writes and preserves upstream CAS conflicts", async () => {
+  const path = "/api/v1/workspaces/local/work/conversation-memory/personas/binding";
+  const query = "?conversationId=web-private-1&conversationKind=direct";
+  let binding: { conversationId: string; conversationKind: string; personaId: string | null; version: number; createdAt: number; updatedAt: number } | null = null;
+  // This synthetic Navigator owns CAS; the Control proxy must preserve its result.
+  const f = await fixture((method, url, body) => {
+    if (url === path + query && method === "GET") return { status: 200, body: { binding, availablePersonaIds: ["calm"] } };
+    if (url !== path || method !== "PUT") return undefined;
+    const input = JSON.parse(body) as { conversationId: string; conversationKind: string; personaId: string | null; expectedVersion: number };
+    if (input.expectedVersion !== (binding?.version ?? 0)) return { status: 409, body: { code: "CONVERSATION_DOMAIN_VERSION_CONFLICT", detail: "Persona binding version changed" } };
+    binding = { conversationId: input.conversationId, conversationKind: input.conversationKind, personaId: input.personaId, version: input.expectedVersion + 1, createdAt: 1000, updatedAt: 2000 };
+    return { status: 200, body: { binding, duplicate: false } };
+  });
+  const viewer = await f.login("viewer"), editor = await f.login("editor");
+  const input = { conversationId: "web-private-1", conversationKind: "direct", personaId: "calm", expectedVersion: 0 };
+  const body = JSON.stringify(input);
+  const writeHeaders = { ...editor, "content-type": "application/json", "x-csrf-token": "navigator-csrf" };
+
+  expect(productPermission("GET", path)).toBe("products.read");
+  expect(productPermission("PUT", path)).toBe("products.write");
+  expect(JSON.parse((await f.request(path + query, viewer)).text)).toEqual({ binding: null, availablePersonaIds: ["calm"] });
+  expect(f.received.at(-1)?.url).toBe(path + query);
+  const beforeRejected = f.received.length;
+  expect((await f.request(path, { ...viewer, "content-type": "application/json" }, "PUT", body)).status).toBe(403);
+  expect((await f.request(path, { cookie: editor.cookie, "content-type": "application/json" }, "PUT", body)).status).toBe(403);
+  expect((await f.request(path, { ...writeHeaders, "x-studio-control-token": "invalid" }, "PUT", body)).status).toBe(403);
+  expect((await f.request(path.replace("/local/", "/other/") + query, viewer)).status).toBe(403);
+  expect((await f.request(path.replace("/local/", "/other/"), writeHeaders, "PUT", body)).status).toBe(403);
+  for (const blockedPath of [path + "/extra", path.replace("personas/binding", "personas%2fbinding"), path.replace("personas/binding", "personas%252fbinding")]) {
+    expect((await f.request(blockedPath, writeHeaders, "PUT", body)).status).toBe(403);
+  }
+  expect((await f.request(path, writeHeaders, "POST", body)).status).toBe(403);
+  expect(f.received).toHaveLength(beforeRejected);
+  expect(binding).toBeNull();
+
+  const created = await f.request(path, writeHeaders, "PUT", body);
+  expect(created.status).toBe(200);
+  expect(JSON.parse(created.text)).toMatchObject({ binding: { personaId: "calm", version: 1 }, duplicate: false });
+  expect(f.received.at(-1)).toMatchObject({ url: path, body, csrf: "navigator-csrf", cookie: "product_session=upstream-only", authorization: undefined });
+
+  const stale = await f.request(path, writeHeaders, "PUT", JSON.stringify({ ...input, personaId: null }));
+  expect(stale.status).toBe(409);
+  expect(JSON.parse(stale.text)).toEqual({ code: "CONVERSATION_DOMAIN_VERSION_CONFLICT", detail: "Persona binding version changed" });
+  const readback = await f.request(path + query, viewer);
+  expect(JSON.parse(readback.text)).toMatchObject({ binding: { personaId: "calm", version: 1 } });
+  expect(f.received).toHaveLength(beforeRejected + 3);
 });
 
 it("preserves a validated digest header for actor-private conversation artifacts", async () => {
