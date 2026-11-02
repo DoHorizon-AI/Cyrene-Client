@@ -10,6 +10,7 @@ export const ISOLATED_ENVIRONMENT_ALLOWLIST = Object.freeze([
   "SSL_CERT_DIR", "UV_CACHE_DIR", "CYRENE_NAVIGATOR_DIR", "CYRENE_PYTHON",
   "CYRENE_SESSION_TOKEN", "CYRENE_EXCHANGE_URL", "CYRENE_EXCHANGE_TOKEN",
   "CYRENE_HARNESS_MODEL", "CYRENE_ORGANIZATION_ID", "STUDIO_WORKSPACE_ID",
+  "CYRENE_HARNESS_MODEL_SOURCE",
   "CYRENE_NAVIGATOR_MODEL_PROVIDER_CONNECTION_REF",
   "CYRENE_NAVIGATOR_MEMORY_PROVIDER_CONNECTION_REF",
   "CYRENE_NAVIGATOR_KNOWLEDGE_GRAPH_CONNECTION_REF",
@@ -33,6 +34,7 @@ export const NAVIGATOR_ONLY_ENVIRONMENT_NAMES = Object.freeze([
   "CYRENE_NAVIGATOR_EMBEDDING_QUERY_PREFIX",
   "CYRENE_CONVERSATION_ASSISTANT_ENABLED",
   "CYRENE_EXECUTOR_MAX_CONCURRENT_TASKS",
+  "CYRENE_HARNESS_MODEL_SOURCE",
 ]);
 
 const NAVIGATOR_CREDENTIAL_ENVIRONMENT_NAMES = Object.freeze([
@@ -76,4 +78,16 @@ export function createNavigatorChildEnvironment(sharedEnvironment, inheritedEnvi
     if (inheritedEnvironment[name]) navigatorEnvironment[name] = inheritedEnvironment[name];
   }
   return navigatorEnvironment;
+}
+
+/**
+ * Drop Navigator-only provider bindings and credentials from a front-end child environment.
+ * The dev launcher does not start Navigator, so Vite and Control must never inherit them.
+ */
+export function withoutNavigatorEnvironment(source) {
+  const shared = { ...source };
+  for (const name of [...NAVIGATOR_ONLY_ENVIRONMENT_NAMES, ...NAVIGATOR_CREDENTIAL_ENVIRONMENT_NAMES]) {
+    delete shared[name];
+  }
+  return shared;
 }
