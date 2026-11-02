@@ -38,7 +38,7 @@ function ConversationAssistantFixture() {
 
 function ConversationChatFixture() {
   useEffect(() => { void api.getSession().catch(() => undefined); }, []);
-  return <ConversationChatPage api={api} workspaceId="local" canOperate />;
+  return <ConversationChatPage api={api} workspaceId="local" canOperate canWrite />;
 }
 
 createRoot(document.getElementById("root")!).render(<ControlledLocaleProvider locale="en-US" setLocale={() => {}}>{catalyst

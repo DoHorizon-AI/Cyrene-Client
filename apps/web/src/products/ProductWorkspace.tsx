@@ -63,7 +63,7 @@ function ProductSession({ route }: { route: RouteId }) {
         sessionScope={[actorId, workspaceId, scopes.join(","), session?.sessionId ?? ""].join("\u0000")}
       />;
       case "chat": return <ChatPage api={api} />;
-      case "conversation-chat": return <ConversationChatPage api={api} workspaceId={workspaceId} canOperate={scopes.includes("products.operate")} />;
+      case "conversation-chat": return <ConversationChatPage api={api} workspaceId={workspaceId} canOperate={scopes.includes("products.operate")} canWrite={scopes.includes("products.write")} />;
       case "assistant": return <WorkAssistantPage api={api} workspaceId={workspaceId} canOperate={scopes.includes("products.operate")} canWrite={scopes.includes("products.write")} />;
       case "conversation-memory": return <ConversationMemoryPage api={api} workspaceId={workspaceId} canWrite={scopes.includes("products.write")} />;
       case "conversation-assistant": return <ConversationAssistantPage api={api} workspaceId={workspaceId} canWrite={scopes.includes("products.write")} canOperate={scopes.includes("products.operate")} />;

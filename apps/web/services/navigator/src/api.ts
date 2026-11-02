@@ -319,6 +319,14 @@ export class NavigatorApi extends NavigatorTransport {
     return this.conversationDomainsApi.getPersonas(...args);
   }
 
+  getConversationPersonaBinding(...args: Parameters<ConversationDomainsApi["getPersonaBinding"]>): ReturnType<ConversationDomainsApi["getPersonaBinding"]> {
+    return this.conversationDomainsApi.getPersonaBinding(...args);
+  }
+
+  putConversationPersonaBinding(...args: Parameters<ConversationDomainsApi["putPersonaBinding"]>): ReturnType<ConversationDomainsApi["putPersonaBinding"]> {
+    return this.conversationDomainsApi.putPersonaBinding(...args);
+  }
+
   putConversationPersona(...args: Parameters<ConversationDomainsApi["putPersona"]>): ReturnType<ConversationDomainsApi["putPersona"]> {
     return this.conversationDomainsApi.putPersona(...args);
   }

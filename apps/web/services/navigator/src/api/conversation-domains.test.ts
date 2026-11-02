@@ -28,6 +28,32 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("conversation profile and graph Work API", () => {
+  it("reads and CAS-updates an actor-owned conversation persona binding", async () => {
+    const binding = { conversationId: "chat-1", conversationKind: "direct", personaId: "calm", version: 2, createdAt: 1000, updatedAt: 2000 };
+    const calls: Array<{ path: string; method: string; body: unknown }> = [];
+    const api = new NavigatorApi(async (input, init) => {
+      const path = String(input), method = (init?.method ?? "GET").toUpperCase();
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined;
+      calls.push({ path, method, body });
+      if (path.includes("/conversation-memory/personas/binding?") && method === "GET") return response({ binding, availablePersonaIds: ["calm"] });
+      if (path.endsWith("/conversation-memory/personas/binding") && method === "PUT") return response({ binding: { ...binding, personaId: null, version: 3, updatedAt: 3000 }, duplicate: false });
+      throw new Error(`Unexpected request: ${method} ${path}`);
+    });
+
+    const view = await api.getConversationPersonaBinding("workspace-1", { conversationId: "chat-1", conversationKind: "direct" });
+    expect(view.binding?.personaId).toBe("calm");
+    expect(view.availablePersonaIds).toEqual(["calm"]);
+    const receipt = await api.putConversationPersonaBinding("workspace-1", {
+      conversationId: "chat-1", conversationKind: "direct", personaId: null, expectedVersion: 2,
+    });
+    expect(receipt.binding?.personaId).toBeNull();
+    expect(receipt.duplicate).toBe(false);
+    expect(calls.find((call) => call.method === "PUT")?.body).toEqual({
+      conversationId: "chat-1", conversationKind: "direct", personaId: null, expectedVersion: 2,
+    });
+    expect(calls.find((call) => call.method === "PUT")?.path).toBe("/api/v1/workspaces/workspace-1/work/conversation-memory/personas/binding");
+  });
+
   it("saves personas and reviews sourced profile candidates with expected versions", async () => {
     const calls: Array<{ path: string; method: string; body: unknown }> = [];
     const api = new NavigatorApi(async (input, init) => {

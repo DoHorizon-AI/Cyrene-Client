@@ -76,7 +76,7 @@ async function mountOperations(page: Page) {
       reviewEvent = { id: "review-1", ...input, sourceRefs: [{ memoryId: null, memoryVersion: null, sourceMessageIds: input["sourceRefs"] }], personaId: null, decision: input["decision"] ?? null, createdAt: 2600 };
       return reply({ event: reviewEvent, duplicate: false }, 201);
     }
-    if (path.endsWith("/conversation-memory/backups") && method === "POST") return reply({ attachment: { id: backupDigest, workspaceId: "local", sha256: backupDigest, name: "actor-backup.json", mediaType: "application/json", size: backupBytes.length, createdAt: 2700 }, downloadPath: `/api/v1/workspaces/local/work/conversation-memory/backups/attachments/${backupDigest}` });
+    if (path.endsWith("/conversation-memory/backups") && method === "POST") return reply({ artifactId: "backup-" + backupDigest.slice(0, 12), sha256: backupDigest, size: backupBytes.length, mimeType: "application/json" });
     if (path.endsWith(`/conversation-memory/backups/attachments/${backupDigest}`) && method === "GET") return route.fulfill({ status: 200, body: backupBytes, headers: { "Content-Type": "application/json", "X-Content-SHA256": backupDigest } });
     if (path.endsWith("/conversation-memory/imports/preview")) return reply({ recordCount: 1, acceptedCount: 1, quarantinedCount: 0, digest: "f".repeat(64) });
     if (path.endsWith("/conversation-memory/imports") && method === "POST") { importApplied = true; return reply({ batchId: (body as Record<string, unknown>)["batchId"], importedCount: 1, quarantinedCount: 0, digest: "f".repeat(64) }, 201); }
@@ -130,10 +130,10 @@ test("SIMULATED browser flow scopes maintenance, sources, lifecycle, and import 
 
   await page.getByRole("tab", { name: "Review & import" }).click();
   await page.getByRole("button", { name: "Create backup" }).click();
-  await expect(page.getByText(backupDigest)).toBeVisible();
+  await expect(page.getByText("backup-" + backupDigest.slice(0, 12))).toBeVisible();
   const downloadWait = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Download backup attachment" }).click();
-  expect((await downloadWait).suggestedFilename()).toBe("actor-backup.json");
+  await page.getByRole("button", { name: "Download backup file" }).click();
+  expect((await downloadWait).suggestedFilename()).toBe("cyrene-actor-backup-" + backupDigest + ".json");
   await page.getByLabel("Conversation ID", { exact: true }).fill("chat-1");
   await page.getByRole("button", { name: "Load review evidence" }).click();
   await page.locator(".conversation-assistant__source-picker").getByRole("checkbox").check();
