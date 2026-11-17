@@ -73,6 +73,8 @@ async function mountConversationMemory(page: Page, options: { provider?: "ready"
 test("SIMULATED browser flow searches, corrects, revokes, and deletes attributed memory", async ({ page }) => {
   const { calls } = await mountConversationMemory(page);
   page.on("dialog", dialog => dialog.accept());
+  // Every successful mutation must leave its confirmation visible even though the lists refresh afterwards.
+  const notice = (text: string) => page.getByRole("status").filter({ hasText: text });
 
   await page.getByLabel("Conversation ID", { exact: true }).fill("chat-1");
   await page.getByRole("button", { name: "Load scope", exact: true }).click();
@@ -89,26 +91,32 @@ test("SIMULATED browser flow searches, corrects, revokes, and deletes attributed
 
   await page.getByLabel("Memory text", { exact: true }).fill("The user prefers concise answers.");
   await page.getByRole("button", { name: "Save memory", exact: true }).click();
+  await expect(notice("Memory saved with source attribution.")).toBeVisible();
   await expect(page.locator(".conversation-memory__list > li").filter({ hasText: "The user prefers concise answers." })).toBeVisible();
 
   const originalMemory = page.locator(".conversation-memory__list > li").filter({ hasText: "memory-1" });
   await originalMemory.getByRole("button", { name: "Correct", exact: true }).click();
   await page.getByRole("textbox", { name: "Corrected text", exact: true }).fill("Prefers short answers.");
   await page.getByRole("button", { name: "Save correction", exact: true }).click();
+  await expect(notice("Memory correction saved.")).toBeVisible();
   await expect(originalMemory).toContainText("Prefers short answers.");
   await expect(originalMemory).toContainText("memory-1 · v2 · active");
 
   await page.getByRole("button", { name: "Delete", exact: true }).first().click();
+  await expect(notice("Memory deleted. Authorization epoch")).toBeVisible();
   await expect(page.getByText("Prefers concise answers.", { exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Grant sharing", exact: true }).click();
   await page.getByLabel("Target conversation ID", { exact: true }).fill("chat-2");
   await page.getByRole("button", { name: "Grant access", exact: true }).click();
+  await expect(notice("Source sharing grant saved.")).toBeVisible();
   await expect(page.locator(".conversation-memory__grant")).toContainText("chat-2");
   await page.getByRole("button", { name: "Revoke grant", exact: true }).click();
+  await expect(notice("Sharing grant revoked.")).toBeVisible();
   await expect(page.getByText("Grant revoked", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Revoke source", exact: true }).click();
+  await expect(notice("Source revoked; derived contributions invalidated")).toBeVisible();
   await expect(page.getByText("user · revoked", { exact: true })).toBeVisible();
   await page.getByLabel("Semantic query", { exact: true }).fill("concise");
   await page.getByRole("button", { name: "Search", exact: true }).click();
