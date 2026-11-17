@@ -101,11 +101,13 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     return () => { workspaceProbe.current++; };
   }, [api, workspaceId, t]);
 
-  const refreshOwnerData = useCallback(async () => {
+  // A refresh that follows a successful mutation keeps that mutation's confirmation visible;
+  // every other refresh (scope change, reload) starts from a clean notice.
+  const refreshOwnerData = useCallback(async (options: { keepNotice?: boolean } = {}) => {
     if (!workspaceAligned) return;
     const requestId = ++ownerRequest.current;
     setPageError("");
-    setNotice("");
+    if (!options.keepNotice) setNotice("");
     if (!conversationId.trim()) {
       setMemories([]); setSources([]); setMemoriesError(""); setSourcesError(""); setSelectedMemoryId("");
       try {
@@ -231,7 +233,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
       setSelectedMemoryId(result.memory.id);
       setMatches(null);
       setNotice(result.duplicate ? t("This memory request was already applied; the existing record was returned.") : t("Memory saved with source attribution."));
-      await refreshOwnerData();
+      await refreshOwnerData({ keepNotice: true });
       setSelectedMemoryId(result.memory.id);
     } catch (error) { setPageError(errorMessage(error)); }
     finally { setBusy(""); }
@@ -255,7 +257,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
       const result = await api.updateConversationMemory(workspaceId, selectedMemory.id, patch);
       setMatches(null);
       setNotice(t("Memory correction saved."));
-      await refreshOwnerData();
+      await refreshOwnerData({ keepNotice: true });
       setSelectedMemoryId(result.memory.id);
     } catch (error) { setPageError(errorMessage(error)); }
     finally { setBusy(""); }
@@ -269,7 +271,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
       setMatches(null);
       setSelectedMemoryId("");
       setNotice(`${t("Memory deleted. Authorization epoch")}: ${result.authorizationEpoch}`);
-      await refreshOwnerData();
+      await refreshOwnerData({ keepNotice: true });
     } catch (error) { setPageError(errorMessage(error)); }
     finally { setBusy(""); }
   };
@@ -281,7 +283,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
       const result = await api.revokeConversationMemorySource(workspaceId, source.id);
       setGrantSourceId("");
       setNotice(`${t("Source revoked; derived contributions invalidated")}: ${result.invalidatedCount}`);
-      await refreshOwnerData();
+      await refreshOwnerData({ keepNotice: true });
       setMatches(null);
     } catch (error) { setPageError(errorMessage(error)); }
     finally { setBusy(""); }
@@ -305,7 +307,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
       });
       setNotice(result.duplicate ? t("This sharing grant already exists.") : t("Source sharing grant saved."));
       setGrantTargetConversationId(""); setGrantExpiresAt("");
-      await refreshOwnerData();
+      await refreshOwnerData({ keepNotice: true });
     } catch (error) { setPageError(errorMessage(error)); }
     finally { setBusy(""); }
   };
@@ -316,7 +318,7 @@ export function ConversationMemoryPage({ api, workspaceId, canWrite }: PageProps
     try {
       await api.revokeConversationMemorySourceGrant(workspaceId, source.id, grantId);
       setNotice(t("Sharing grant revoked."));
-      await refreshOwnerData();
+      await refreshOwnerData({ keepNotice: true });
     } catch (error) { setPageError(errorMessage(error)); }
     finally { setBusy(""); }
   };
