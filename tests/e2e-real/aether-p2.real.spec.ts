@@ -298,11 +298,17 @@ test("REAL WSL turns extract a sourced episode, deduplicate an exact retry, and 
   const messagesReadback = await readSameOriginJson(page, messagesPath);
   expect(messagesReadback.status).toBe(200);
   const sourceMessages = (messagesReadback.body as { items?: MessageRecord[] }).items ?? [];
-  const firstUserMessage = sourceMessages.find((item) => item.role === "user" && item.content.includes(marker));
+  // The messages endpoint lists newest first, so order by time before taking the first turn.
+  const firstUserMessage = [...sourceMessages]
+    .sort((left, right) => left.occurredAt - right.occurredAt)
+    .find((item) => item.role === "user" && item.content.includes(marker));
   expect(firstUserMessage).toBeDefined();
   const sourceMessageId = firstUserMessage!.id;
-  const extractedMemory = extractedItems.find((item) =>
+  // Private memory is actor-wide and later summaries consolidate earlier ones, so more than one
+  // active episode can cite the first turn. Any of them is a valid attributed episode.
+  const attributedEpisodes = extractedItems.filter((item) =>
     item.kind === "episode" && item.sourceMessageIds.includes(sourceMessageId));
+  const extractedMemory = attributedEpisodes[0];
   expect(extractedMemory).toBeDefined();
   // The local 0.5B model writes the summary, so its wording is not asserted; what matters is
   // that a model-written episode exists and is attributed to the exact source message above.
@@ -324,17 +330,21 @@ test("REAL WSL turns extract a sourced episode, deduplicate an exact retry, and 
   const recalledAssistant = ((recalledMessages.body as { items?: MessageRecord[] }).items ?? [])
     .filter((item) => item.role === "assistant" && !priorAssistantIds.has(item.id))
     .sort((left, right) => right.occurredAt - left.occurredAt)[0];
-  expect(recalledAssistant?.sourceRefs.some((reference) => reference.memoryId === extractedMemory!.id
-    && reference.memoryVersion === extractedMemory!.version
+  expect(recalledAssistant?.sourceRefs.some((reference) =>
+    attributedEpisodes.some((episode) => episode.id === reference.memoryId && episode.version === reference.memoryVersion)
     && reference.sourceMessageIds.includes(sourceMessageId))).toBe(true);
 
   await page.getByRole("link", { name: /Open memory controls|打开记忆管理/ }).click();
-  const memoryRow = page.locator(".conversation-memory__list > li").filter({ hasText: extractedMemory!.id }).last();
+  // A consolidated episode lists the memories it was built from, so match the row by its own
+  // "<id> · v<n> ·" header and not by any text that merely mentions the id.
+  const ownMemoryRow = () => page.locator(".conversation-memory__list > li")
+    .filter({ hasText: new RegExp(extractedMemory!.id + " · v\\d+ · ") });
+  const memoryRow = ownMemoryRow().last();
   await memoryRow.getByRole("button", { name: /Correct|纠正/ }).click();
   const correctedText = "Corrected private acceptance preference: very concise replies. Marker " + marker + ".";
   await page.getByLabel(/Corrected text|纠正后的内容/).fill(correctedText);
   await page.getByRole("button", { name: /Save correction|保存修正/ }).click();
-  await expect(page.locator(".conversation-memory__list > li").filter({ hasText: extractedMemory!.id }).last()).toContainText(correctedText);
+  await expect(ownMemoryRow().last()).toContainText(correctedText);
   let correctedMemory: MemoryRecord | undefined;
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const correctedReadback = await readSameOriginJson(page, memoriesPath);
@@ -347,7 +357,9 @@ test("REAL WSL turns extract a sourced episode, deduplicate an exact retry, and 
   expect(correctedMemory?.text).toBe(correctedText);
 
   await page.getByRole("button", { name: /Read messages|读取消息/ }).click();
-  const deletionSourceRow = page.locator(".conversation-memory__messages > li").filter({ hasText: sourceMessageId });
+  // Assistant replies cite the source id too, so select the user's own message row.
+  const deletionSourceRow = page.locator(".conversation-memory__messages > li")
+    .filter({ hasText: sourceMessageId }).filter({ hasText: /\buser · / }).first();
   await expect(deletionSourceRow).toBeVisible();
   await deletionSourceRow.getByRole("checkbox", { name: /Use as evidence|选作证据/ }).check();
   const deletionText = "Temporary deletion check for marker " + marker + ".";
